@@ -9,11 +9,20 @@ Setup is easiest with [uv](https://docs.astral.sh/uv/). Simply clone the reposit
 uv sync
 ```
 
+Activate the virtual environment you just created:
+```
+source .venv/bin/activate # macOS, Linux
+```
+```
+.venv\Scripts\activate.bat # Windows
+```
+
 Then run the code:
 ```
 uv run main.py --path-to-inputs="/path/to/input/folder" --path-to-outputs="/path/to/output.csv"
 ```
-Or use the short-hand flags
+
+Or use the short-hand flags:
 ```
 uv run main.py -i="/path/to/input/folder" -o="/path/to/output.csv"
 ```
