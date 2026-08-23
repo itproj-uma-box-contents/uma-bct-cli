@@ -26,7 +26,7 @@ def main():
     parser = argparse.ArgumentParser(description="UMA Box Contents Transcription CLI")
     parser.add_argument("-i", "--path-to-inputs", default=os.getcwd(),
                         help="Path to the input, a directory of images.")
-    parser.add_argument("-o", "--path-to-outputs", default=os.path.join(os.getcwd(), "output"), 
+    parser.add_argument("-o", "--path-to-outputs", default=os.path.join(os.getcwd(), "outputs"), 
                         help="Output file path (should end in '.csv')")
     args = parser.parse_args()
 
