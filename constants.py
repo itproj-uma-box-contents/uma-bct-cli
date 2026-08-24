@@ -1,12 +1,12 @@
-# In/Out Schema
-BOX_CONTENTS_COLUMNS = [
+# Schema produced by image transcription.
+TRANSCRIPTION_COLUMNS = [
     "Node ID",
     "Node Type",
     "Node Title",
     "Description",
-    "Start Date",
-    "End Date",
-    "Flags",
-    "Confidence Score",
+    "Date Range",
     "Image",
 ]
+
+# The exported CSV adds review flags to the transcription data.
+OUTPUT_COLUMNS = [*TRANSCRIPTION_COLUMNS, "Flags"]

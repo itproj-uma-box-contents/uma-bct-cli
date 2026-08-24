@@ -2,7 +2,7 @@ import argparse
 import os
 import pandas as pd
 from PIL import Image
-from constants import BOX_CONTENTS_COLUMNS
+from constants import OUTPUT_COLUMNS, TRANSCRIPTION_COLUMNS
 
 
 def handle_image(img: Image) -> pd.DataFrame:
@@ -11,8 +11,8 @@ def handle_image(img: Image) -> pd.DataFrame:
     the results in the specified format.
     """
    
-    # Placeholder: future transcription logic must return BOX_CONTENTS_COLUMNS.
-    return pd.DataFrame(columns=BOX_CONTENTS_COLUMNS)
+    # Placeholder: future transcription logic must return TRANSCRIPTION_COLUMNS.
+    return pd.DataFrame(columns=TRANSCRIPTION_COLUMNS)
 
 def check_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -47,7 +47,7 @@ def main():
     args = parser.parse_args()
 
     # prepare to transcribe images
-    df = pd.DataFrame(columns=BOX_CONTENTS_COLUMNS)
+    df = pd.DataFrame(columns=TRANSCRIPTION_COLUMNS)
     input_filenames = os.listdir(args.path_to_inputs)
 
     # transcribe images
@@ -55,23 +55,24 @@ def main():
         try:
             img = Image.open(os.path.join(args.path_to_inputs, filename))
             image_records = handle_image(img)
-            missing_columns = set(BOX_CONTENTS_COLUMNS) - set(image_records.columns)
+            missing_columns = set(TRANSCRIPTION_COLUMNS) - set(image_records.columns)
             if missing_columns:
                 raise ValueError(
                     f"Transcription is missing required columns: {sorted(missing_columns)}"
                 )
             df = pd.concat(
-                [df, image_records[BOX_CONTENTS_COLUMNS]], ignore_index=True
+                [df, image_records[TRANSCRIPTION_COLUMNS]], ignore_index=True
             )
         except Exception as e:
             print(f"Skipping {filename}: {e}")
             continue
 
     # check for duplicate node titles
+    df["Flags"] = ""
     df = check_duplicate_rows(df)
 
     # save results
-    df.to_csv(args.path_to_outputs, index=False)
+    df.to_csv(args.path_to_outputs, columns=OUTPUT_COLUMNS, index=False)
 
 if __name__ == "__main__":
     main()
