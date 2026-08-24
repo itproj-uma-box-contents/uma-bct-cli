@@ -14,13 +14,26 @@ def handle_image(img: Image) -> pd.DataFrame:
     # Placeholder: future transcription logic must return BOX_CONTENTS_COLUMNS.
     return pd.DataFrame(columns=BOX_CONTENTS_COLUMNS)
 
-def deduplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
+def check_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Remove rows that are likely to represent the same box.
+    Record Node Title as the index and flag later occurrences of a title as
+    potential duplicates without removing any rows.
     """
+    df = df.set_index("Node Title", drop=False)
+    duplicate_rows = df.index.duplicated(keep=False)
 
-    # placeholder
-    return df.drop_duplicates()
+    flags_column = df.columns.get_loc("Flags")
+    for row_position, is_duplicate in enumerate(duplicate_rows):
+        if not is_duplicate:
+            continue
+
+        current_flags = df.iloc[row_position, flags_column]
+        flag = "Potential Dupelicate"
+        df.iloc[row_position, flags_column] = (
+            flag if pd.isna(current_flags) or not current_flags else f"{current_flags}; {flag}"
+        )
+
+    return df
 
 def main():
 
@@ -53,8 +66,8 @@ def main():
             print(f"Skipping {filename}: {e}")
             continue
 
-    # perform deduplication
-    df = deduplicate_rows(df)
+    # check for duplicate node titles
+    df = check_duplicate_rows(df)
 
     # save results
     df.to_csv(args.path_to_outputs, index=False)
