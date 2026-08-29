@@ -16,6 +16,7 @@ from src.domain import (
 )
 from src.export import catalogue_dataframe, export_catalogue
 from src.pipeline import ImageResult
+from src.validation import check_low_confidence_rows
 
 
 class CatalogueMappingTest(unittest.TestCase):
@@ -30,13 +31,15 @@ class CatalogueMappingTest(unittest.TestCase):
         record = map_catalogue_record(transcription, Path("crops/box-1.png"))
 
         self.assertEqual(list(record), OUTPUT_COLUMNS)
-        self.assertEqual(record["Node Type"], "Unit")
-        self.assertEqual(record["Node Title"], "1974.0056 Unit 0007")
+        self.assertEqual(record["Node"], "Unit")
+        self.assertEqual(record["Title"], "1974.0056 Unit 0007")
         self.assertEqual(
             record["Description"],
             "Printed note\nCorrespondence\nRestricted",
         )
-        self.assertEqual(record["Date Range"], "")
+        self.assertEqual(record["Start Date"], "")
+        self.assertEqual(record["End Date"], "")
+        self.assertEqual(record["Confidence Score"], 90)
         self.assertEqual(record["Image"], "crops/box-1.png")
         self.assertEqual(record["Flags"], "")
 
@@ -47,7 +50,7 @@ class CatalogueMappingTest(unittest.TestCase):
 
         record = map_catalogue_record(transcription, "box.png")
 
-        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(record["Title"], "")
         self.assertEqual(record["Description"], "1974.0056\nUnclear unit")
         self.assertEqual(record["Flags"], "Missing unit")
 
@@ -58,8 +61,17 @@ class CatalogueMappingTest(unittest.TestCase):
 
         record = map_catalogue_record(transcription, "box.png")
 
-        self.assertEqual(record["Node Title"], "1974.0056 Unit 0042")
+        self.assertEqual(record["Title"], "1974.0056 Unit 0042")
         self.assertEqual(record["Description"], "Minutes")
+
+    def test_maps_raw_transcription_confidence_score(self):
+        transcription = self.transcription(
+            "box-1", "0007", ("Unit 0007",), (), confidence=49
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Confidence Score"], 49)
 
     @staticmethod
     def transcription(
@@ -67,8 +79,8 @@ class CatalogueMappingTest(unittest.TestCase):
         unit: str,
         typed: tuple[str, ...],
         handwritten: tuple[str, ...],
+        confidence: int = 90,
     ) -> BoxTranscription:
-        confidence = 90
         text_lines = tuple(
             BoxText(position, text, "typed", confidence)
             for position, text in enumerate(typed, start=1)
@@ -114,8 +126,24 @@ class CatalogueExportTest(unittest.TestCase):
         written = pd.read_excel(output_path, keep_default_na=False)
 
         self.assertEqual(list(written.columns), OUTPUT_COLUMNS)
-        self.assertEqual(written.loc[0, "Node Title"], "1974.0056 Unit 0001")
+        self.assertEqual(written.loc[0, "Title"], "1974.0056 Unit 0001")
         self.assertEqual(written.loc[0, "Description"], "Correspondence")
+
+    def test_composes_duplicate_and_low_confidence_flags(self):
+        results = [
+            self.result("shelf-a", "box-a", confidence=49),
+            self.result("shelf-b", "box-b", confidence=49),
+        ]
+
+        dataframe = catalogue_dataframe(results)
+
+        self.assertEqual(
+            dataframe["Flags"].tolist(),
+            [
+                "Potential Duplicate; Low confidence",
+                "Potential Duplicate; Low confidence",
+            ],
+        )
 
     def test_empty_batch_still_writes_the_required_headers(self):
         output_path = self.root / "empty.csv"
@@ -143,7 +171,9 @@ class CatalogueExportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No transcription found"):
             catalogue_dataframe([invalid])
 
-    def result(self, shelf_name: str, box_id: str) -> ImageResult:
+    def result(
+        self, shelf_name: str, box_id: str, confidence: int = 90
+    ) -> ImageResult:
         input_image = InputImage(self.root / f"{shelf_name}.jpg", 1000, 500)
         box = Box(
             box_id=box_id,
@@ -158,6 +188,7 @@ class CatalogueExportTest(unittest.TestCase):
             "0001",
             ("1974.0056", "Unit 0001"),
             ("Correspondence",),
+            confidence,
         )
         return ImageResult(
             input_image=input_image,

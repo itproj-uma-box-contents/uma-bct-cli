@@ -78,20 +78,20 @@ uv run main.py -i /path/to/images -o outputs/catalogue.xlsx --detector opencv --
 The input may be one image or a flat directory of images. Clean box crops are
 written to `outputs/crops/<source-name>/` by default. The catalogue is written
 as CSV or XLSX according to the `-o` filename, and a processing summary is
-printed as JSON. Duplicate `Node Title` values are flagged on every implicated
-row without deleting records. Date parsing and preprocessing are not included;
-`Date Range` therefore remains empty.
+printed as JSON. Duplicate `Title` values are flagged on every implicated row
+without deleting records. Date parsing and preprocessing are not included, so
+`Start Date` and `End Date` remain empty.
 
 The current catalogue mapping is:
 
-- `Node ID`: empty for later catalogue assignment
-- `Node Type`: `Unit`
-- `Node Title`: printed label text through the detected unit line
+- `Node`: `Unit`
+- `Title`: printed label text through the detected unit line
 - `Description`: remaining printed lines followed by handwritten lines
-- `Date Range`: empty until date extraction is implemented
-- `Image`: path to the full-resolution box crop
+- `Start Date` and `End Date`: empty until date extraction is implemented
+- `Confidence Score`: raw Qwen transcription confidence from 0 to 100
 - `Flags`: `Missing unit` where applicable, plus `Potential Duplicate` after
-  whole-batch duplicate checking
+  whole-batch duplicate checking and `Low confidence` below 50
+- `Image`: path to the full-resolution box crop
 
 Useful options:
 

@@ -13,6 +13,7 @@ from constants import OUTPUT_COLUMNS
 from .catalogue import map_catalogue_record
 from .duplicates import check_duplicate_rows
 from .pipeline import ImageResult
+from .validation import check_low_confidence_rows
 
 SUPPORTED_OUTPUT_EXTENSIONS = {".csv", ".xlsx"}
 
@@ -20,7 +21,7 @@ SUPPORTED_OUTPUT_EXTENSIONS = {".csv", ".xlsx"}
 def catalogue_dataframe(results: Iterable[ImageResult]) -> pd.DataFrame:
     """Map a batch and flag duplicates across every successfully processed image."""
 
-    records: list[dict[str, str]] = []
+    records: list[dict[str, str | int]] = []
     for result in results:
         transcriptions_by_id = {
             transcription.box_id: transcription
@@ -47,7 +48,8 @@ def catalogue_dataframe(results: Iterable[ImageResult]) -> pd.DataFrame:
             raise ValueError(f"Transcriptions do not match boxes: {unexpected}")
 
     dataframe = pd.DataFrame.from_records(records, columns=OUTPUT_COLUMNS)
-    return check_duplicate_rows(dataframe).reset_index(drop=True)
+    duplicate_checked = check_duplicate_rows(dataframe)
+    return check_low_confidence_rows(duplicate_checked).reset_index(drop=True)
 
 
 def export_catalogue(

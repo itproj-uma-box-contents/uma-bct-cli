@@ -19,12 +19,12 @@ class CheckDuplicateRowsTest(unittest.TestCase):
 
         result = check_duplicate_rows(records)
 
-        duplicate_rows = result["Node Title"] == "1974.0056 Unit 0001"
+        duplicate_rows = result["Title"] == "1974.0056 Unit 0001"
         self.assertTrue(
             result.loc[duplicate_rows, "Flags"].eq("Potential Duplicate").all()
         )
         self.assertEqual(result.loc[~duplicate_rows, "Flags"].iloc[0], "")
-        self.assertEqual(result.index.name, "Node Title")
+        self.assertEqual(result.index.name, "Title")
         self.assertEqual(len(result), 3)
 
     def test_preserves_existing_flags_and_does_not_repeat_duplicate_flag(self):
@@ -65,13 +65,14 @@ class CheckDuplicateRowsTest(unittest.TestCase):
     @staticmethod
     def row(node_title: str | None, image: str, flags: str = "") -> dict[str, str | None]:
         return {
-            "Node ID": "",
-            "Node Type": "Unit",
-            "Node Title": node_title,
+            "Node": "Unit",
+            "Title": node_title,
             "Description": "Archive box contents",
-            "Date Range": "",
-            "Image": image,
+            "Start Date": "",
+            "End Date": "",
+            "Confidence Score": 90,
             "Flags": flags,
+            "Image": image,
         }
 
 

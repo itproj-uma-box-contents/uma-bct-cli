@@ -72,7 +72,7 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(summary["catalogue_output"], str(output_path))
             self.assertEqual(summary["catalogue_records"], 1)
-            self.assertEqual(written.loc[0, "Node Title"], "1974.0056 Unit 0001")
+            self.assertEqual(written.loc[0, "Title"], "1974.0056 Unit 0001")
 
     def test_rejects_output_without_a_supported_extension_before_processing(self):
         with self.assertRaisesRegex(SystemExit, "Output path must end"):

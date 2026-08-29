@@ -44,12 +44,12 @@ def _title_and_remaining_typed_lines(
 def map_catalogue_record(
     transcription: BoxTranscription,
     image_file_path: str | Path,
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     """Convert one transcription to the repository's current export columns.
 
-    Date Range remains empty because date extraction has not yet been
-    implemented. Confidence remains available on ``BoxTranscription`` but is not
-    added here because it is not part of the current catalogue column contract.
+    Start Date and End Date remain empty because date extraction has not yet
+    been implemented. Confidence Score is the model's raw transcription score
+    (0--100), not a calibrated probability.
     """
 
     title, remaining_typed_lines = _title_and_remaining_typed_lines(transcription)
@@ -60,12 +60,13 @@ def map_catalogue_record(
     )
 
     record = {
-        "Node ID": "",
-        "Node Type": "Unit",
-        "Node Title": title,
+        "Node": "Unit",
+        "Title": title,
         "Description": description,
-        "Date Range": "",
-        "Image": str(image_file_path),
+        "Start Date": "",
+        "End Date": "",
+        "Confidence Score": transcription.confidence,
         "Flags": "" if unit_number else MISSING_UNIT_FLAG,
+        "Image": str(image_file_path),
     }
     return {column: record[column] for column in OUTPUT_COLUMNS}
