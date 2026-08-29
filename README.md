@@ -27,7 +27,8 @@ protocol in `src/ports.py` and be registered in `src/bootstrap.py`.
 - `numpy` for image arrays and detector geometry
 - `opencv-python` for OpenCV detection, image loading, and crop creation
 - `ollama` for calls to the locally running vision model
-- `pandas` for the retained duplicate-record flagging used by catalogue exports
+- `pandas` for catalogue mapping, CSV/XLSX tables, and duplicate flagging
+- `openpyxl` for writing XLSX workbooks
 
 Install the Python environment:
 
@@ -65,20 +66,32 @@ regression tests in `tests/test_reference_compatibility.py`.
 Use Qwen to detect and transcribe boxes:
 
 ```bash
-uv run main.py -i /path/to/images --detector qwen --transcriber qwen
+uv run main.py -i /path/to/images -o outputs/catalogue.csv --detector qwen --transcriber qwen
 ```
 
 Use OpenCV for detection and Qwen only for transcription:
 
 ```bash
-uv run main.py -i /path/to/images --detector opencv --transcriber qwen
+uv run main.py -i /path/to/images -o outputs/catalogue.xlsx --detector opencv --transcriber qwen
 ```
 
 The input may be one image or a flat directory of images. Clean box crops are
-written to `outputs/crops/<source-name>/` by default and the basic transcription
-result is printed as JSON. No catalogue export, date parsing, duplicate
-report generation, or preprocessing pipeline is included at this stage. The
-existing duplicate-row validator is retained for the later CSV export stage.
+written to `outputs/crops/<source-name>/` by default. The catalogue is written
+as CSV or XLSX according to the `-o` filename, and a processing summary is
+printed as JSON. Duplicate `Node Title` values are flagged on every implicated
+row without deleting records. Date parsing and preprocessing are not included;
+`Date Range` therefore remains empty.
+
+The current catalogue mapping is:
+
+- `Node ID`: empty for later catalogue assignment
+- `Node Type`: `Unit`
+- `Node Title`: printed label text through the detected unit line
+- `Description`: remaining printed lines followed by handwritten lines
+- `Date Range`: empty until date extraction is implemented
+- `Image`: path to the full-resolution box crop
+- `Flags`: `Missing unit` where applicable, plus `Potential Duplicate` after
+  whole-batch duplicate checking
 
 Useful options:
 
@@ -91,7 +104,7 @@ Useful options:
 The installed command is equivalent to `uv run main.py`:
 
 ```bash
-uv run uma-bct -i /path/to/images --detector opencv
+uv run uma-bct -i /path/to/images -o outputs/catalogue.csv --detector opencv
 ```
 
 ## Replacing an adapter

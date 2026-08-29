@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 from .bootstrap import DETECTORS, TRANSCRIBERS, build_pipeline
+from .export import SUPPORTED_OUTPUT_EXTENSIONS, export_catalogue
+from .pipeline import ImageResult
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
@@ -31,6 +33,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
         help="an input image or a directory of images",
+    )
+    parser.add_argument(
+        "-o",
+        "--path-to-output",
+        type=Path,
+        required=True,
+        help="catalogue output path ending in .csv or .xlsx",
     )
     parser.add_argument(
         "--detector",
@@ -85,6 +94,9 @@ def discover_images(path: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = parse_args(argv)
+    if arguments.path_to_output.suffix.casefold() not in SUPPORTED_OUTPUT_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_OUTPUT_EXTENSIONS))
+        raise SystemExit(f"Output path must end in one of: {supported}")
     try:
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
@@ -99,17 +111,23 @@ def main(argv: list[str] | None = None) -> int:
         work_directory=arguments.work_dir,
         minimum_detector_confidence=arguments.min_confidence,
     )
-    results: list[dict[str, object]] = []
+    results: list[ImageResult] = []
     failures: list[dict[str, str]] = []
     for image_path in images:
         try:
-            results.append(pipeline.process(image_path).to_dict())
+            results.append(pipeline.process(image_path))
         except Exception as error:  # Continue a batch after one bad image/model call.
             failures.append({"source_image": str(image_path), "error": str(error)})
 
+    records = export_catalogue(results, arguments.path_to_output)
     print(
         json.dumps(
-            {"images": results, "failures": failures},
+            {
+                "images": [result.to_dict() for result in results],
+                "failures": failures,
+                "catalogue_output": str(arguments.path_to_output),
+                "catalogue_records": len(records),
+            },
             indent=2,
             ensure_ascii=False,
         )

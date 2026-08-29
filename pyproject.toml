@@ -8,6 +8,7 @@ dependencies = [
     "numpy",
     "ollama",
     "opencv-python",
+    "openpyxl",
     "pandas",
 ]
 
