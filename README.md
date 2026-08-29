@@ -66,7 +66,7 @@ regression tests in `tests/test_reference_compatibility.py`.
 The input may be one image or a flat directory of images. Choose the detector
 independently from the Qwen text transcriber.
 
-### OpenCV detection + Qwen transcription
+### OpenCV detection + Qwen transcription (not yet fully reliable)
 
 Use this route to test the local OpenCV geometry detector while retaining Qwen
 for reading labels and handwriting:
@@ -123,26 +123,6 @@ JSON. Duplicate `Title` values are flagged on every implicated row without
 deleting records. Date parsing and preprocessing are not included, so `Start
 Date` and `End Date` remain empty.
 
-### OpenCV detection status
-
-The OpenCV route runs, and its current thresholds and crop geometry are checked
-against the reference implementation. Its real-world detection accuracy and
-stability across archival shelf photographs have not yet been formally
-benchmarked. Do not assume it is 100% accurate or that reference accuracy has
-been maintained: inspect the generated crops and compare both detector routes
-against manually verified images before selecting the production default.
-
-The current catalogue mapping is:
-
-- `Node`: `Unit`
-- `Title`: printed label text through the detected unit line
-- `Description`: remaining printed lines followed by handwritten lines
-- `Start Date` and `End Date`: empty until date extraction is implemented
-- `Confidence Score`: raw Qwen transcription confidence from 0 to 100
-- `Flags`: `Missing unit` where applicable, plus `Potential Duplicate` after
-  whole-batch duplicate checking and `Low confidence` below 50
-- `Image`: path to the full-resolution box crop
-
 ## Useful future improvements
 
 The following features would make the tool more practical after the current
@@ -150,10 +130,10 @@ MVP scaffold:
 
 - **Date extraction:** populate `Start Date` and `End Date` while preserving the
   original annotation and flagging partial or uncertain dates.
-- **Batch resilience:** retain successfully processed crops when another crop or
-  image fails, and support safely resuming an interrupted batch.
-- **Progress reporting:** show detected-box counts, the current transcription
-  number, timings, and a concise end-of-batch summary in the terminal.
+- **More complete batch resilience:** retain successful crop responses (already
+  supported) and add safe resumption after an interrupted batch.
+- **Richer progress reporting:** extend the current crop counter with
+  detected-box counts, timings, and a concise end-of-batch summary.
 - **Image review links:** make the `Image` column easy to open from the review
   CSV/XLSX, including when the export is opened in Windows Excel.
 
@@ -185,10 +165,12 @@ The adapters intentionally resemble the functions in
 - Local model transport is in `src/adapters/ollama_client.py`.
 
 Keep the public `detect(InputImage) -> list[DetectedRegion]` or
-`transcribe(Box) -> BoxTranscription` method intact, replace the adapter's model
-logic, and add the implementation to the appropriate registry in `bootstrap.py`.
-The detector must return original-image pixel coordinates. The transcriber only
-receives clean `Box` crops and must not call a detector.
+`transcribe(Box) -> list[BoxTranscription]` method intact, replace the adapter's
+model logic, and add the implementation to the appropriate registry in
+`bootstrap.py`. The list return is required because one wide detector crop may
+contain multiple physical boxes. The detector must return original-image pixel
+coordinates. The transcriber only receives clean `Box` crops and must not call a
+detector.
 
 ## Testing
 

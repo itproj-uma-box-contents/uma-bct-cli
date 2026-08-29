@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 from .domain import Box, BoxTranscription, DetectedRegion, InputImage
 
@@ -32,7 +32,14 @@ class TextTranscriber(Protocol):
 
     name: str
 
-    def transcribe(self, box: Box) -> BoxTranscription: ...
+    def transcribe(self, box: Box) -> list[BoxTranscription]: ...
+
+
+@runtime_checkable
+class FullImageTextTranscriber(Protocol):
+    """Optional recovery capability for transcribers that support full images."""
+
+    def transcribe_full_image(self, box: Box) -> list[BoxTranscription]: ...
 
 
 class VisionModelClient(Protocol):

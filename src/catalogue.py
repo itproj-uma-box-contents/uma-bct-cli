@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from constants import OUTPUT_COLUMNS
-from .constants import MISSING_UNIT_FLAG
+from constants import MISSING_UNIT_FLAG, OUTPUT_COLUMNS, TRANSCRIPTION_MISMATCH_FLAG
 
 from .domain import BoxTranscription
 
@@ -52,10 +51,16 @@ def map_catalogue_record(
 
     title, remaining_typed_lines = _title_and_remaining_typed_lines(transcription)
     handwritten_lines = _non_empty_lines(transcription.handwritten_lines)
-    description = "\n".join((*remaining_typed_lines, *handwritten_lines))
+    description = "; ".join((*remaining_typed_lines, *handwritten_lines))
     unit_number = (
         transcription.label.unit_number.strip() if transcription.label else ""
     )
+
+    flags: list[str] = []
+    if not unit_number:
+        flags.append(MISSING_UNIT_FLAG)
+    if transcription.needs_review:
+        flags.append(TRANSCRIPTION_MISMATCH_FLAG)
 
     record = {
         "Node": "Unit",
@@ -64,7 +69,7 @@ def map_catalogue_record(
         "Start Date": "",
         "End Date": "",
         "Confidence Score": transcription.confidence,
-        "Flags": "" if unit_number else MISSING_UNIT_FLAG,
+        "Flags": "; ".join(flags),
         "Image": str(image_file_path),
     }
     return {column: record[column] for column in OUTPUT_COLUMNS}

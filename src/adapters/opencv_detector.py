@@ -244,14 +244,22 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
     else:
         detection_image = original.copy()
 
+    detection_height, detection_width = detection_image.shape[:2]
     candidates = sort_in_rows(suppress_overlaps(extract_candidates(detection_image)))
     regions: list[DetectedRegion] = []
     for candidate in candidates:
         box = candidate.bounding_box
-        left = math.floor(box.x / scale)
-        top = math.floor(box.y / scale)
-        right = math.ceil(box.bottom_right[0] / scale)
-        bottom = math.ceil(box.bottom_right[1] / scale)
+        # Resize dimensions are rounded independently. Match the reference by
+        # mapping each axis using the actual resized dimensions rather than the
+        # nominal floating-point scale.
+        left = box.x * original_width // detection_width
+        top = box.y * original_height // detection_height
+        right = (
+            box.bottom_right[0] * original_width + detection_width - 1
+        ) // detection_width
+        bottom = (
+            box.bottom_right[1] * original_height + detection_height - 1
+        ) // detection_height
         regions.append(
             DetectedRegion(
                 BoundingBox((left, top), (right, bottom)),

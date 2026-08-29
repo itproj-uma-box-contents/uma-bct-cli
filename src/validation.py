@@ -1,9 +1,10 @@
 """Batch-level review-flag validation shared by catalogue exporters."""
 
 from __future__ import annotations
-from .constants import LOW_CONFIDENCE_FLAG, LOW_CONFIDENCE_THRESHOLD
 
 import pandas as pd
+
+from constants import LOW_CONFIDENCE_FLAG, LOW_CONFIDENCE_THRESHOLD
 
 def append_flag(current_flags: object, flag: str) -> str:
     """Append one flag once, preserving deterministic existing flag order."""

@@ -177,13 +177,15 @@ class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
 
-    def transcribe(self, box: Box) -> BoxTranscription:
-        result = self.client.query(box.image_file_path, crop_question(box), SCHEMA)
+    def _request(self, box: Box, prompt: str) -> list[BoxTranscription]:
+        result = self.client.query(box.image_file_path, prompt, SCHEMA)
         records = validate_transcription_result(result)
-        if not records:
-            raise ValueError("the transcription response contained no boxes")
+        return [_to_domain(box, record) for record in records]
 
-        # BoxDetector creates one primary crop per box. The reference schema remains
-        # multi-box so the model request is unchanged; the modular domain currently
-        # stores the first record until overlap-aware merge support is ported.
-        return _to_domain(box, records[0])
+    def transcribe(self, box: Box) -> list[BoxTranscription]:
+        return self._request(box, crop_question(box))
+
+    def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
+        """Retry the untouched source image using the old full-image prompt."""
+
+        return self._request(box, QUESTION)

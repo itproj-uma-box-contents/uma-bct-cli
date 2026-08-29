@@ -39,19 +39,43 @@ class FakeTranscriber:
     def __init__(self) -> None:
         self.seen_boxes: list[Box] = []
 
-    def transcribe(self, box: Box) -> BoxTranscription:
+    def transcribe(self, box: Box) -> list[BoxTranscription]:
         self.seen_boxes.append(box)
         confidence = 91
-        return BoxTranscription(
+        return [
+            BoxTranscription(
+                box_id=box.box_id,
+                position=box.position,
+                label=Label(box.box_id, "0001", ("Unit 0001",)),
+                text_lines=(
+                    BoxText(1, "Unit 0001", "typed", confidence),
+                    BoxText(1, "Correspondence", "handwritten", confidence),
+                ),
+                confidence=confidence,
+            )
+        ]
+
+
+class MultiRecordTranscriber(FakeTranscriber):
+    def transcribe(self, box: Box) -> list[BoxTranscription]:
+        first = super().transcribe(box)[0]
+        second = BoxTranscription(
             box_id=box.box_id,
-            position=box.position,
-            label=Label(box.box_id, "0001", ("Unit 0001",)),
-            text_lines=(
-                BoxText(1, "Unit 0001", "typed", confidence),
-                BoxText(1, "Correspondence", "handwritten", confidence),
-            ),
-            confidence=confidence,
+            position="middle-right",
+            label=Label(box.box_id, "0002", ("Unit 0002",)),
+            text_lines=(BoxText(1, "Unit 0002", "typed", 89),),
+            confidence=89,
         )
+        return [first, second]
+
+
+class FallbackTranscriber(FakeTranscriber):
+    def transcribe(self, box: Box) -> list[BoxTranscription]:
+        self.seen_boxes.append(box)
+        raise RuntimeError("crop inference failed")
+
+    def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
+        return FakeTranscriber.transcribe(self, box)
 
 
 class BoxTranscriptionPipelineTest(unittest.TestCase):
@@ -106,6 +130,43 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         self.assertEqual(result.boxes, ())
         self.assertEqual(result.transcriptions, ())
         self.assertEqual(transcriber.seen_boxes, [])
+
+    def test_preserves_every_model_record_returned_for_one_wide_crop(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(),
+            cropper=OpenCVBoxCropper(),
+            transcriber=MultiRecordTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(len(result.boxes), 2)
+        self.assertEqual(
+            [item.label.unit_number for item in result.transcriptions],
+            ["0001", "0002"],
+        )
+        self.assertNotEqual(result.boxes[0].box_id, result.boxes[1].box_id)
+        self.assertEqual(
+            result.boxes[0].image_file_path,
+            result.boxes[1].image_file_path,
+        )
+
+    def test_retries_full_image_when_every_crop_request_fails(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(),
+            cropper=OpenCVBoxCropper(),
+            transcriber=FallbackTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(len(result.transcriptions), 1)
+        self.assertEqual(result.boxes[0].image_file_path, self.image_path)
+        self.assertTrue(
+            any("retried the original full image" in item for item in result.warnings)
+        )
 
 
 if __name__ == "__main__":

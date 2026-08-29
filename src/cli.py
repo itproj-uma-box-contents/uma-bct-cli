@@ -6,9 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
+from constants import IMAGE_EXTENSIONS
+
 from .bootstrap import DETECTORS, TRANSCRIBERS, build_pipeline
 from .export import SUPPORTED_OUTPUT_EXTENSIONS, export_catalogue
-from .constants import IMAGE_EXTENSIONS
 from .pipeline import ImageResult
 
 

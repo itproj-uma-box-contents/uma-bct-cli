@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from src.adapters.ollama_client import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_MODEL,
@@ -16,10 +18,11 @@ from src.adapters.ollama_client import (
 from src.adapters.opencv_detector import (
     DETECTION_MAX_DIMENSION,
     INTERNAL_CONFIDENCE_FLOOR,
+    detect_regions,
 )
 from src.adapters.qwen_detector import GROUNDING_QUESTION, GROUNDING_SCHEMA
 from src.adapters.qwen_transcriber import QUESTION, SCHEMA, crop_question
-from src.domain import BoundingBox, Box, InputImage
+from src.domain import BoundingBox, Box, DetectedRegion, InputImage
 from src.imaging import (
     CONTAINMENT_THRESHOLD,
     MAX_AREA_FRACTION,
@@ -93,6 +96,24 @@ class ReferenceOpenCVCompatibilityTest(unittest.TestCase):
         self.assertEqual(CONTAINMENT_THRESHOLD, 0.90)
         self.assertEqual(NMS_IOU_THRESHOLD, 0.45)
         self.assertEqual(PADDING_FRACTION, 0.05)
+
+    def test_resized_regions_use_exact_per_axis_reference_mapping(self):
+        original = np.zeros((2003, 3337, 3), dtype=np.uint8)
+        candidate = DetectedRegion(
+            BoundingBox((101, 207), (777, 799)),
+            confidence=0.9,
+        )
+
+        with patch(
+            "src.adapters.opencv_detector.extract_candidates",
+            return_value=[candidate],
+        ):
+            regions = detect_regions(original)
+
+        self.assertEqual(
+            regions[0].bounding_box,
+            BoundingBox((240, 493), (1853, 1906)),
+        )
 
 
 class ReferenceOllamaSettingsTest(unittest.TestCase):

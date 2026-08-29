@@ -8,13 +8,10 @@ from typing import Sequence
 import cv2
 import numpy as np
 
-from .domain import BoundingBox, Box, DetectedRegion, InputImage
-from .constants import (
+from constants import (
     CONTAINMENT_THRESHOLD,
     MAX_ASPECT_RATIO,
     MAX_AREA_FRACTION,
-    MAX_HEIGHT_FRACTION,
-    MAX_WIDTH_FRACTION,
     MIN_ASPECT_RATIO,
     MIN_AREA_FRACTION,
     MIN_HEIGHT_FRACTION,
@@ -22,6 +19,8 @@ from .constants import (
     NMS_IOU_THRESHOLD,
     PADDING_FRACTION,
 )
+
+from .domain import BoundingBox, Box, DetectedRegion, InputImage
 
 
 def read_image(path: Path) -> np.ndarray:

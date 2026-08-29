@@ -8,13 +8,12 @@ from typing import Iterable
 
 import pandas as pd
 
-from constants import OUTPUT_COLUMNS
+from constants import OUTPUT_COLUMNS, SUPPORTED_OUTPUT_EXTENSIONS
 
 from .catalogue import map_catalogue_record
 from .duplicates import check_duplicate_rows
 from .pipeline import ImageResult
 from .validation import check_low_confidence_rows
-from .constants import SUPPORTED_OUTPUT_EXTENSIONS
 
 
 def catalogue_dataframe(results: Iterable[ImageResult]) -> pd.DataFrame:

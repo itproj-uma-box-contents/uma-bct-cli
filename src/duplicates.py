@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from constants import DUPLICATE_FLAG
+
 from .validation import append_flag
-from .constants import DUPLICATE_FLAG
 
 
 def check_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:

@@ -107,6 +107,7 @@ class BoxTranscription:
     label: Label | None
     text_lines: tuple[BoxText, ...]
     confidence: int
+    needs_review: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 100:
@@ -127,7 +128,7 @@ class BoxTranscription:
     def to_dict(self) -> dict[str, object]:
         """Return the simple JSON shape used by the reference implementation."""
 
-        return {
+        value: dict[str, object] = {
             "box_id": self.box_id,
             "position": self.position,
             "unit": self.label.unit_number if self.label else "",
@@ -135,3 +136,6 @@ class BoxTranscription:
             "handwritten": list(self.handwritten_lines),
             "transcription_confidence": self.confidence,
         }
+        if self.needs_review:
+            value["needs_review"] = True
+        return value

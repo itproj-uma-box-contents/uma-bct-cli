@@ -73,7 +73,8 @@ class QwenTextTranscriberTest(unittest.TestCase):
             detector_confidence=0.9,
         )
 
-        transcription = QwenTextTranscriber(model).transcribe(box)
+        transcriptions = QwenTextTranscriber(model).transcribe(box)
+        transcription = transcriptions[0]
 
         self.assertEqual(transcription.box_id, box.box_id)
         self.assertEqual(transcription.label.unit_number, "0007")
@@ -83,6 +84,35 @@ class QwenTextTranscriberTest(unittest.TestCase):
         self.assertIn(
             "The crop centre is approximately top-left",
             model.calls[0][1],
+        )
+
+    def test_preserves_every_box_record_returned_for_a_crop(self):
+        records = [
+            {
+                "position": "top-left",
+                "unit": unit,
+                "typed": [f"Unit {unit}"],
+                "handwritten": [],
+                "transcription_confidence": 90,
+            }
+            for unit in ("0001", "0002")
+        ]
+        model = FakeVisionModel({"boxes": records})
+        image = InputImage(Path("shelf.jpg"), width=200, height=100)
+        box = Box(
+            "shelf:001",
+            image,
+            BoundingBox((20, 20), (100, 80)),
+            Path("box_001.png"),
+            "top-left",
+            0.9,
+        )
+
+        transcriptions = QwenTextTranscriber(model).transcribe(box)
+
+        self.assertEqual(
+            [item.label.unit_number for item in transcriptions],
+            ["0001", "0002"],
         )
 
     def test_reference_schema_accepts_multiple_box_records(self):
