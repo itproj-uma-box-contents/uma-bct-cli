@@ -14,8 +14,7 @@ from .catalogue import map_catalogue_record
 from .duplicates import check_duplicate_rows
 from .pipeline import ImageResult
 from .validation import check_low_confidence_rows
-
-SUPPORTED_OUTPUT_EXTENSIONS = {".csv", ".xlsx"}
+from .constants import SUPPORTED_OUTPUT_EXTENSIONS
 
 
 def catalogue_dataframe(results: Iterable[ImageResult]) -> pd.DataFrame:

@@ -8,9 +8,8 @@ from pathlib import Path
 
 from .bootstrap import DETECTORS, TRANSCRIBERS, build_pipeline
 from .export import SUPPORTED_OUTPUT_EXTENSIONS, export_catalogue
+from .constants import IMAGE_EXTENSIONS
 from .pipeline import ImageResult
-
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
 
 def confidence_value(value: str) -> float:

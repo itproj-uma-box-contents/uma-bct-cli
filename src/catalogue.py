@@ -6,11 +6,9 @@ import re
 from pathlib import Path
 
 from constants import OUTPUT_COLUMNS
+from .constants import MISSING_UNIT_FLAG
 
 from .domain import BoxTranscription
-
-MISSING_UNIT_FLAG = "Missing unit"
-
 
 def _non_empty_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(line.strip() for line in lines if line.strip())
