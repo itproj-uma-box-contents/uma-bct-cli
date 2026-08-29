@@ -63,24 +63,74 @@ regression tests in `tests/test_reference_compatibility.py`.
 
 ## Running
 
-Use Qwen to detect and transcribe boxes:
+The input may be one image or a flat directory of images. Choose the detector
+independently from the Qwen text transcriber.
+
+### OpenCV detection + Qwen transcription
+
+Use this route to test the local OpenCV geometry detector while retaining Qwen
+for reading labels and handwriting:
 
 ```bash
-uv run main.py -i /path/to/images -o outputs/catalogue.csv --detector qwen --transcriber qwen
+uv run main.py \
+  -i /path/to/images \
+  -o outputs/opencv-catalogue.csv \
+  --work-dir outputs/opencv-crops \
+  --detector opencv \
+  --transcriber qwen
 ```
 
-Use OpenCV for detection and Qwen only for transcription:
+### Qwen detection + Qwen transcription
+
+Use Qwen for both shelf-level box detection and crop-level transcription:
 
 ```bash
-uv run main.py -i /path/to/images -o outputs/catalogue.xlsx --detector opencv --transcriber qwen
+uv run main.py \
+  -i /path/to/images \
+  -o outputs/qwen-catalogue.xlsx \
+  --work-dir outputs/qwen-crops \
+  --detector qwen \
+  --transcriber qwen
 ```
 
-The input may be one image or a flat directory of images. Clean box crops are
-written to `outputs/crops/<source-name>/` by default. The catalogue is written
-as CSV or XLSX according to the `-o` filename, and a processing summary is
-printed as JSON. Duplicate `Title` values are flagged on every implicated row
-without deleting records. Date parsing and preprocessing are not included, so
-`Start Date` and `End Date` remain empty.
+### One image instead of a directory
+
+```bash
+uv run main.py \
+  -i /path/to/shelf-001.jpg \
+  -o outputs/shelf-001.csv \
+  --detector opencv \
+  --transcriber qwen
+```
+
+### Windows Ollama server from WSL
+
+When the CLI runs in WSL but Ollama runs locally on Windows, use the Windows
+server's local API address (after configuring WSL networking so it is reachable):
+
+```bash
+OLLAMA_HOST=http://127.0.0.1:11434 uv run main.py \
+  -i "/mnt/c/Users/username/Pictures/shelf-001.jpg" \
+  -o outputs/windows-ollama-test.csv \
+  --detector opencv \
+  --transcriber qwen
+```
+
+Clean box crops are written to the selected `--work-dir` (or
+`outputs/crops/<source-name>/` by default). The catalogue is written as CSV or
+XLSX according to the `-o` filename, and a processing summary is printed as
+JSON. Duplicate `Title` values are flagged on every implicated row without
+deleting records. Date parsing and preprocessing are not included, so `Start
+Date` and `End Date` remain empty.
+
+### OpenCV detection status
+
+The OpenCV route runs, and its current thresholds and crop geometry are checked
+against the reference implementation. Its real-world detection accuracy and
+stability across archival shelf photographs have not yet been formally
+benchmarked. Do not assume it is 100% accurate or that reference accuracy has
+been maintained: inspect the generated crops and compare both detector routes
+against manually verified images before selecting the production default.
 
 The current catalogue mapping is:
 
@@ -92,6 +142,20 @@ The current catalogue mapping is:
 - `Flags`: `Missing unit` where applicable, plus `Potential Duplicate` after
   whole-batch duplicate checking and `Low confidence` below 50
 - `Image`: path to the full-resolution box crop
+
+## Useful future improvements
+
+The following features would make the tool more practical after the current
+MVP scaffold:
+
+- **Date extraction:** populate `Start Date` and `End Date` while preserving the
+  original annotation and flagging partial or uncertain dates.
+- **Batch resilience:** retain successfully processed crops when another crop or
+  image fails, and support safely resuming an interrupted batch.
+- **Progress reporting:** show detected-box counts, the current transcription
+  number, timings, and a concise end-of-batch summary in the terminal.
+- **Image review links:** make the `Image` column easy to open from the review
+  CSV/XLSX, including when the export is opened in Windows Excel.
 
 Useful options:
 
