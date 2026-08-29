@@ -1,4 +1,5 @@
-# Schema produced by image transcription.
+"""Current catalogue transcription and export column contracts."""
+
 TRANSCRIPTION_COLUMNS = [
     "Node ID",
     "Node Type",
@@ -8,5 +9,4 @@ TRANSCRIPTION_COLUMNS = [
     "Image",
 ]
 
-# The exported CSV adds review flags to the transcription data.
 OUTPUT_COLUMNS = [*TRANSCRIPTION_COLUMNS, "Flags"]

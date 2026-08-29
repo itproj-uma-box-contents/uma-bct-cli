@@ -1,0 +1,137 @@
+"""Detector- and transcriber-independent data exchanged by the pipeline."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class BoundingBox:
+    """A rectangle in original-image pixels, expressed as corner coordinates."""
+
+    top_left: tuple[int, int]
+    bottom_right: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        x1, y1 = self.top_left
+        x2, y2 = self.bottom_right
+        if min(x1, y1) < 0:
+            raise ValueError("Bounding-box coordinates cannot be negative.")
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("Bounding-box bottom-right must follow top-left.")
+
+    @property
+    def x(self) -> int:
+        return self.top_left[0]
+
+    @property
+    def y(self) -> int:
+        return self.top_left[1]
+
+    @property
+    def width(self) -> int:
+        return self.bottom_right[0] - self.top_left[0]
+
+    @property
+    def height(self) -> int:
+        return self.bottom_right[1] - self.top_left[1]
+
+    def as_xywh(self) -> tuple[int, int, int, int]:
+        return self.x, self.y, self.width, self.height
+
+
+@dataclass(frozen=True)
+class InputImage:
+    """One shelf image supplied to the pipeline."""
+
+    file_path: Path
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError("Input-image dimensions must be positive.")
+
+
+@dataclass(frozen=True)
+class DetectedRegion:
+    """Detector-neutral location of one proposed archive box."""
+
+    bounding_box: BoundingBox
+    confidence: float
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("Detector confidence must be between 0 and 1.")
+
+
+@dataclass(frozen=True)
+class Box:
+    """A clean full-resolution box crop created from a detected region."""
+
+    box_id: str
+    source_image: InputImage
+    bounding_box: BoundingBox
+    image_file_path: Path
+    position: str
+    detector_confidence: float
+
+
+@dataclass(frozen=True)
+class Label:
+    """Printed label content identified on a box."""
+
+    box_id: str
+    unit_number: str
+    typed_lines: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BoxText:
+    """One transcribed line of printed or handwritten box text."""
+
+    position: int
+    text: str
+    text_type: Literal["typed", "handwritten"]
+    confidence: int
+
+
+@dataclass(frozen=True)
+class BoxTranscription:
+    """Validated text-model output for one generic box crop."""
+
+    box_id: str
+    position: str
+    label: Label | None
+    text_lines: tuple[BoxText, ...]
+    confidence: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 100:
+            raise ValueError("Transcription confidence must be between 0 and 100.")
+
+    @property
+    def typed_lines(self) -> tuple[str, ...]:
+        return tuple(
+            line.text for line in self.text_lines if line.text_type == "typed"
+        )
+
+    @property
+    def handwritten_lines(self) -> tuple[str, ...]:
+        return tuple(
+            line.text for line in self.text_lines if line.text_type == "handwritten"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the simple JSON shape used by the reference implementation."""
+
+        return {
+            "box_id": self.box_id,
+            "position": self.position,
+            "unit": self.label.unit_number if self.label else "",
+            "typed": list(self.typed_lines),
+            "handwritten": list(self.handwritten_lines),
+            "transcription_confidence": self.confidence,
+        }
