@@ -45,6 +45,21 @@ ollama pull qwen3-vl
 Model weights are intentionally not downloaded by this application. Once the
 model is present, normal image processing is local and offline.
 
+### Reference-model compatibility
+
+The default model request matches `~/projects/opencv-qwen-test`:
+
+- Ollama model tag: `qwen3-vl`
+- Expected reference model: Qwen3-VL 8.8B, `Q4_K_M`
+- Thinking: disabled
+- Temperature: `0`
+- Context length: `16384`
+- Response mode: streamed structured JSON
+
+The OpenCV thresholds and crop geometry, Qwen detection prompt/schema, Qwen
+transcription prompt/schema, and these request settings are protected by
+regression tests in `tests/test_reference_compatibility.py`.
+
 ## Running
 
 Use Qwen to detect and transcribe boxes:

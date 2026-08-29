@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+DEFAULT_MODEL = "qwen3-vl"
+DEFAULT_CONTEXT_LENGTH = 16384
+DEFAULT_TEMPERATURE = 0
+DEFAULT_THINK = False
+
+
+def message_text(chunk: Any, field: str) -> str:
+    """Read a streamed Ollama message field from object or dictionary responses."""
+
+    message = getattr(chunk, "message", None)
+    if isinstance(message, dict):
+        value = message.get(field, "")
+    else:
+        value = getattr(message, field, "")
+    return value if isinstance(value, str) else ""
 
 
 def json_from_text(raw: str) -> Any:
@@ -27,8 +44,8 @@ def json_from_text(raw: str) -> Any:
 class OllamaVisionModel:
     """An offline vision-model client shared by Qwen pipeline adapters."""
 
-    model: str = "qwen3-vl"
-    context_length: int = 16384
+    model: str = DEFAULT_MODEL
+    context_length: int = DEFAULT_CONTEXT_LENGTH
 
     def query(
         self,
@@ -44,7 +61,7 @@ class OllamaVisionModel:
             ) from error
 
         try:
-            response = ollama.chat(
+            stream = ollama.chat(
                 model=self.model,
                 messages=[
                     {
@@ -54,22 +71,33 @@ class OllamaVisionModel:
                     }
                 ],
                 format=schema,
-                think=False,
-                options={"temperature": 0, "num_ctx": self.context_length},
-                stream=False,
+                think=DEFAULT_THINK,
+                options={
+                    "temperature": DEFAULT_TEMPERATURE,
+                    "num_ctx": self.context_length,
+                },
+                stream=True,
             )
+
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+            for dots, chunk in enumerate(stream, start=1):
+                chunk_content = message_text(chunk, "content")
+                chunk_thinking = message_text(chunk, "thinking")
+                if chunk_content:
+                    content_parts.append(chunk_content)
+                if chunk_thinking:
+                    thinking_parts.append(chunk_thinking)
+                if dots % 20 == 0:
+                    print(".", end="")
+                    sys.stdout.flush()
         except Exception as error:  # Ollama exposes transport-specific errors.
             raise RuntimeError(
                 f"Local Ollama request failed for model '{self.model}': {error}"
             ) from error
 
-        message = getattr(response, "message", None)
-        if isinstance(message, dict):
-            content = message.get("content", "")
-            thinking = message.get("thinking", "")
-        else:
-            content = getattr(message, "content", "")
-            thinking = getattr(message, "thinking", "")
+        content = "".join(content_parts).strip()
+        thinking = "".join(thinking_parts).strip()
 
         errors: list[str] = []
         for source_name, raw in (("content", content), ("thinking", thinking)):

@@ -37,6 +37,8 @@ def range_score(
     preferred_maximum: float,
     maximum: float,
 ) -> float:
+    """Score a value with a flat preferred range and tapered outer ranges."""
+
     if value < minimum or value > maximum:
         return 0.0
     if preferred_minimum <= value <= preferred_maximum:
@@ -84,6 +86,8 @@ def line_support(
     horizontal: list[tuple[int, ...]],
     vertical: list[tuple[int, ...]],
 ) -> float:
+    """Estimate how many candidate sides have nearby straight-line support."""
+
     x, y, width, height = bbox
     horizontal_tolerance = max(5, int(height * 0.09))
     vertical_tolerance = max(5, int(width * 0.09))
@@ -131,21 +135,26 @@ def candidate_confidence(
     polygon: Any = (
         cv2.approxPolyDP(contour, 0.02 * perimeter, True) if perimeter else []
     )
+    area_score = range_score(
+        area_fraction, MIN_AREA_FRACTION, 0.05, 0.25, MAX_AREA_FRACTION
+    )
+    aspect_score = range_score(
+        aspect_ratio, MIN_ASPECT_RATIO, 0.42, 0.90, MAX_ASPECT_RATIO
+    )
+    size_score = (clamp(width_fraction / 0.16) + clamp(height_fraction / 0.36)) / 2.0
+    rectangularity_score = clamp((rectangularity - 0.18) / 0.62)
+    polygon_score = 1.0 if 4 <= len(polygon) <= 8 else 0.35
+    lines_score = line_support(bbox, horizontal_lines, vertical_lines)
+
     confidence = (
-        0.22
-        * range_score(area_fraction, MIN_AREA_FRACTION, 0.05, 0.25, MAX_AREA_FRACTION)
-        + 0.22
-        * range_score(aspect_ratio, MIN_ASPECT_RATIO, 0.42, 0.90, MAX_ASPECT_RATIO)
-        + 0.10
-        * ((clamp(width_fraction / 0.16) + clamp(height_fraction / 0.36)) / 2.0)
-        + 0.18 * clamp((rectangularity - 0.18) / 0.62)
-        + 0.13 * (1.0 if 4 <= len(polygon) <= 8 else 0.35)
-        + 0.15 * line_support(bbox, horizontal_lines, vertical_lines)
+        0.22 * area_score
+        + 0.22 * aspect_score
+        + 0.10 * size_score
+        + 0.18 * rectangularity_score
+        + 0.13 * polygon_score
+        + 0.15 * lines_score
     )
     if aspect_ratio > 0.90:
-        aspect_score = range_score(
-            aspect_ratio, MIN_ASPECT_RATIO, 0.42, 0.90, MAX_ASPECT_RATIO
-        )
         confidence *= aspect_score**2
     return round(clamp(confidence), 3)
 
@@ -156,7 +165,8 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
     height, width = detection_image.shape[:2]
     image_area = float(width * height)
     gray = cv2.cvtColor(detection_image, cv2.COLOR_BGR2GRAY)
-    normalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    normalized = clahe.apply(gray)
     blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
     median = float(np.median(blurred))
     lower = int(max(0, 0.55 * median))
@@ -175,11 +185,8 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
     closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, base_kernel, iterations=2)
     horizontal = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, horizontal_kernel)
     vertical = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, vertical_kernel)
-    joined = cv2.dilate(
-        cv2.bitwise_or(horizontal, vertical),
-        np.ones((3, 3), dtype=np.uint8),
-        iterations=1,
-    )
+    joined = cv2.bitwise_or(horizontal, vertical)
+    joined = cv2.dilate(joined, np.ones((3, 3), dtype=np.uint8), iterations=1)
 
     horizontal_lines, vertical_lines = line_segments(edges)
     contours, _ = cv2.findContours(joined, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -201,7 +208,11 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
 
         bbox = (x, y, box_width, box_height)
         confidence = candidate_confidence(
-            contour, bbox, (height, width), horizontal_lines, vertical_lines
+            contour,
+            bbox,
+            (height, width),
+            horizontal_lines,
+            vertical_lines,
         )
         if confidence >= INTERNAL_CONFIDENCE_FLOOR:
             candidates.append(

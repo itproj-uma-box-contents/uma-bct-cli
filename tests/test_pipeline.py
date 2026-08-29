@@ -81,6 +81,10 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         self.assertEqual(len(result.boxes), 1)
         self.assertEqual(len(transcriber.seen_boxes), 1)
         self.assertTrue(result.boxes[0].image_file_path.is_file())
+        self.assertEqual(
+            result.boxes[0].bounding_box,
+            BoundingBox((36, 12), (124, 188)),
+        )
         self.assertEqual(result.transcriptions[0].label.unit_number, "0001")
         self.assertEqual(
             result.to_dict()["boxes"][0]["handwritten"],

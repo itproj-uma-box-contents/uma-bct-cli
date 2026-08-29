@@ -3,7 +3,10 @@ from pathlib import Path
 from typing import Any
 
 from src.adapters.qwen_detector import QwenBoxDetector
-from src.adapters.qwen_transcriber import QwenTextTranscriber
+from src.adapters.qwen_transcriber import (
+    QwenTextTranscriber,
+    validate_transcription_result,
+)
 from src.domain import BoundingBox, Box, InputImage
 
 
@@ -36,6 +39,13 @@ class QwenBoxDetectorTest(unittest.TestCase):
             BoundingBox((20, 20), (100, 80)),
         )
         self.assertEqual(model.calls[0][0], image.file_path)
+
+    def test_rejects_an_empty_grounding_result_like_the_reference(self):
+        detector = QwenBoxDetector(FakeVisionModel({"boxes": []}))
+        image = InputImage(Path("shelf.jpg"), width=200, height=100)
+
+        with self.assertRaisesRegex(ValueError, "contained no boxes"):
+            detector.detect(image)
 
 
 class QwenTextTranscriberTest(unittest.TestCase):
@@ -70,7 +80,23 @@ class QwenTextTranscriberTest(unittest.TestCase):
         self.assertEqual(transcription.typed_lines, ("UMA-AC-123 Unit 0007",))
         self.assertEqual(transcription.handwritten_lines, ("Minutes 1968-70",))
         self.assertEqual(transcription.confidence, 88)
-        self.assertIn("Approximate position: top-left", model.calls[0][1])
+        self.assertIn(
+            "The crop centre is approximately top-left",
+            model.calls[0][1],
+        )
+
+    def test_reference_schema_accepts_multiple_box_records(self):
+        record = {
+            "position": "top-left",
+            "unit": "0007",
+            "typed": ["Unit 0007"],
+            "handwritten": [],
+            "transcription_confidence": 88,
+        }
+
+        result = validate_transcription_result({"boxes": [record, record]})
+
+        self.assertEqual(len(result), 2)
 
     def test_rejects_malformed_model_output(self):
         model = FakeVisionModel({"boxes": [{"unit": "0007"}]})
