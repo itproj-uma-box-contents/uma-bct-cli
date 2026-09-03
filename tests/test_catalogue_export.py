@@ -336,6 +336,33 @@ class CatalogueMappingTest(unittest.TestCase):
 
                 self.assertEqual(record["Node Title"], "1974.0056 Unit 0030")
 
+    def test_accepts_bare_typed_unit_immediately_after_label_identifier(self):
+        transcription = self.transcription(
+            "box-1",
+            "33",
+            ("Melbourne College Advanced Education", "1990.0001", "33"),
+            ("Photographs of students",),
+            identifiers=("1990.0001",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "1990.0001 Unit 0033")
+
+    def test_rejects_bare_typed_unit_without_label_identifier_adjacency(self):
+        transcription = self.transcription(
+            "box-1",
+            "30",
+            ("1974.0056", "Staff records", "30"),
+            (),
+            identifiers=("1974.0056",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(record["Flags"], "Invalid unit; Transcription mismatch")
+
     def test_conflicting_contextual_units_are_blank_and_review_flagged(self):
         transcription = self.transcription(
             "box-1",

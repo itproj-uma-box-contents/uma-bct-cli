@@ -116,6 +116,17 @@ def collect_unit_evidence(
             or AMBIGUOUS_UNIT_WORD.search(line)
         ):
             ambiguous = True
+    # Some historic printed labels put a bare box number on the visual line
+    # immediately after the record identifier. This adjacency is required;
+    # arbitrary standalone typed numbers remain unsafe as unit evidence.
+    for index, line in enumerate(typed):
+        bare_typed_unit = re.fullmatch(r"\s*(\d{1,4})\s*", line)
+        if (
+            bare_typed_unit is not None
+            and index > 0
+            and identifier_evidence((typed[index - 1],))
+        ):
+            candidates.add(bare_typed_unit.group(1).zfill(4))
     for line in handwritten:
         if match := HANDWRITTEN_UNIT.fullmatch(line):
             candidates.add(match.group(1).zfill(4))

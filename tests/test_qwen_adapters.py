@@ -283,6 +283,28 @@ class QwenTextTranscriberTest(unittest.TestCase):
 
         self.assertTrue(transcription.needs_review)
 
+    def test_bare_typed_unit_requires_identifier_line_adjacency(self):
+        accepted = FakeVisionModel(
+            {"boxes": [self._record(typed=["1974.0056", "30"], unit="30")]}
+        )
+        rejected = FakeVisionModel(
+            {
+                "boxes": [
+                    self._record(typed=["1974.0056", "Staff records", "30"], unit="30")
+                ]
+            }
+        )
+
+        accepted_result = QwenTextTranscriber(accepted).transcribe(
+            self._box_for_prompt()
+        )[0]
+        rejected_result = QwenTextTranscriber(rejected).transcribe(
+            self._box_for_prompt()
+        )[0]
+
+        self.assertFalse(accepted_result.needs_review)
+        self.assertTrue(rejected_result.needs_review)
+
     def test_schema_and_validator_bound_transcription_output(self):
         boxes_schema = SCHEMA["properties"]["boxes"]
         self.assertEqual(boxes_schema["maxItems"], MAX_TRANSCRIPTION_RECORDS)
