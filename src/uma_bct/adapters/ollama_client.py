@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPSConnection
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_MODEL = "qwen3-vl:8b-instruct-q4_K_M"
@@ -27,6 +27,9 @@ REMOTE_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_REMOTE_OLLAMA"
 CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_CONTAINER_OLLAMA"
 MAX_MODEL_RESPONSE_CHARACTERS = 4 * 1024 * 1024
 MAX_MODEL_STREAM_CHUNKS = 100_000
+MAX_MODEL_PULL_PROGRESS_LINES = 1_000
+MAX_MODEL_PULL_STATUS_CHARACTERS = 240
+ANSI_CONTROL_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def environment_flag(name: str) -> bool:
@@ -44,6 +47,26 @@ def message_text(chunk: Any, field: str) -> str:
     else:
         value = getattr(message, field, "")
     return value if isinstance(value, str) else ""
+
+
+def response_field(response: Any, field: str) -> Any:
+    """Read a top-level Ollama response field from objects or dictionaries."""
+
+    if isinstance(response, dict):
+        return response.get(field)
+    return getattr(response, field, None)
+
+
+def safe_progress_text(value: Any) -> str:
+    """Return bounded single-line progress text safe for a terminal."""
+
+    if not isinstance(value, str):
+        return ""
+    without_ansi = ANSI_CONTROL_SEQUENCE.sub("", value)
+    printable = "".join(
+        character if character.isprintable() else " " for character in without_ansi
+    )
+    return " ".join(printable.split())[:MAX_MODEL_PULL_STATUS_CHARACTERS]
 
 
 def json_from_text(raw: str) -> Any:
@@ -250,8 +273,8 @@ class OllamaVisionModel:
             trust_env=False,
         )
 
-    def preflight(self) -> dict[str, str]:
-        """Validate the local server and requested model before a batch starts."""
+    def _server_inventory(self) -> tuple[str, str, dict[str, str]]:
+        """Validate the endpoint and server, then return its installed models."""
 
         try:
             host = self.effective_host
@@ -276,6 +299,14 @@ class OllamaVisionModel:
             raise RuntimeError(
                 f"Ollama {minimum} or newer is required; server reported {version}."
             )
+        return host, version, available
+
+    def _model_metadata(
+        self,
+        host: str,
+        version: str,
+        available: dict[str, str],
+    ) -> dict[str, str]:
         if self.model not in available:
             raise RuntimeError(
                 f"Ollama model '{self.model}' is not installed. Run: "
@@ -287,6 +318,72 @@ class OllamaVisionModel:
             "ollama_version": version,
             "ollama_host": host,
         }
+
+    def preflight(self) -> dict[str, str]:
+        """Validate the local server and requested model before a batch starts."""
+
+        return self._model_metadata(*self._server_inventory())
+
+    def _pull_model(self, progress_stream: TextIO) -> None:
+        """Download the configured model while keeping progress off stdout."""
+
+        try:
+            with closing(self._client()) as client:
+                updates = client.pull(model=self.model, stream=True)
+                last_progress = ""
+                progress_lines = 0
+                for update in updates:
+                    status = safe_progress_text(response_field(update, "status"))
+                    completed = response_field(update, "completed")
+                    total = response_field(update, "total")
+                    detail = status
+                    if (
+                        isinstance(completed, (int, float))
+                        and not isinstance(completed, bool)
+                        and isinstance(total, (int, float))
+                        and not isinstance(total, bool)
+                        and total > 0
+                    ):
+                        percentage = max(0, min(100, int(completed * 100 / total)))
+                        detail = (
+                            f"{detail}: {percentage}%" if detail else f"{percentage}%"
+                        )
+                    if detail and detail != last_progress:
+                        if progress_lines < MAX_MODEL_PULL_PROGRESS_LINES:
+                            print(detail, file=progress_stream)
+                        elif progress_lines == MAX_MODEL_PULL_PROGRESS_LINES:
+                            print(
+                                "Further model-download progress is suppressed.",
+                                file=progress_stream,
+                            )
+                        progress_lines += 1
+                        last_progress = detail
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not download Ollama model '{self.model}': {error}. "
+                f"Try: ollama pull {self.model}"
+            ) from error
+
+    def ensure_model(self, *, progress_stream: TextIO | None = None) -> dict[str, str]:
+        """Validate Ollama and download the configured model only when absent."""
+
+        output = progress_stream if progress_stream is not None else sys.stderr
+        host, server_version, available = self._server_inventory()
+        if self.model not in available:
+            print(
+                f"Downloading Ollama model '{self.model}'. This is a large, "
+                "one-time download.",
+                file=output,
+            )
+            self._pull_model(output)
+            host, server_version, available = self._server_inventory()
+            if self.model not in available:
+                raise RuntimeError(
+                    f"Ollama model '{self.model}' is still unavailable after the "
+                    f"download. Try: ollama pull {self.model}"
+                )
+            print(f"Ollama model '{self.model}' is ready.", file=output)
+        return self._model_metadata(host, server_version, available)
 
     def query(
         self,

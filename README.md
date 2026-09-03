@@ -1,192 +1,276 @@
 # UMA Box Contents Transcription CLI
 
-This tool turns photographs of archive boxes into a catalogue that a person can
-review.
+Turn local photographs of University of Melbourne Archives boxes into a CSV
+catalogue and review crops. The tool uses Ollama on your computer; photos do not
+leave the computer in the supported default configuration.
 
-It finds boxes in each photo, saves a crop of each box, and uses a local Ollama
-model to read labels and handwriting. It then creates a CSV or Excel file.
+## Client quick start from the wheel
 
+Use these steps from an access-controlled local folder where you want to keep
+`inputs/` and `outputs/`. Do not use a folder synced by iCloud, OneDrive,
+Dropbox, another cloud service, or a network share because those services can
+upload private archive data independently of this tool.
 
-## What you need
+1. Install [Ollama](https://ollama.com/download), open it, and leave it running.
+   If you installed only the command-line service, run `ollama serve` in a
+   separate terminal.
+2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
+3. Put the supplied wheel in your working folder and install it:
 
-- Python 3.12
-- [uv](https://docs.astral.sh/uv/) for installing and running the project
-- [Ollama](https://ollama.com/download) running on the same computer
-- At least 16 GB of memory for the default model
+   ```bash
+   uv tool install --python 3.12 ./uma_bct_cli-0.1.0-py3-none-any.whl
+   ```
 
-The first setup needs an internet connection to download Python packages and the
-model. After that, normal transcription can run offline.
+4. Prepare the folders and model:
 
-Native Ollama is the recommended option, especially on a Mac where it can use
-Metal acceleration. Docker is available as a slower, CPU-first alternative.
+   ```bash
+   uma-bct setup
+   ```
 
-## Quick start
+5. Put the archive-box photos in `inputs/`, then run:
 
-Install the model once:
+   ```bash
+   uma-bct
+   ```
 
-```bash
-ollama pull qwen3-vl:8b-instruct-q4_K_M
+`uv` can [download and manage Python
+3.12](https://docs.astral.sh/uv/guides/install-python/) automatically when it is
+not already installed; see the [uv tool installation
+guide](https://docs.astral.sh/uv/guides/tools/) for tool-environment details.
+`uma-bct setup` creates missing `inputs/` and `outputs/` folders, checks the
+local Ollama version, and explicitly downloads
+`qwen3-vl:8b-instruct-q4_K_M` if it is absent. The model is large, so this first
+download can take a while and needs an internet connection. Existing folder
+contents and an already installed model are left alone.
+
+The command prints download progress and errors to stderr. It prints one JSON
+result to stdout and returns exit code `0` when setup succeeds or `2` when setup
+cannot finish.
+
+## Results and repeat runs
+
+After a successful transcription, the working folder looks like this:
+
+```text
+inputs/
+  shelf-photo.jpg
+outputs/
+  catalogue.csv
+  catalogue.run.json
+  crops/
+    run-20260903T090000Z-a1b2c3d4/
+      ...review crop images...
 ```
 
-If Ollama is not already running through its desktop app, start it in a separate
-terminal:
+Keep the catalogue, run manifest, and timestamped crop folder together. The
+manifest records settings, model details, detector fallback, warnings, failed
+images, and the crop-to-record provenance needed for review.
+
+The default run refuses to replace `outputs/catalogue.csv` or
+`outputs/catalogue.run.json`. After reviewing or copying those files, repeat the
+batch with:
 
 ```bash
-ollama serve
+uma-bct --force
 ```
 
-From a copy of this repository, install the locked dependencies and check that
-the command works:
+`--force` replaces the catalogue and normal manifest safely. It creates a new
+timestamped crop folder rather than replacing previous crops. If a forced run
+produces no usable records, the existing catalogue is preserved and a separate
+failed-run manifest is written when possible.
+
+CSV is the default. To create an Excel workbook instead, use an explicit output
+path:
 
 ```bash
-uv sync --locked --dev
-uv run uma-bct --help
+uma-bct --path-to-outputs outputs/catalogue.xlsx
 ```
 
-Put the photos you want to process in an `inputs/` folder, then run:
+## What to review
 
-```bash
-uv run uma-bct \
-  --path-to-inputs ./inputs \
-  --path-to-outputs ./outputs/catalogue.csv \
-  --path-to-box-images ./outputs/crops
-```
-
-You can use an `.xlsx` file instead of `.csv` if you want an Excel workbook.
-You can also give the tool one image file instead of a folder.
-
-If you installed the released wheel instead of working from this repository,
-install it with `uv tool install ./uma_bct_cli-*.whl`, then use `uma-bct` in
-place of `uv run uma-bct`.
-
-## What the tool creates
-
-Each run creates three things:
-
-- A CSV or Excel catalogue.
-- A folder of review crops: one image for each detected box.
-- A `.run.json` file with the settings, warnings, failures, and a full record of
-  the run.
-
-The catalogue has these columns:
+The catalogue starts with the client import columns in the required order:
 
 | Column | Meaning |
 | --- | --- |
-| `Node ID` | Left blank for now. |
+| `Node ID` | Blank in version 0.1. |
 | `Node Type` | Always `Unit`. |
-| `Node Title` | The record identifier and box number, for example `1974.0029 Unit 0319`. |
-| `Description` | Handwritten notes and other useful label text. |
-| `Date Range` | Left blank for now. |
+| `Node Title` | First record identifier plus a four-digit box number, such as `1974.0029 Unit 0319`. |
+| `Description` | Handwriting and explicit auxiliary content or condition notes, joined with semicolons. |
+| `Date Range` | Blank in version 0.1. |
 | `Confidence Score` | A guide for human review, not a guarantee. |
-| `Flags` | Things that need checking, such as unclear text or a fallback. |
-| `Image` | The saved crop for that row. |
+| `Flags` | Missing, ambiguous, low-confidence, duplicate, mismatch, or fallback conditions to check. |
+| `Image` | The saved review crop for that physical box. |
 
-The tool understands common identifier formats such as `1960.0009`, `96/9`, and
-`UMA-AC-000000330`. It pads valid box numbers to four digits. If it sees more
-than one identifier, or cannot read an identifier or box number clearly, it
-keeps the row and adds a flag for review.
+Recognised record identifiers include `1960.0009`, `96/9`,
+`UMA-AC-000000330`, and `UMA-SRE-20160038`. Separate physical boxes remain
+separate rows, including duplicate titles. If text is ambiguous, the tool leaves
+the field blank or flags the record instead of inventing a confident value.
 
-Separate physical boxes stay as separate rows, even if they have the same title.
+## Supported inputs and options
 
-## Useful options
+Supported image filename extensions are:
 
 ```text
--i, --path-to-inputs PATH          A photo or a folder of photos
--o, --path-to-outputs PATH         Where to write the CSV or XLSX file
--b, --path-to-box-images PATH      Where to save review crops
--c, --min-confidence 0..100        Flag lower-confidence transcription (default: 80)
--f, --force                        Replace an existing catalogue
+.jpg  .jpeg  .png  .tif  .tiff  .webp
+```
+
+You can give the tool one image or another input directory. Common controls are:
+
+```text
+-i, --path-to-inputs PATH          Input image or directory (default: inputs)
+-o, --path-to-outputs PATH         CSV or XLSX catalogue (default: outputs/catalogue.csv)
+-b, --path-to-box-images PATH      Review-crop root (default: outputs/crops)
+-c, --min-confidence 0..100        Transcription review threshold (default: 80)
+-f, --force                        Replace an existing catalogue and manifest
     --version                      Show the installed version
 ```
 
-Run `uma-bct --help` to see all options, including detector choice, model name,
-and request timeout.
+Run `uma-bct --help` for advanced detector, model, detector-confidence, and
+request-timeout controls. Existing aliases such as `--path-to-output` and
+`--work-dir` remain supported.
 
-The command checks the input folder, output location, Ollama connection, and
-model before it starts. It will not overwrite an existing catalogue unless you
-add `--force`.
+Progress and warnings go to stderr. Each completed command writes one JSON
+summary to stdout. A transcription exit code of `0` means every image completed,
+`1` means results were partial or failed but the run was recorded, and `2` means
+the command or Ollama preflight was invalid.
 
-During a run, progress and warnings appear in the terminal. At the end, the
-tool prints one short JSON summary. Exit code `0` means every image finished;
-`1` means some images failed or need recovery; `2` means the command or setup
-was invalid.
+## Platform notes
 
-## How it handles problems
+- **macOS (Intel or Apple silicon):** use native Ollama. It supports Apple GPU
+  acceleration through Metal. Ollama GPU acceleration is not available through
+  Docker Desktop on macOS. See [Ollama hardware
+  support](https://docs.ollama.com/gpu) and the [Ollama Docker
+  FAQ](https://docs.ollama.com/faq).
+- **Windows x86-64:** run the commands in PowerShell or Windows Terminal. Keep
+  the catalogue and its crop folder on the same drive so image links remain
+  usable. The uv installer is available from the linked installation guide.
+- **Linux x86-64 or arm64:** native Ollama is preferred. CPU inference works but
+  is slow; supported GPU acceleration depends on the installed hardware and
+  drivers. Docker is an optional alternative for container-based teams.
 
-The normal process is:
+At least 16 GB of memory is recommended for the default 8B quantized model.
 
-```text
-Find boxes with Qwen
-  -> try OpenCV if that does not work
-  -> read the whole photo if no useful crops remain
-```
+## Common setup and run failures
 
-If one box cannot be read, the rest of the batch can still be exported. A failed
-or uncertain box is recorded in the run file and marked for review. A run that
-finds no usable rows will not replace an existing catalogue.
+- **Cannot connect to the local Ollama server:** open the Ollama application or
+  run `ollama serve`, then rerun `uma-bct setup`.
+- **Ollama is too old:** update Ollama to version 0.12.7 or newer, restart it,
+  and rerun setup.
+- **Model download fails:** check the internet connection and free disk space,
+  then rerun setup. It resumes through Ollama where supported. The error also
+  shows the equivalent `ollama pull` command.
+- **No supported images found:** confirm the photos are directly inside
+  `inputs/` and use one of the supported extensions above. Symbolic-link inputs
+  are intentionally rejected.
+- **Output already exists:** review or copy the current result, then use
+  `uma-bct --force` for the next batch.
+- **A run is slow:** CPU inference is supported but the default model can take
+  several minutes per request. Native GPU acceleration is preferred where
+  available.
 
-## Privacy
+After uv has installed the wheel and `uma-bct setup` has downloaded the model,
+normal transcription can run offline. Ollama must still be running locally.
 
-Photos stay on the computer by default. The app talks only to local Ollama
-unless an organisation explicitly enables an approved remote Ollama server.
+## Privacy and remote Ollama
 
-Do not add archive photos, human-reviewed results, generated catalogues, or
-model files to Git. The repository, Docker build, packages, and GitHub Actions
-are set up to exclude them. In particular, `Archive box photos/`,
-`add_repository_photos/`, `inputs/`, and `outputs/` are ignored.
+The default endpoint policy accepts numeric loopback addresses and normalises
+`localhost` to `127.0.0.1`. Archive photos, generated catalogues, human-reviewed
+expectations, model weights, and Ollama state must never be committed, uploaded,
+put into a Docker build context, or sent to hosted CI.
 
-Keep the catalogue, its `.run.json` file, and its crop folder together while
-reviewing results. On Windows, keep the catalogue and crop folder on the same
-drive.
+An approved managed remote Ollama service is an explicit privacy exception
+because image pixels leave the device. It must use HTTPS and requires both
+settings below.
 
-## Docker
-
-Docker is optional. It is useful when the team wants the same setup on different
-computers, but native Ollama is usually faster on a Mac.
-
-To build the app image and check it starts:
+macOS or Linux:
 
 ```bash
-docker build --target production -t uma-bct-cli:local .
-docker run --rm uma-bct-cli:local --help
+export UMA_BCT_ALLOW_REMOTE_OLLAMA=1
+export OLLAMA_HOST=https://approved-model-service.example.edu:11434
+uma-bct
 ```
 
-To run the full Docker setup, put copies of the photos in `inputs/` and create
-an `outputs/` folder beside the Compose file:
+Windows PowerShell:
+
+```powershell
+$env:UMA_BCT_ALLOW_REMOTE_OLLAMA = "1"
+$env:OLLAMA_HOST = "https://approved-model-service.example.edu:11434"
+uma-bct
+```
+
+HTTP remote endpoints, embedded endpoint credentials, and unapproved hostnames
+are rejected. Do not enable this override without organisational approval.
+
+## Current architecture and recovery flow
+
+```text
+preflight local files and Ollama
+  -> Qwen box localisation
+  -> OpenCV localisation fallback when needed
+  -> create detector-neutral review crops
+  -> Qwen transcription for each crop
+  -> one full-image recovery attempt when localisation or all crops fail
+  -> consolidate overlapping observations without merging physical boxes
+  -> map and flag client catalogue rows
+  -> atomically write the catalogue and run manifest
+```
+
+Each image has its own exception boundary, so usable images can still be
+exported when another image fails. Detection and transcription attempts are
+recorded before consolidation for traceability.
+
+This flow describes the current code. The protected Confluence image and
+design-level class and system-sequence diagrams were not accessible for exact
+comparison, so no exact diagram alignment is claimed and no GitHub copy was
+substituted.
+
+## Known version 0.1 limitations
+
+- Printed and handwritten transcription requires human review; low confidence
+  and fallback flags are conservative aids, not accuracy guarantees.
+- Automatic text rotation, date extraction, sequence-gap analysis, Node ID
+  reconciliation, a GUI, catalogue APIs, and signed executables are not included.
+- Qwen detection is primary. OpenCV detection is an experimental fallback and
+  may miss unusual shelves or box geometry.
+- CPU-only inference is supported but slow.
+- The real-photo release gate must run locally against approved, human-reviewed
+  expectations. It is never run on hosted CI.
+
+## Optional Docker workflow
+
+Native Ollama is the primary client path. The bundled Compose configuration is
+for teams already using containers. It keeps inputs read-only, writes only to
+`outputs/`, stores Ollama state in a named volume, and exposes no Ollama host
+port.
+
+Create the bind-mount folders, validate the configuration, and run the app:
 
 ```bash
 mkdir -p inputs outputs
+docker compose config --quiet
 docker compose run --rm app
 ```
 
-On Linux, use this command instead so output files belong to your user:
+On Linux, set the container user so results belong to the current user:
 
 ```bash
 UMA_BCT_UID="$(id -u)" UMA_BCT_GID="$(id -g)" docker compose run --rm app
 ```
 
-Compose keeps input files read-only, writes results to `outputs/`, stores the
-model in a named Docker volume, and does not expose Ollama to the network.
+To smoke-test the model-free production image separately:
 
-## Checks and GitHub Actions
+```bash
+docker build --target production -t uma-bct-cli:local .
+docker run --rm uma-bct-cli:local --help
+docker run --rm uma-bct-cli:local --version
+```
 
-GitHub Actions runs on every pull request and every push to `main`. It checks:
+The Compose model-init service downloads the configured model into the local
+Docker volume. Docker Desktop on macOS uses CPU inference for this stack.
 
-- code style and formatting;
-- unit tests on Ubuntu, macOS, and Windows;
-- that the built package installs and starts correctly; and
-- that the Docker image starts correctly.
+## Contributor setup and release checks
 
-These checks do not upload private photos, start Ollama, or download the model.
-
-When a protected release tag is pushed, the release workflow builds the package,
-checks it again, creates checksums, and publishes the private GitHub Release and
-private multi-platform Docker image. Repository administrators should mark the
-CI jobs as required checks before merging pull requests.
-
-## For contributors
-
-Run the same basic checks as GitHub Actions before opening a pull request:
+From a source checkout:
 
 ```bash
 uv sync --locked --dev
@@ -194,8 +278,19 @@ uv run ruff check .
 uv run ruff format --check .
 uv run coverage run -m unittest discover -s tests -v
 uv run coverage report
-uv build --no-build-isolation
+uv build
 ```
 
-The automated tests use fake model responses. Real-photo testing must happen on
-approved local hardware only, followed by human review of the catalogue.
+Before release, install both the wheel and source distribution into clean
+environments outside the checkout. Smoke-test:
+
+```bash
+uma-bct --help
+uma-bct --version
+uma-bct setup --help
+python -m uma_bct --help
+```
+
+Run the release-artifact privacy inspector on both archives. Real-model testing
+stays on approved local hardware and uses human-reviewed expectations stored
+beside the ignored source photos.

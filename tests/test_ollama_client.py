@@ -16,6 +16,185 @@ from uma_bct.adapters.ollama_client import (
 
 
 class OllamaPreflightTest(unittest.TestCase):
+    def test_ensure_model_skips_download_when_model_is_installed(self):
+        client = SimpleNamespace(
+            list=Mock(
+                return_value=SimpleNamespace(
+                    models=[SimpleNamespace(model=DEFAULT_MODEL, digest="sha256:abc")]
+                )
+            ),
+            pull=Mock(),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.fetch_ollama_version",
+                return_value="0.12.8",
+            ),
+        ):
+            metadata = OllamaVisionModel().ensure_model(progress_stream=io.StringIO())
+
+        self.assertEqual(metadata["model_digest"], "sha256:abc")
+        client.pull.assert_not_called()
+
+    def test_ensure_model_downloads_only_a_missing_model_with_stderr_progress(self):
+        missing = SimpleNamespace(models=[])
+        installed = SimpleNamespace(
+            models=[SimpleNamespace(model=DEFAULT_MODEL, digest="sha256:new")]
+        )
+        initial_inventory = SimpleNamespace(
+            list=Mock(return_value=missing), close=Mock()
+        )
+        pull_client = SimpleNamespace(
+            pull=Mock(
+                return_value=iter(
+                    [
+                        {
+                            "status": "\x1b[31m\npulling manifest",
+                            "completed": None,
+                            "total": None,
+                        },
+                        {"status": "downloading", "completed": 50, "total": 100},
+                    ]
+                )
+            ),
+            close=Mock(),
+        )
+        final_inventory = SimpleNamespace(
+            list=Mock(return_value=installed),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(
+            Client=Mock(side_effect=[initial_inventory, pull_client, final_inventory])
+        )
+        progress = io.StringIO()
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.fetch_ollama_version",
+                return_value="0.12.8",
+            ),
+        ):
+            metadata = OllamaVisionModel().ensure_model(progress_stream=progress)
+
+        pull_client.pull.assert_called_once_with(model=DEFAULT_MODEL, stream=True)
+        self.assertEqual(metadata["model_digest"], "sha256:new")
+        self.assertIn("pulling manifest", progress.getvalue())
+        self.assertIn("50%", progress.getvalue())
+        self.assertNotIn("\x1b", progress.getvalue())
+        initial_inventory.close.assert_called_once_with()
+        pull_client.close.assert_called_once_with()
+        final_inventory.close.assert_called_once_with()
+
+    def test_model_download_failure_is_actionable_and_closes_clients(self):
+        def failing_updates():
+            yield {"status": "starting"}
+            raise OSError("connection lost")
+
+        inventory_client = SimpleNamespace(
+            list=Mock(return_value=SimpleNamespace(models=[])),
+            close=Mock(),
+        )
+        pull_client = SimpleNamespace(
+            pull=Mock(return_value=failing_updates()),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(
+            Client=Mock(side_effect=[inventory_client, pull_client])
+        )
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.fetch_ollama_version",
+                return_value="0.12.8",
+            ),
+            self.assertRaisesRegex(RuntimeError, f"ollama pull {DEFAULT_MODEL}"),
+        ):
+            OllamaVisionModel().ensure_model(progress_stream=io.StringIO())
+
+        inventory_client.close.assert_called_once_with()
+        pull_client.close.assert_called_once_with()
+
+    def test_model_must_be_visible_after_a_reported_download(self):
+        first_inventory = SimpleNamespace(
+            list=Mock(return_value=SimpleNamespace(models=[])),
+            close=Mock(),
+        )
+        pull_client = SimpleNamespace(
+            pull=Mock(return_value=iter([])),
+            close=Mock(),
+        )
+        final_inventory = SimpleNamespace(
+            list=Mock(return_value=SimpleNamespace(models=[])),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(
+            Client=Mock(side_effect=[first_inventory, pull_client, final_inventory])
+        )
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.fetch_ollama_version",
+                return_value="0.12.8",
+            ),
+            self.assertRaisesRegex(RuntimeError, "still unavailable"),
+        ):
+            OllamaVisionModel().ensure_model(progress_stream=io.StringIO())
+
+        first_inventory.close.assert_called_once_with()
+        pull_client.close.assert_called_once_with()
+        final_inventory.close.assert_called_once_with()
+
+    def test_model_download_bounds_terminal_output_without_aborting(self):
+        initial_inventory = SimpleNamespace(
+            list=Mock(return_value=SimpleNamespace(models=[])),
+            close=Mock(),
+        )
+        pull_client = SimpleNamespace(
+            pull=Mock(
+                return_value=iter(
+                    [
+                        SimpleNamespace(status="first"),
+                        SimpleNamespace(status="second"),
+                    ]
+                )
+            ),
+            close=Mock(),
+        )
+        final_inventory = SimpleNamespace(
+            list=Mock(
+                return_value=SimpleNamespace(
+                    models=[SimpleNamespace(model=DEFAULT_MODEL, digest="ready")]
+                )
+            ),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(
+            Client=Mock(side_effect=[initial_inventory, pull_client, final_inventory])
+        )
+        progress = io.StringIO()
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.fetch_ollama_version",
+                return_value="0.12.8",
+            ),
+            patch("uma_bct.adapters.ollama_client.MAX_MODEL_PULL_PROGRESS_LINES", 1),
+        ):
+            metadata = OllamaVisionModel().ensure_model(progress_stream=progress)
+
+        self.assertEqual(metadata["model_digest"], "ready")
+        self.assertIn("first", progress.getvalue())
+        self.assertNotIn("second", progress.getvalue())
+        self.assertIn("suppressed", progress.getvalue())
+
     def test_preflight_reports_server_model_and_digest(self):
         client = SimpleNamespace(
             list=Mock(

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import uma_bct.cli as cli_module
-from uma_bct.cli import main, output_lock_path
+from uma_bct.cli import build_argument_parser, main, output_lock_path
 from uma_bct.domain import (
     BoundingBox,
     Box,
@@ -83,6 +83,105 @@ class EmptyPipeline:
 
 
 class CliExportTest(unittest.TestCase):
+    def test_default_paths_support_the_shortest_successful_workflow(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "shelf.jpg").touch()
+            stdout = io.StringIO()
+
+            with (
+                contextlib.chdir(root),
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main([])
+
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(summary["catalogue_output"], "outputs/catalogue.csv")
+            self.assertTrue((root / "outputs" / "catalogue.csv").is_file())
+            self.assertTrue((root / "outputs" / "catalogue.run.json").is_file())
+            self.assertEqual(len(list((root / "outputs" / "crops").iterdir())), 1)
+
+    def test_default_output_still_refuses_overwrite_unless_forced(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            inputs = root / "inputs"
+            outputs = root / "outputs"
+            inputs.mkdir()
+            outputs.mkdir()
+            (inputs / "shelf.jpg").touch()
+            catalogue = outputs / "catalogue.csv"
+            catalogue.write_text("keep me", encoding="utf-8")
+
+            with contextlib.chdir(root), self.assertRaises(SystemExit) as raised:
+                main([])
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(catalogue.read_text(encoding="utf-8"), "keep me")
+
+            with (
+                contextlib.chdir(root),
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(["--force"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertNotEqual(catalogue.read_text(encoding="utf-8"), "keep me")
+
+    def test_missing_default_input_explains_the_short_workflow(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            stderr = io.StringIO()
+
+            with (
+                contextlib.chdir(temporary_directory),
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main([])
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("uma-bct setup", stderr.getvalue())
+            self.assertIn("add photos", stderr.getvalue())
+
+    def test_help_shows_setup_and_the_short_workflow_with_advanced_controls(self):
+        help_text = build_argument_parser().format_help()
+
+        self.assertIn("uma-bct setup", help_text)
+        self.assertIn("uma-bct", help_text)
+        self.assertIn("--detector", help_text)
+        self.assertIn("--model", help_text)
+        self.assertIn("--request-timeout", help_text)
+
+    def test_setup_subcommand_routes_without_processing_inputs(self):
+        with patch("uma_bct.cli.run_setup", return_value=0) as setup:
+            exit_code = main(["setup"])
+
+        self.assertEqual(exit_code, 0)
+        setup.assert_called_once_with()
+
+    def test_setup_rejects_batch_options_instead_of_ignoring_them(self):
+        for arguments in (
+            ["--force", "setup"],
+            ["--model", "another-model", "setup"],
+            ["--request-timeout", "1", "setup"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                patch("uma_bct.cli.run_setup") as setup,
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(arguments)
+
+            self.assertEqual(raised.exception.code, 2)
+            setup.assert_not_called()
+
     def test_output_argument_writes_catalogue_and_reports_record_count(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -116,6 +215,40 @@ class CliExportTest(unittest.TestCase):
             main(["-i", "unused.jpg", "-o", "catalogue.json"])
 
         self.assertEqual(raised.exception.code, 2)
+
+    def test_rejects_redirected_output_and_crop_roots(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            real_output = root / "real-output"
+            linked_output = root / "linked-output"
+            image_path.touch()
+            real_output.mkdir()
+            try:
+                linked_output.symlink_to(real_output, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+
+            cases = (
+                ["-i", str(image_path), "-o", str(linked_output / "catalogue.csv")],
+                [
+                    "-i",
+                    str(image_path),
+                    "-o",
+                    str(root / "catalogue.csv"),
+                    "-b",
+                    str(linked_output),
+                ],
+            )
+            for arguments in cases:
+                with (
+                    self.subTest(arguments=arguments),
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main(arguments)
+
+                self.assertEqual(raised.exception.code, 2)
 
     def test_refuses_to_replace_existing_output_without_force(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

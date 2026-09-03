@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 import stat
+import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -21,6 +22,11 @@ from .batch_runner import public_summary as public_summary
 from .bootstrap import DETECTORS, TRANSCRIBERS, build_pipeline
 from .constants import IMAGE_EXTENSIONS
 from .export import SUPPORTED_OUTPUT_EXTENSIONS, export_catalogue
+from .path_safety import (
+    redirected_component,
+    redirected_path_kind,
+    redirected_paths_label,
+)
 from .pipeline import ImageResult as ImageResult
 from .run_artifacts import GENERATED_STEM_MAX_BYTES as GENERATED_STEM_MAX_BYTES
 from .run_artifacts import (
@@ -35,6 +41,7 @@ from .run_artifacts import (
 )
 from .run_artifacts import bounded_generated_stem as bounded_generated_stem
 from .run_artifacts import output_lock_path as output_lock_path
+from .setup_command import run_setup
 
 
 def package_version() -> str:
@@ -78,7 +85,14 @@ def positive_float(value: str) -> float:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Detect and transcribe UMA archive boxes using local components."
+        description="Detect and transcribe UMA archive boxes using local components.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Shortest workflow:
+  1. Run: uma-bct setup
+  2. Add photos to inputs/
+  3. Run: uma-bct
+
+Progress and warnings go to stderr. The final JSON result goes to stdout.""",
     )
     parser.add_argument(
         "-i",
@@ -93,7 +107,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--path-to-output",
         dest="path_to_outputs",
         type=Path,
-        default=Path("outputs.csv"),
+        default=Path("outputs") / "catalogue.csv",
         help="catalogue path ending in .csv or .xlsx (default: %(default)s)",
     )
     parser.add_argument(
@@ -157,6 +171,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="replace an existing catalogue output",
     )
     parser.add_argument("--version", action="version", version=package_version())
+    subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
+    subcommands.add_parser(
+        "setup",
+        help="create inputs/ and outputs/, then download the pinned model",
+        description=(
+            "Prepare the current directory and download the pinned Ollama model "
+            "when it is not already installed."
+        ),
+    )
     return parser
 
 
@@ -175,15 +198,28 @@ def ensure_readable_image(path: Path) -> None:
 
 
 def discover_images(path: Path) -> list[Path]:
+    if isinstance(path, Path):
+        try:
+            redirected = redirected_component(path)
+        except OSError as error:
+            raise ValueError(f"Could not inspect input path {path}: {error}") from error
+        if redirected is not None:
+            component, kind = redirected
+            raise ValueError(
+                f"Input {redirected_paths_label(kind)} are not accepted; select "
+                f"the real image or directory path explicitly: {component}"
+            )
     try:
-        input_mode = path.lstat().st_mode
+        input_metadata = path.lstat()
+        redirected_kind = redirected_path_kind(path, input_metadata)
     except OSError as error:
         raise ValueError(f"Could not inspect input path {path}: {error}") from error
-    if stat.S_ISLNK(input_mode):
+    if redirected_kind is not None:
         raise ValueError(
-            f"Input symbolic links are not accepted; select the real image or "
-            f"directory path explicitly: {path}"
+            f"Input {redirected_paths_label(redirected_kind)} are not accepted; "
+            f"select the real image or directory path explicitly: {path}"
         )
+    input_mode = input_metadata.st_mode
     if stat.S_ISREG(input_mode):
         if path.suffix.casefold() not in IMAGE_EXTENSIONS:
             raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
@@ -203,16 +239,18 @@ def discover_images(path: Path) -> list[Path]:
         if candidate.suffix.casefold() not in IMAGE_EXTENSIONS:
             continue
         try:
-            candidate_mode = candidate.lstat().st_mode
+            candidate_metadata = candidate.lstat()
+            redirected_kind = redirected_path_kind(candidate, candidate_metadata)
         except OSError as error:
             raise ValueError(
                 f"Could not inspect input path {candidate}: {error}"
             ) from error
-        if stat.S_ISLNK(candidate_mode):
+        if redirected_kind is not None:
             raise ValueError(
-                f"Input symbolic links are not accepted; select the real image "
-                f"path explicitly: {candidate}"
+                f"Input {redirected_paths_label(redirected_kind)} are not accepted; "
+                f"select the real image path explicitly: {candidate}"
             )
+        candidate_mode = candidate_metadata.st_mode
         if stat.S_ISREG(candidate_mode):
             ensure_readable_image(candidate)
             images.append(candidate)
@@ -253,18 +291,48 @@ def _run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
-    arguments = parser.parse_args(argv)
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    arguments = parser.parse_args(raw_arguments)
+    if arguments.command == "setup":
+        if not raw_arguments or raw_arguments[0] != "setup":
+            parser.error(
+                "setup must be the first argument and does not accept batch options"
+            )
+        return run_setup()
     output_path = arguments.path_to_outputs
     run_manifest_path = manifest_path(output_path)
     if output_path.suffix.casefold() not in SUPPORTED_OUTPUT_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_OUTPUT_EXTENSIONS))
         parser.error(f"output path must end in one of: {supported}")
+    for purpose, root in (
+        ("catalogue output", output_path.parent),
+        ("review crop", arguments.path_to_box_images),
+    ):
+        try:
+            redirected = redirected_component(root)
+        except OSError as error:
+            parser.error(f"could not inspect {purpose} path {root}: {error}")
+        if redirected is not None:
+            component, kind = redirected
+            parser.error(
+                f"{purpose} paths must not use a {kind}: {component}. Select a "
+                "real local directory instead."
+            )
     try:
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
+        if arguments.path_to_inputs == Path("inputs"):
+            parser.error(
+                f"{error} Run 'uma-bct setup', add photos to inputs/, then run "
+                "'uma-bct'."
+            )
         parser.error(str(error))
     if not images:
-        parser.error(f"no supported images found in: {arguments.path_to_inputs}")
+        supported = ", ".join(sorted(IMAGE_EXTENSIONS))
+        parser.error(
+            f"no supported images found in: {arguments.path_to_inputs}. Add photos "
+            f"({supported}), then run 'uma-bct' again."
+        )
     try:
         reservation = acquire_output_lock(output_path)
     except ValueError as error:

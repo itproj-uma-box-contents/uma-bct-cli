@@ -25,6 +25,7 @@ dist/
 /Archive box photos/
 /add_repository_photos/
 /inputs/
+**/inputs/
 
 # Generated catalogues and review artefacts at the repository root.
 /*.csv
@@ -34,6 +35,7 @@ dist/
 .uma-bct-json-*.tmp
 .uma-bct-catalogue-*
 /outputs/
+**/outputs/
 
 # Local model storage and weights.
 /.ollama/

@@ -35,6 +35,8 @@ exclude = [
     "/add_repository_photos",
     "/inputs",
     "/outputs",
+    "**/inputs",
+    "**/outputs",
     "/*.csv",
     "/*.xlsx",
     "/*.run.json",
