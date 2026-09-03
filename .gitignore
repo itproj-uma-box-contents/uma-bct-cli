@@ -22,4 +22,5 @@ dist/
 .ipynb_checkpoints/
 
 .csv
-
+AGENTS.md
+outputs/
