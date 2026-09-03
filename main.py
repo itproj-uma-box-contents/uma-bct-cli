@@ -1,7 +1,7 @@
 """Compatibility entry point for `uv run main.py`."""
 
-from src.cli import main
-from src.duplicates import check_duplicate_rows
+from uma_bct.cli import main
+from uma_bct.duplicates import check_duplicate_rows
 
 __all__ = ["check_duplicate_rows", "main"]
 

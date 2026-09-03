@@ -1,0 +1,60 @@
+name: uma-bct
+
+services:
+  ollama:
+    image: ollama/ollama:0.12.7@sha256:de29cf776a66aae03ace78d7b09660eebc4b0b4d547a67a04740353a171722f0
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    # Deliberately no host port: only services on this Compose network can
+    # reach archive transcriptions or the model API.
+
+  model-init:
+    image: ollama/ollama:0.12.7@sha256:de29cf776a66aae03ace78d7b09660eebc4b0b4d547a67a04740353a171722f0
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      UMA_BCT_MODEL: ${UMA_BCT_MODEL:-qwen3-vl:8b-instruct-q4_K_M}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['ollama pull "$${UMA_BCT_MODEL}"']
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: production
+    image: ${UMA_BCT_IMAGE:-uma-bct-cli:local}
+    user: "${UMA_BCT_UID:-1000}:${UMA_BCT_GID:-1000}"
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+    environment:
+      HOME: /tmp
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ./inputs:/data/inputs:ro
+      - ./outputs:/data/outputs
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    init: true
+    command:
+      - --path-to-inputs
+      - /data/inputs
+      - --path-to-outputs
+      - /data/outputs/catalogue.csv
+      - --path-to-box-images
+      - /data/outputs/crops
+      - --model
+      - ${UMA_BCT_MODEL:-qwen3-vl:8b-instruct-q4_K_M}
+
+volumes:
+  ollama-models:

@@ -8,22 +8,23 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from src.adapters.ollama_client import (
+from uma_bct.adapters.ollama_client import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_MODEL,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_TEMPERATURE,
     DEFAULT_THINK,
     OllamaVisionModel,
 )
-from src.adapters.opencv_detector import (
+from uma_bct.adapters.opencv_detector import (
     DETECTION_MAX_DIMENSION,
     INTERNAL_CONFIDENCE_FLOOR,
     detect_regions,
 )
-from src.adapters.qwen_detector import GROUNDING_QUESTION, GROUNDING_SCHEMA
-from src.adapters.qwen_transcriber import QUESTION, SCHEMA, crop_question
-from src.domain import BoundingBox, Box, DetectedRegion, InputImage
-from src.imaging import (
+from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, GROUNDING_SCHEMA
+from uma_bct.adapters.qwen_transcriber import QUESTION, SCHEMA, crop_question
+from uma_bct.constants import (
     CONTAINMENT_THRESHOLD,
     MAX_AREA_FRACTION,
     MAX_ASPECT_RATIO,
@@ -34,6 +35,7 @@ from src.imaging import (
     NMS_IOU_THRESHOLD,
     PADDING_FRACTION,
 )
+from uma_bct.domain import BoundingBox, Box, DetectedRegion, InputImage
 
 
 def text_digest(value: str) -> str:
@@ -56,17 +58,15 @@ class ReferencePromptCompatibilityTest(unittest.TestCase):
             "ae20cc51b3684880aa51ad61fdf81f02236bfdbb03c29520c5d2f0761fd60e4f",
         )
 
-    def test_qwen_transcription_prompt_and_schema_match_reference_hashes(self):
-        self.assertEqual(
-            text_digest(QUESTION),
-            "fcd7bea4ce16bf8a08c6605b6423715aabee805b9d739e859fb7cff093a0b612",
-        )
-        self.assertEqual(
-            schema_digest(SCHEMA),
-            "33209214f8724b0ecf6294460bc7a4519a1193e88ab5eb1827bdbeb24b94da35",
-        )
+    def test_qwen_transcription_contract_extends_reference_for_catalogue_ids(self):
+        required = SCHEMA["properties"]["boxes"]["items"]["required"]
 
-    def test_generated_crop_prompt_matches_reference_hash(self):
+        self.assertIn("record_identifiers", required)
+        self.assertIn("auxiliary_annotations", required)
+        self.assertIn("1960.0009", QUESTION)
+        self.assertIn("UMA-SRE-20160038", QUESTION)
+
+    def test_generated_crop_prompt_includes_original_geometry_and_new_fields(self):
         image = InputImage(Path("shelf.jpg"), width=200, height=300)
         box = Box(
             "shelf:001",
@@ -77,10 +77,10 @@ class ReferencePromptCompatibilityTest(unittest.TestCase):
             0.9,
         )
 
-        self.assertEqual(
-            text_digest(crop_question(box)),
-            "b242623ebf57447096cbb0df54fd2b1c0d2737b71b469c61b31dffa1d9614436",
-        )
+        prompt = crop_question(box)
+        self.assertIn("x=10, y=20, width=80, height=160", prompt)
+        self.assertIn("record_identifiers", prompt)
+        self.assertIn("auxiliary_annotations", prompt)
 
 
 class ReferenceOpenCVCompatibilityTest(unittest.TestCase):
@@ -105,7 +105,7 @@ class ReferenceOpenCVCompatibilityTest(unittest.TestCase):
         )
 
         with patch(
-            "src.adapters.opencv_detector.extract_candidates",
+            "uma_bct.adapters.opencv_detector.extract_candidates",
             return_value=[candidate],
         ):
             regions = detect_regions(original)
@@ -123,9 +123,14 @@ class ReferenceOllamaSettingsTest(unittest.TestCase):
             SimpleNamespace(message={"content": " []}"}),
         ]
         chat = Mock(return_value=iter(chunks))
-        fake_ollama = SimpleNamespace(chat=chat)
+        client = SimpleNamespace(chat=chat, close=Mock())
+        client_factory = Mock(return_value=client)
+        fake_ollama = SimpleNamespace(Client=client_factory)
 
-        with patch.dict(sys.modules, {"ollama": fake_ollama}):
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch.dict("os.environ", {}, clear=True),
+        ):
             result = OllamaVisionModel().query(
                 Path("box.png"),
                 "prompt",
@@ -133,8 +138,14 @@ class ReferenceOllamaSettingsTest(unittest.TestCase):
             )
 
         self.assertEqual(result, {"boxes": []})
+        client_factory.assert_called_once_with(
+            host=DEFAULT_OLLAMA_HOST,
+            timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=False,
+        )
         chat.assert_called_once_with(
-            model="qwen3-vl",
+            model="qwen3-vl:8b-instruct-q4_K_M",
             messages=[
                 {
                     "role": "user",
@@ -147,7 +158,8 @@ class ReferenceOllamaSettingsTest(unittest.TestCase):
             options={"temperature": 0, "num_ctx": 16384},
             stream=True,
         )
-        self.assertEqual(DEFAULT_MODEL, "qwen3-vl")
+        client.close.assert_called_once_with()
+        self.assertEqual(DEFAULT_MODEL, "qwen3-vl:8b-instruct-q4_K_M")
         self.assertEqual(DEFAULT_CONTEXT_LENGTH, 16384)
         self.assertEqual(DEFAULT_TEMPERATURE, 0)
         self.assertIs(DEFAULT_THINK, False)

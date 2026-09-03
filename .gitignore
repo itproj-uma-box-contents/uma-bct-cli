@@ -19,8 +19,27 @@ build/
 dist/
 *.egg-info/
 
+AGENTS.MD
+
 .ipynb_checkpoints/
 
-.csv
-AGENTS.md
-outputs/
+# Private source photographs must remain local.
+/Archive box photos/
+/add_repository_photos/
+/inputs/
+
+# Generated catalogues and review artefacts at the repository root.
+/*.csv
+/*.xlsx
+*.run.json
+*.uma-bct.lock
+/outputs/
+
+# Local model storage and weights.
+/.ollama/
+/models/
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.safetensors

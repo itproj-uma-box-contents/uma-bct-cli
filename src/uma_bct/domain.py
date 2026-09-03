@@ -86,6 +86,7 @@ class Label:
     box_id: str
     unit_number: str
     typed_lines: tuple[str, ...]
+    record_identifiers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class BoxTranscription:
     text_lines: tuple[BoxText, ...]
     confidence: int
     needs_review: bool = False
+    auxiliary_annotations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 100:
@@ -115,9 +117,7 @@ class BoxTranscription:
 
     @property
     def typed_lines(self) -> tuple[str, ...]:
-        return tuple(
-            line.text for line in self.text_lines if line.text_type == "typed"
-        )
+        return tuple(line.text for line in self.text_lines if line.text_type == "typed")
 
     @property
     def handwritten_lines(self) -> tuple[str, ...]:
@@ -131,9 +131,13 @@ class BoxTranscription:
         value: dict[str, object] = {
             "box_id": self.box_id,
             "position": self.position,
+            "record_identifiers": (
+                list(self.label.record_identifiers) if self.label else []
+            ),
             "unit": self.label.unit_number if self.label else "",
             "typed": list(self.typed_lines),
             "handwritten": list(self.handwritten_lines),
+            "auxiliary_annotations": list(self.auxiliary_annotations),
             "transcription_confidence": self.confidence,
         }
         if self.needs_review:

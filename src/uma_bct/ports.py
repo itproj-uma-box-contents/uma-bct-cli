@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .domain import Box, BoxTranscription, DetectedRegion, InputImage
 
@@ -45,9 +46,4 @@ class FullImageTextTranscriber(Protocol):
 class VisionModelClient(Protocol):
     """Minimal structured vision-model transport used by Qwen adapters."""
 
-    def query(
-        self,
-        image_path: Path,
-        prompt: str,
-        schema: dict[str, Any],
-    ) -> Any: ...
+    def query(self, image_path: Path, prompt: str, schema: dict[str, Any]) -> Any: ...

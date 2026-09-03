@@ -1,5 +1,6 @@
 """University of Melbourne Archives box transcription pipeline."""
 
+from .catalogue import map_catalogue_record
 from .domain import (
     BoundingBox,
     Box,
@@ -10,10 +11,9 @@ from .domain import (
     Label,
 )
 from .duplicates import check_duplicate_rows
-from .catalogue import map_catalogue_record
 from .export import catalogue_dataframe, export_catalogue
-from .validation import check_low_confidence_rows
 from .pipeline import BoxTranscriptionPipeline, ImageResult
+from .validation import check_low_confidence_rows
 
 __all__ = [
     "BoundingBox",

@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
-from constants import LOW_CONFIDENCE_FLAG, LOW_CONFIDENCE_THRESHOLD
+from .constants import LOW_CONFIDENCE_FLAG, LOW_CONFIDENCE_THRESHOLD
+
+_SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
+
+
+def escape_spreadsheet_formula(value: str) -> str:
+    """Prevent spreadsheet applications from evaluating untrusted cell text."""
+
+    return f"'{value}" if _SPREADSHEET_FORMULA_PREFIX.match(value) else value
+
 
 def append_flag(current_flags: object, flag: str) -> str:
     """Append one flag once, preserving deterministic existing flag order."""
@@ -18,8 +29,7 @@ def append_flag(current_flags: object, flag: str) -> str:
 
 
 def check_low_confidence_rows(
-    dataframe: pd.DataFrame,
-    threshold: int = LOW_CONFIDENCE_THRESHOLD,
+    dataframe: pd.DataFrame, threshold: int = LOW_CONFIDENCE_THRESHOLD
 ) -> pd.DataFrame:
     """Flag records whose transcription confidence is strictly below ``threshold``."""
 

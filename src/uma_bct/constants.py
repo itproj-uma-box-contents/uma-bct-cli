@@ -1,11 +1,11 @@
 """Current catalogue transcription and export column contracts."""
 
 OUTPUT_COLUMNS = [
-    "Node",
-    "Title",
+    "Node ID",
+    "Node Type",
+    "Node Title",
     "Description",
-    "Start Date",
-    "End Date",
+    "Date Range",
     "Confidence Score",
     "Flags",
     "Image",
@@ -14,10 +14,15 @@ OUTPUT_COLUMNS = [
 DUPLICATE_FLAG = "Potential Duplicate"
 
 LOW_CONFIDENCE_FLAG = "Low confidence"
-LOW_CONFIDENCE_THRESHOLD = 50
+LOW_CONFIDENCE_THRESHOLD = 80
 
+MISSING_IDENTIFIER_FLAG = "Missing identifier"
+AMBIGUOUS_IDENTIFIER_FLAG = "Ambiguous identifier"
+MULTIPLE_IDENTIFIERS_FLAG = "Multiple identifiers"
 MISSING_UNIT_FLAG = "Missing unit"
+INVALID_UNIT_FLAG = "Invalid unit"
 TRANSCRIPTION_MISMATCH_FLAG = "Transcription mismatch"
+FALLBACK_USED_FLAG = "Fallback used"
 
 MIN_AREA_FRACTION = 0.025
 MAX_AREA_FRACTION = 0.45

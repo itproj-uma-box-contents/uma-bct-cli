@@ -35,6 +35,7 @@ def build_pipeline(
     model_name: str,
     work_directory: Path,
     minimum_detector_confidence: float,
+    request_timeout_seconds: float | None = None,
 ) -> BoxTranscriptionPipeline:
     """Resolve the requested adapters and inject them into one pipeline."""
 
@@ -47,11 +48,19 @@ def build_pipeline(
     except KeyError as error:
         raise ValueError(f"Unknown text transcriber: {transcriber_name}") from error
 
-    model_client = OllamaVisionModel(model=model_name)
+    model_client = OllamaVisionModel(
+        model=model_name,
+        timeout_seconds=request_timeout_seconds,
+    )
+    model_metadata = model_client.preflight()
+    detector = detector_factory(model_client)
+    fallback_detector = OpenCVBoxDetector() if detector_name == "qwen" else None
     return BoxTranscriptionPipeline(
-        detector=detector_factory(model_client),
+        detector=detector,
+        fallback_detector=fallback_detector,
         cropper=OpenCVBoxCropper(),
         transcriber=transcriber_factory(model_client),
         work_directory=work_directory,
         minimum_detector_confidence=minimum_detector_confidence,
+        model_metadata=model_metadata,
     )

@@ -9,14 +9,16 @@ from typing import Any
 import cv2
 import numpy as np
 
-from ..domain import BoundingBox, DetectedRegion, InputImage
-from ..imaging import (
+from ..constants import (
     MAX_AREA_FRACTION,
     MAX_ASPECT_RATIO,
     MIN_AREA_FRACTION,
     MIN_ASPECT_RATIO,
     MIN_HEIGHT_FRACTION,
     MIN_WIDTH_FRACTION,
+)
+from ..domain import BoundingBox, DetectedRegion, InputImage
+from ..imaging import (
     read_image,
     sort_in_rows,
     suppress_overlaps,
@@ -51,6 +53,19 @@ def range_score(
 def odd_size(value: float, minimum: int = 3) -> int:
     size = max(minimum, round(value))
     return size if size % 2 else size + 1
+
+
+def plausible_bbox(box: BoundingBox, image_width: int, image_height: int) -> bool:
+    """Apply conservative geometry only to OpenCV-generated proposals."""
+
+    area_fraction = (box.width * box.height) / float(image_width * image_height)
+    aspect_ratio = box.width / float(box.height)
+    return (
+        MIN_AREA_FRACTION <= area_fraction <= MAX_AREA_FRACTION
+        and box.width >= image_width * MIN_WIDTH_FRACTION
+        and box.height >= image_height * MIN_HEIGHT_FRACTION
+        and MIN_ASPECT_RATIO <= aspect_ratio <= MAX_ASPECT_RATIO
+    )
 
 
 def line_segments(
@@ -163,7 +178,6 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
     """Isolated OpenCV logic that can be replaced from the reference project."""
 
     height, width = detection_image.shape[:2]
-    image_area = float(width * height)
     gray = cv2.cvtColor(detection_image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     normalized = clahe.apply(gray)
@@ -195,15 +209,8 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
         x, y, box_width, box_height = cv2.boundingRect(contour)
         if box_width <= 0 or box_height <= 0:
             continue
-        area_fraction = (box_width * box_height) / image_area
-        aspect_ratio = box_width / float(box_height)
-        if not MIN_AREA_FRACTION <= area_fraction <= MAX_AREA_FRACTION:
-            continue
-        if box_width < width * MIN_WIDTH_FRACTION:
-            continue
-        if box_height < height * MIN_HEIGHT_FRACTION:
-            continue
-        if not MIN_ASPECT_RATIO <= aspect_ratio <= MAX_ASPECT_RATIO:
+        bounding_box = BoundingBox((x, y), (x + box_width, y + box_height))
+        if not plausible_bbox(bounding_box, width, height):
             continue
 
         bbox = (x, y, box_width, box_height)
@@ -217,7 +224,7 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
         if confidence >= INTERNAL_CONFIDENCE_FLOOR:
             candidates.append(
                 DetectedRegion(
-                    BoundingBox((x, y), (x + box_width, y + box_height)),
+                    bounding_box,
                     confidence,
                 )
             )

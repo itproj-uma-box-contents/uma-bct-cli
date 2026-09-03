@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.8.15"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python 3.12
+        run: uv python install 3.12
+      - name: Install locked development environment
+        run: uv sync --locked --dev --python 3.12
+      - name: Check lint
+        run: uv run ruff check .
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src main.py
+
+  unit:
+    name: Unit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python 3.12
+        run: uv python install 3.12
+      - name: Install locked development environment
+        run: uv sync --locked --dev --python 3.12
+      - name: Run model-free tests with coverage
+        run: uv run coverage run -m unittest discover -s tests -v
+      - name: Enforce coverage floor
+        run: uv run coverage report
+
+  package-smoke:
+    name: Package smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    needs: [lint, unit]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python 3.12
+        run: uv python install 3.12
+      - name: Install locked build environment
+        run: uv sync --locked --dev --python 3.12
+      - name: Build wheel and source distribution
+        run: uv build --no-build-isolation
+      - name: Reject private data in release artifacts
+        run: uv run --no-project python scripts/check_release_artifacts.py dist
+      - name: Install and inspect each distribution outside the checkout
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          repository_root="$PWD"
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            artifact_path="$repository_root/$artifact"
+            smoke_dir="$(mktemp -d)"
+            uv venv --python 3.12 "$smoke_dir/.venv"
+            uv pip install --python "$smoke_dir/.venv/bin/python" "$artifact_path"
+            (
+              cd "$smoke_dir"
+              "$smoke_dir/.venv/bin/python" -c "import uma_bct"
+              "$smoke_dir/.venv/bin/uma-bct" --help
+              "$smoke_dir/.venv/bin/uma-bct" --version
+              "$smoke_dir/.venv/bin/python" -m uma_bct --help
+            )
+          done
+      - name: Install and inspect each distribution outside the checkout
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $artifacts = Get-ChildItem -Path dist -File |
+            Where-Object { $_.Name -match '\.(whl|tar\.gz)$' }
+          foreach ($artifact in $artifacts) {
+            $smokeDir = Join-Path $env:RUNNER_TEMP ("uma-bct-smoke-" + [guid]::NewGuid())
+            $venvDir = Join-Path $smokeDir ".venv"
+            uv venv --python 3.12 $venvDir
+            $python = Join-Path $venvDir "Scripts/python.exe"
+            $cli = Join-Path $venvDir "Scripts/uma-bct.exe"
+            uv pip install --python $python $artifact.FullName
+            Push-Location $smokeDir
+            try {
+              & $python -c "import uma_bct"
+              & $cli --help
+              & $cli --version
+              & $python -m uma_bct --help
+            } finally {
+              Pop-Location
+            }
+          }
+
+  container-smoke:
+    name: Container smoke
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Build production image
+        run: docker build --target production -t uma-bct-cli:ci .
+      - name: Check container entry point
+        run: docker run --rm uma-bct-cli:ci --help
+      - name: Verify a host-UID output bind mount is writable
+        shell: bash
+        run: |
+          output_dir="$RUNNER_TEMP/uma-bct-container-output"
+          mkdir -p "$output_dir"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --entrypoint python \
+            --mount "type=bind,source=$output_dir,target=/data/outputs" \
+            uma-bct-cli:ci \
+            -c "from pathlib import Path; Path('/data/outputs/probe').write_text('ok', encoding='utf-8')"
+          test "$(cat "$output_dir/probe")" = "ok"
+      - name: Build model-free test image
+        run: docker build --target test -t uma-bct-cli:test .
+      - name: Run mocked-model tests in the container
+        run: docker run --rm uma-bct-cli:test
