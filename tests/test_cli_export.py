@@ -117,7 +117,11 @@ class CliExportTest(unittest.TestCase):
             catalogue = outputs / "catalogue.csv"
             catalogue.write_text("keep me", encoding="utf-8")
 
-            with contextlib.chdir(root), self.assertRaises(SystemExit) as raised:
+            with (
+                contextlib.chdir(root),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
                 main([])
 
             self.assertEqual(raised.exception.code, 2)
@@ -170,6 +174,8 @@ class CliExportTest(unittest.TestCase):
             ["--force", "setup"],
             ["--model", "another-model", "setup"],
             ["--request-timeout", "1", "setup"],
+            ["setup", "--force"],
+            ["setup", "--model", "another-model"],
         ):
             with (
                 self.subTest(arguments=arguments),
@@ -181,6 +187,23 @@ class CliExportTest(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 2)
             setup.assert_not_called()
+
+    def test_empty_default_input_lists_supported_formats(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "inputs").mkdir()
+            stderr = io.StringIO()
+
+            with (
+                contextlib.chdir(root),
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main([])
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("no supported images", stderr.getvalue())
+            self.assertIn(".jpg", stderr.getvalue())
 
     def test_output_argument_writes_catalogue_and_reports_record_count(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -211,7 +234,10 @@ class CliExportTest(unittest.TestCase):
             self.assertIn("Processing", stderr.getvalue())
 
     def test_rejects_output_without_a_supported_extension_before_processing(self):
-        with self.assertRaises(SystemExit) as raised:
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as raised,
+        ):
             main(["-i", "unused.jpg", "-o", "catalogue.json"])
 
         self.assertEqual(raised.exception.code, 2)
@@ -258,7 +284,10 @@ class CliExportTest(unittest.TestCase):
             image_path.touch()
             output_path.write_text("keep me", encoding="utf-8")
 
-            with self.assertRaises(SystemExit) as raised:
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
                 main(["-i", str(image_path), "-o", str(output_path)])
 
             self.assertEqual(raised.exception.code, 2)
@@ -273,7 +302,10 @@ class CliExportTest(unittest.TestCase):
             image_path.touch()
             manifest.write_text("keep me", encoding="utf-8")
 
-            with self.assertRaises(SystemExit) as raised:
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
                 main(["-i", str(image_path), "-o", str(output_path)])
 
             self.assertEqual(raised.exception.code, 2)
@@ -655,7 +687,10 @@ class CliExportTest(unittest.TestCase):
             lock_path = output_lock_path(output_path)
             lock_path.write_text("pid=123\n", encoding="utf-8")
 
-            with self.assertRaises(SystemExit) as raised:
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
                 main(["-i", str(image_path), "-o", str(output_path), "--force"])
 
             self.assertEqual(raised.exception.code, 2)
@@ -675,6 +710,7 @@ class CliExportTest(unittest.TestCase):
 
             with (
                 patch("uma_bct.cli.os.open", side_effect=PermissionError("denied")),
+                contextlib.redirect_stderr(io.StringIO()),
                 self.assertRaises(SystemExit) as raised,
             ):
                 main(["-i", str(image_path), "-o", str(root / "catalogue.csv")])

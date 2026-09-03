@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 from typing import Any
@@ -341,7 +342,7 @@ class QwenTextTranscriberTest(unittest.TestCase):
         for value, error_type, message in cases:
             with (
                 self.subTest(message=message),
-                self.assertRaisesRegex(error_type, message),
+                self.assertRaisesRegex(error_type, re.escape(message)),
             ):
                 validate_transcription_result(value)
 

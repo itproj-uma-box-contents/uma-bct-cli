@@ -16,6 +16,15 @@ from uma_bct.cli import (
 
 
 class RunArtifactTest(unittest.TestCase):
+    def test_release_removes_the_owned_output_lock(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "catalogue.csv"
+            reservation = acquire_output_lock(output_path)
+
+            release_output_lock(*reservation)
+
+            self.assertFalse(output_lock_path(output_path).exists())
+
     def test_generated_output_siblings_are_bounded_and_collision_safe(self):
         first = Path(f"{'a' * 240}x.csv")
         second = Path(f"{'a' * 240}y.csv")

@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,6 +35,12 @@ class SetupCommandTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertTrue((root / "inputs").is_dir())
             self.assertTrue((root / "outputs").is_dir())
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE((root / "inputs").stat().st_mode), 0o700)
+                self.assertEqual(
+                    stat.S_IMODE((root / "outputs").stat().st_mode),
+                    0o700,
+                )
             self.assertEqual(
                 result,
                 {
@@ -138,6 +145,9 @@ class SetupCommandTest(unittest.TestCase):
                     {"OLLAMA_HOST": "http://models.example.test:11434"},
                     clear=True,
                 ),
+                patch(
+                    "uma_bct.adapters.ollama_client.OllamaVisionModel._client"
+                ) as client,
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -146,6 +156,30 @@ class SetupCommandTest(unittest.TestCase):
             result = json.loads(stdout.getvalue())
             self.assertEqual(exit_code, 2)
             self.assertIn("sends archive image data off-device", result["error"])
+            client.assert_not_called()
+
+    def test_sanitizes_and_bounds_errors_in_json_and_stderr(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            model = Mock()
+            model.ensure_model.side_effect = RuntimeError(
+                "\x1b[31mfirst line\nsecond line " + "x" * 2200
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with (
+                patch("uma_bct.setup_command.OllamaVisionModel", return_value=model),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = run_setup(root=Path(temporary_directory))
+
+            error = json.loads(stdout.getvalue())["error"]
+            self.assertEqual(exit_code, 2)
+            self.assertLessEqual(len(error), 2000)
+            self.assertNotIn("\x1b", error)
+            self.assertNotIn("\n", error)
+            self.assertNotIn("\x1b", stderr.getvalue())
 
     def test_progress_stays_on_stderr(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -187,6 +221,31 @@ class SetupCommandTest(unittest.TestCase):
             self.assertEqual(exit_code, 2)
             self.assertEqual(input_path.read_text(encoding="utf-8"), "keep me")
             self.assertIn("not a directory", json.loads(stdout.getvalue())["error"])
+
+    def test_rejects_an_existing_symbolic_link_without_touching_its_target(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "real-inputs"
+            target.mkdir()
+            marker = target / "keep.txt"
+            marker.write_text("keep me", encoding="utf-8")
+            try:
+                (root / "inputs").symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+            stdout = io.StringIO()
+
+            with (
+                patch("uma_bct.setup_command.OllamaVisionModel") as model,
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exit_code = run_setup(root=root)
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertIn("symbolic link", json.loads(stdout.getvalue())["error"])
+            model.assert_not_called()
 
     def test_rejects_a_directory_junction_before_model_access(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

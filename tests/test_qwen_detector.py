@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,19 @@ class FakeVisionModel:
 
 
 class QwenBoxDetectorTest(unittest.TestCase):
+    def test_validator_reports_specific_malformed_coordinates(self):
+        cases = (
+            ([0, 0, True, 1], "finite numbers"),
+            ([-1, 0, 1, 1], "coordinates from 0 to 1000"),
+            ([1, 0, 0, 1], "invalid corners"),
+        )
+        for coordinates, message in cases:
+            with (
+                self.subTest(coordinates=coordinates),
+                self.assertRaisesRegex(ValueError, re.escape(message)),
+            ):
+                validate_grounding_proposals({"boxes": [{"bbox_2d": coordinates}]})
+
     def test_schema_and_validator_bound_detector_proposals(self):
         self.assertEqual(
             GROUNDING_SCHEMA["properties"]["boxes"]["maxItems"],

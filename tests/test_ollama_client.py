@@ -486,6 +486,21 @@ class OllamaSettingsTest(unittest.TestCase):
 
         self.assertNotIn("secret-pass", str(raised.exception))
 
+    def test_ollama_host_rejects_unsupported_url_shapes(self):
+        cases = (
+            ("ftp://127.0.0.1:11434", r"HTTP\(S\) URL"),
+            ("http://127.0.0.1:11434/api", "must not contain a path"),
+            ("http://127.0.0.1:11434?model=qwen", "must not contain a path"),
+            ("http://127.0.0.1:11434#fragment", "must not contain a path"),
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            for value, message in cases:
+                with (
+                    self.subTest(value=value),
+                    self.assertRaisesRegex(ValueError, message),
+                ):
+                    normalize_ollama_host(value)
+
     def test_version_parser_accepts_prefixed_versions(self):
         self.assertEqual(version_tuple("ollama version 0.12.7"), (0, 12, 7))
 

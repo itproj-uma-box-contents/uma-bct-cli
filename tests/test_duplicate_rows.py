@@ -7,6 +7,10 @@ from uma_bct.duplicates import check_duplicate_rows
 
 
 class CheckDuplicateRowsTest(unittest.TestCase):
+    def test_requires_title_and_flag_columns(self):
+        with self.assertRaisesRegex(ValueError, "Node Title"):
+            check_duplicate_rows(pd.DataFrame({"Flags": []}))
+
     def test_flags_every_row_with_a_duplicate_canonical_title(self):
         records = pd.DataFrame(
             [

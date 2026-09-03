@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import tarfile
 import tempfile
@@ -11,6 +12,23 @@ from scripts.check_release_artifacts import inspect_artifact, main
 
 
 class ReleaseArtifactPrivacyTests(unittest.TestCase):
+    def test_archive_traversal_and_links_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            wheel = root / "unsafe.whl"
+            with zipfile.ZipFile(wheel, mode="w") as archive:
+                archive.writestr("../outside.txt", b"unsafe")
+
+            sdist = root / "unsafe.tar.gz"
+            with tarfile.open(sdist, mode="w:gz") as archive:
+                link = tarfile.TarInfo("package/link")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "target"
+                archive.addfile(link)
+
+            self.assertIn("unsafe archive path", inspect_artifact(wheel)[0])
+            self.assertIn("archive link", inspect_artifact(sdist)[0])
+
     def test_safe_wheel_and_sdist_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -26,7 +44,8 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
 
             self.assertEqual([], inspect_artifact(wheel))
             self.assertEqual([], inspect_artifact(sdist))
-            self.assertEqual(0, main([str(root)]))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, main([str(root)]))
 
     def test_private_directories_and_files_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -94,7 +113,8 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
             unsupported.write_bytes(b"not an artifact")
 
             self.assertNotEqual([], inspect_artifact(unsupported))
-            self.assertEqual(1, main([str(root)]))
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, main([str(root)]))
 
 
 if __name__ == "__main__":

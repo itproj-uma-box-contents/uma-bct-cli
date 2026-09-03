@@ -16,7 +16,7 @@ from uma_bct.domain import (
     Label,
 )
 from uma_bct.imaging import OpenCVBoxCropper
-from uma_bct.pipeline import BoxTranscriptionPipeline
+from uma_bct.pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 
 
 class FakeDetector:
@@ -134,6 +134,34 @@ class PartiallyFailingTranscriber(FakeTranscriber):
         if box.box_id.endswith(":001"):
             raise RuntimeError("first crop failed")
         return FakeTranscriber.transcribe(self, box)
+
+
+class CropOnlyFailingTranscriber(FakeTranscriber):
+    def transcribe(self, box: Box) -> list[BoxTranscription]:
+        self.seen_boxes.append(box)
+        raise RuntimeError("crop inference failed")
+
+
+class PipelineValueTest(unittest.TestCase):
+    def test_warning_text_is_single_line_and_bounded(self):
+        warning = warning_text(RuntimeError("first line\nsecond line " + "x" * 300))
+
+        self.assertEqual(len(warning), 240)
+        self.assertNotIn("\n", warning)
+        self.assertTrue(warning.endswith("..."))
+
+    def test_image_result_rejects_an_unknown_status(self):
+        image = InputImage(Path("shelf.jpg"), width=200, height=200)
+
+        with self.assertRaisesRegex(ValueError, "Unknown image processing status"):
+            ImageResult(
+                input_image=image,
+                detector="qwen",
+                transcriber="qwen",
+                boxes=(),
+                transcriptions=(),
+                status="unknown",  # type: ignore[arg-type]
+            )
 
 
 class BoxTranscriptionPipelineTest(unittest.TestCase):
@@ -452,6 +480,24 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
                 "does not support full-image recovery" in item
                 for item in result.warnings
             )
+        )
+
+    def test_failed_crop_records_unavailable_full_image_recovery(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(),
+            cropper=OpenCVBoxCropper(),
+            transcriber=CropOnlyFailingTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("fake-detector", "full-image"))
+        self.assertEqual(
+            [attempt["status"] for attempt in result.attempts],
+            ["complete", "failed", "unavailable"],
         )
 
     def test_full_image_copy_failure_preserves_the_recovery_route(self):

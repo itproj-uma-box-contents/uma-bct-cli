@@ -3,6 +3,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -24,6 +25,17 @@ class OpenCVBoxCropperTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         image = np.full((200, 200, 3), 220, dtype=np.uint8)
         self.assertTrue(cv2.imwrite(str(path), image))
+
+    def test_rejects_an_unreadable_image(self):
+        image_path = self.root / "unreadable.jpg"
+
+        with (
+            patch("uma_bct.imaging.cv2.imread", return_value=None) as imread,
+            self.assertRaisesRegex(ValueError, "Could not read image"),
+        ):
+            load_input_image(image_path)
+
+        imread.assert_called_once_with(str(image_path), cv2.IMREAD_COLOR)
 
     def test_accepts_horizontal_and_square_qwen_regions(self):
         image_path = self.root / "shelf.jpg"
@@ -74,7 +86,7 @@ class OpenCVBoxCropperTest(unittest.TestCase):
 
         self.assertEqual(first, second)
 
-    def test_image_key_distinguishes_case_sensitive_linux_filenames(self):
+    def test_image_key_distinguishes_case_variant_filenames(self):
         lower = image_key(Path("photo.jpg"))
         upper = image_key(Path("photo.JPG"))
 

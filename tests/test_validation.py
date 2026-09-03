@@ -10,6 +10,10 @@ from uma_bct.validation import (
 
 
 class CheckLowConfidenceRowsTest(unittest.TestCase):
+    def test_requires_confidence_and_flag_columns(self):
+        with self.assertRaisesRegex(ValueError, "Confidence Score"):
+            check_low_confidence_rows(pd.DataFrame({"Flags": []}))
+
     def test_flags_only_scores_strictly_below_eighty_by_default(self):
         dataframe = pd.DataFrame(
             [
