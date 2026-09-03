@@ -86,16 +86,13 @@ class EmptyPipeline:
 class CliExportTest(unittest.TestCase):
     def test_discovers_case_variant_filenames_in_deterministic_order(self):
         directory = Mock()
-        directory.is_file.return_value = False
-        directory.is_dir.return_value = True
+        directory.lstat.return_value.st_mode = stat.S_IFDIR
         lower = Mock(name="lower")
-        lower.is_file.return_value = True
-        lower.stat.return_value.st_mode = stat.S_IFREG
+        lower.lstat.return_value.st_mode = stat.S_IFREG
         lower.suffix = ".jpg"
         lower.name = "photo.jpg"
         upper = Mock(name="upper")
-        upper.is_file.return_value = True
-        upper.stat.return_value.st_mode = stat.S_IFREG
+        upper.lstat.return_value.st_mode = stat.S_IFREG
         upper.suffix = ".JPG"
         upper.name = "Photo.JPG"
         directory.iterdir.return_value = iter((lower, upper))
@@ -110,8 +107,7 @@ class CliExportTest(unittest.TestCase):
 
     def test_directory_enumeration_failure_is_a_configuration_error(self):
         directory = Mock()
-        directory.is_file.return_value = False
-        directory.is_dir.return_value = True
+        directory.lstat.return_value.st_mode = stat.S_IFDIR
         directory.iterdir.side_effect = PermissionError("denied")
 
         with (
@@ -137,11 +133,10 @@ class CliExportTest(unittest.TestCase):
 
     def test_disappearing_directory_entry_is_a_configuration_error(self):
         directory = Mock()
-        directory.is_file.return_value = False
-        directory.is_dir.return_value = True
+        directory.lstat.return_value.st_mode = stat.S_IFDIR
         candidate = Mock()
         candidate.suffix = ".jpg"
-        candidate.stat.side_effect = FileNotFoundError("disappeared")
+        candidate.lstat.side_effect = FileNotFoundError("disappeared")
         directory.iterdir.return_value = iter((candidate,))
 
         with (
@@ -149,6 +144,22 @@ class CliExportTest(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "Could not inspect input path"),
         ):
             discover_images(directory)
+
+    def test_rejects_symbolic_link_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            real_image = root / "real.jpg"
+            linked_image = root / "linked.jpg"
+            real_image.touch()
+            try:
+                linked_image.symlink_to(real_image)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+
+            with self.assertRaisesRegex(ValueError, "symbolic links are not accepted"):
+                discover_images(linked_image)
+            with self.assertRaisesRegex(ValueError, "symbolic links are not accepted"):
+                discover_images(root)
 
     def test_generated_output_siblings_are_bounded_and_collision_safe(self):
         first = Path(f"{'a' * 240}x.csv")
@@ -160,6 +171,18 @@ class CliExportTest(unittest.TestCase):
         self.assertLessEqual(len(first_manifest.name.encode("utf-8")), 255)
         self.assertLessEqual(len(output_lock_path(first).name.encode("utf-8")), 255)
         self.assertNotEqual(first_manifest, second_manifest)
+
+    def test_normalized_output_stems_do_not_share_manifests_or_locks(self):
+        ordinary = Path("foo.csv")
+        trailing_space = Path("foo .csv")
+        trailing_dot = Path("foo..csv")
+
+        self.assertNotEqual(manifest_path(ordinary), manifest_path(trailing_space))
+        self.assertNotEqual(
+            output_lock_path(ordinary), output_lock_path(trailing_space)
+        )
+        self.assertNotEqual(manifest_path(ordinary), manifest_path(trailing_dot))
+        self.assertNotEqual(output_lock_path(ordinary), output_lock_path(trailing_dot))
 
     def test_output_argument_writes_catalogue_and_reports_record_count(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -444,6 +467,77 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(
                 normal_manifest.read_text(encoding="utf-8"), "existing manifest\n"
             )
+
+    def test_rollback_and_recovery_failure_expose_retained_private_backup(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+            output_path.write_text("existing catalogue\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with (
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                patch(
+                    "uma_bct.cli.write_json_atomic",
+                    side_effect=OSError("manifest disk full"),
+                ),
+                patch(
+                    "uma_bct.cli.restore_catalogue",
+                    side_effect=OSError("rollback denied"),
+                ),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(
+                    ["-i", str(image_path), "-o", str(output_path), "--force"]
+                )
+
+            summary = json.loads(stdout.getvalue())
+            retained_backup = Path(summary["catalogue_backup"])
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(summary["status"], "partial")
+            self.assertIsNone(summary["run_manifest"])
+            self.assertTrue(retained_backup.is_file())
+            self.assertIn(str(retained_backup), stderr.getvalue())
+
+    def test_backup_cleanup_failure_is_partial_and_recorded_for_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+            output_path.write_text("existing catalogue\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            real_unlink = Path.unlink
+
+            def fail_backup_unlink(path, *args, **kwargs):
+                if path.name.startswith(".uma-bct-catalogue-backup-"):
+                    raise PermissionError("cleanup denied")
+                return real_unlink(path, *args, **kwargs)
+
+            with (
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                patch("pathlib.Path.unlink", new=fail_backup_unlink),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(
+                    ["-i", str(image_path), "-o", str(output_path), "--force"]
+                )
+
+            summary = json.loads(stdout.getvalue())
+            retained_backup = Path(summary["catalogue_backup"])
+            recovery_manifest = Path(summary["run_manifest"])
+            manifest = json.loads(recovery_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(summary["status"], "partial")
+            self.assertTrue(retained_backup.is_file())
+            self.assertEqual(manifest["catalogue_backup"], str(retained_backup))
+            self.assertIn(str(retained_backup), stderr.getvalue())
 
     def test_refuses_an_output_reserved_by_another_run(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

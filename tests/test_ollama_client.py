@@ -150,28 +150,89 @@ class OllamaSettingsTest(unittest.TestCase):
                 "https://models.example.test:11434",
             )
 
-    def test_compose_and_loopback_hosts_are_allowed(self):
+    def test_only_numeric_loopback_and_normalized_localhost_are_allowed_by_default(
+        self,
+    ):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(
-                normalize_ollama_host("http://ollama:11434"),
-                "http://ollama:11434",
-            )
             self.assertEqual(
                 normalize_ollama_host("127.0.0.1:11434"),
                 "http://127.0.0.1:11434",
             )
             self.assertEqual(
                 normalize_ollama_host("localhost"),
-                "http://localhost:11434",
+                "http://127.0.0.1:11434",
             )
             self.assertEqual(
                 normalize_ollama_host("http://[::1]"),
                 "http://[::1]:11434",
             )
+            for unsafe_hostname in ("ollama", "host.docker.internal", "x.localhost"):
+                with (
+                    self.subTest(hostname=unsafe_hostname),
+                    self.assertRaises(ValueError),
+                ):
+                    normalize_ollama_host(unsafe_hostname)
+
+    def test_compose_opt_in_permits_only_the_internal_ollama_hostname(self):
+        with patch.dict(
+            "os.environ",
+            {"UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1"},
+            clear=True,
+        ):
             self.assertEqual(
-                normalize_ollama_host("localhost"),
-                "http://localhost:11434",
+                normalize_ollama_host("http://ollama:11434"),
+                "http://ollama:11434",
             )
+            with self.assertRaises(ValueError):
+                normalize_ollama_host("http://host.docker.internal:11434")
+
+    def test_remote_privacy_opt_in_still_requires_https(self):
+        with (
+            patch.dict(
+                "os.environ",
+                {"UMA_BCT_ALLOW_REMOTE_OLLAMA": "1"},
+                clear=True,
+            ),
+            self.assertRaisesRegex(ValueError, "must use HTTPS"),
+        ):
+            normalize_ollama_host("http://models.example.test:11434")
+
+    def test_model_stream_has_character_and_chunk_safety_limits(self):
+        client = SimpleNamespace(
+            chat=Mock(
+                return_value=iter(
+                    [
+                        SimpleNamespace(message={"content": "1234"}),
+                        SimpleNamespace(message={"content": "5678"}),
+                    ]
+                )
+            ),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch(
+                "uma_bct.adapters.ollama_client.MAX_MODEL_RESPONSE_CHARACTERS",
+                5,
+            ),
+            self.assertRaisesRegex(RuntimeError, "4 MiB safety limit"),
+        ):
+            OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
+
+        client.chat.return_value = iter(
+            [
+                SimpleNamespace(message={"content": ""}),
+                SimpleNamespace(message={"content": "{}"}),
+            ]
+        )
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            patch("uma_bct.adapters.ollama_client.MAX_MODEL_STREAM_CHUNKS", 1),
+            self.assertRaisesRegex(RuntimeError, "stream-chunk limit"),
+        ):
+            OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
 
     def test_ollama_host_rejects_credentials_without_echoing_them(self):
         with self.assertRaisesRegex(

@@ -64,6 +64,29 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
             self.assertTrue(any(".webp" in item for item in findings))
             self.assertTrue(any("run manifest" in item for item in findings))
 
+    def test_private_runtime_temporary_files_are_rejected_regardless_of_suffix(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            wheel = Path(temporary_directory) / "unsafe.whl"
+            with zipfile.ZipFile(wheel, mode="w") as archive:
+                archive.writestr("package/.uma-bct-json-secret.tmp", b"{}")
+                archive.writestr(
+                    "package/nested/.uma-bct-catalogue-backup-secret.tmp",
+                    b"private catalogue",
+                )
+                archive.writestr(
+                    "package/.uma-bct-catalogue-export-secret.data",
+                    b"private catalogue",
+                )
+
+            findings = inspect_artifact(wheel)
+
+            self.assertEqual(3, len(findings))
+            self.assertTrue(
+                all("generated private runtime file" in item for item in findings)
+            )
+
     def test_missing_or_unsupported_artifact_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

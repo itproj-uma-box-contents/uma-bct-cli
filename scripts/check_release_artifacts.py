@@ -44,6 +44,10 @@ PRIVATE_FILE_SUFFIXES = {
     ".xls",
     ".xlsx",
 }
+PRIVATE_RUNTIME_PREFIXES = (
+    ".uma-bct-json-",
+    ".uma-bct-catalogue-",
+)
 
 
 def artifact_paths(arguments: Iterable[str]) -> list[Path]:
@@ -90,6 +94,8 @@ def unsafe_reason(member_name: str) -> str | None:
 
     if path.name.casefold().endswith(".run.json"):
         return "generated run manifest"
+    if path.name.casefold().startswith(PRIVATE_RUNTIME_PREFIXES):
+        return "generated private runtime file"
 
     suffix = Path(path.name).suffix.casefold()
     if suffix in PRIVATE_FILE_SUFFIXES:

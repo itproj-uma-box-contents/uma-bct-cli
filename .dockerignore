@@ -30,6 +30,8 @@ outputs
 **/*.xlsx
 **/*.run.json
 *.uma-bct.lock
+**/.uma-bct-json-*.tmp
+**/.uma-bct-catalogue-*
 **/*.avif
 **/*.bmp
 **/*.gif

@@ -123,19 +123,23 @@ Exit codes are stable:
   but an existing catalogue is never replaced by a zero-row run.
 - `2`: command usage or preflight configuration is invalid.
 
-Set `OLLAMA_HOST` when Ollama is not at its default local address. For example,
-when networking from WSL to an Ollama service on Windows has been configured:
+Numeric loopback Ollama addresses are accepted by default, and `localhost` is
+normalized to `127.0.0.1` so local name resolution cannot redirect archive
+pixels. Other hostnames are rejected. If an organisation has explicitly
+approved a managed remote Ollama server, it must use HTTPS and requires an
+explicit privacy opt-in:
 
 ```bash
-OLLAMA_HOST=http://host.docker.internal:11434 uma-bct -i /mnt/c/Archive/Photos
+UMA_BCT_ALLOW_REMOTE_OLLAMA=1 \
+  OLLAMA_HOST=https://managed-ollama.example.org \
+  uma-bct -i /managed/archive/photos
 ```
 
-The CLI permits loopback and known local-container hostnames by default and
-rejects other Ollama endpoints. If an organisation has explicitly approved a
-managed remote Ollama server, opt in with `UMA_BCT_ALLOW_REMOTE_OLLAMA=1`. This
-sends the archive image pixels off-device even though the CLI first rewrites
+This sends archive image pixels off-device even though the CLI first rewrites
 inputs as metadata-free PNGs; review the organisation's privacy controls before
-using it. Ollama HTTP requests do not inherit proxy settings or follow redirects.
+using it. The separate container-host opt-in is set only by the bundled Compose
+service and permits exactly its internal `ollama` hostname. Ollama HTTP requests
+do not inherit proxy settings or follow redirects.
 
 ## Catalogue and review artefacts
 

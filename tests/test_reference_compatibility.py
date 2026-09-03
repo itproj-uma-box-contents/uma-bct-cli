@@ -55,7 +55,7 @@ class ReferencePromptCompatibilityTest(unittest.TestCase):
         )
         self.assertEqual(
             schema_digest(GROUNDING_SCHEMA),
-            "ae20cc51b3684880aa51ad61fdf81f02236bfdbb03c29520c5d2f0761fd60e4f",
+            "442cb89bb94d83b0d796170eb1d5f7b6ce8a8891454f3f7a5d9560666dff8b75",
         )
 
     def test_qwen_transcription_contract_extends_reference_for_catalogue_ids(self):

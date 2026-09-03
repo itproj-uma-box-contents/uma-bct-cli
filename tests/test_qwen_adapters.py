@@ -6,9 +6,18 @@ from typing import Any
 import cv2
 import numpy as np
 
-from uma_bct.adapters.qwen_detector import QwenBoxDetector
+from uma_bct.adapters.qwen_detector import (
+    GROUNDING_SCHEMA,
+    MAX_DETECTOR_PROPOSALS,
+    QwenBoxDetector,
+    validate_grounding_proposals,
+)
 from uma_bct.adapters.qwen_transcriber import (
+    MAX_TEXT_CHARACTERS,
+    MAX_TEXT_LINES_PER_FIELD,
+    MAX_TRANSCRIPTION_RECORDS,
     QUESTION,
+    SCHEMA,
     QwenTextTranscriber,
     crop_question,
     validate_transcription_result,
@@ -32,6 +41,19 @@ class FakeVisionModel:
 
 
 class QwenBoxDetectorTest(unittest.TestCase):
+    def test_schema_and_validator_bound_detector_proposals(self):
+        self.assertEqual(
+            GROUNDING_SCHEMA["properties"]["boxes"]["maxItems"],
+            MAX_DETECTOR_PROPOSALS,
+        )
+        oversized = {
+            "boxes": [
+                {"bbox_2d": [0, 0, 1, 1]} for _ in range(MAX_DETECTOR_PROPOSALS + 1)
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "at most 100"):
+            validate_grounding_proposals(oversized)
+
     def test_converts_normalized_qwen_coordinates_to_shared_pixel_regions(self):
         model = FakeVisionModel({"boxes": [{"bbox_2d": [100, 200, 500, 800]}]})
         detector = QwenBoxDetector(model)
@@ -94,6 +116,20 @@ class QwenBoxDetectorTest(unittest.TestCase):
 
 
 class QwenTextTranscriberTest(unittest.TestCase):
+    @staticmethod
+    def _record(**updates: Any) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "position": "top-left",
+            "record_identifiers": ["1974.0056"],
+            "unit": "7",
+            "typed": ["1974.0056", "Unit 7"],
+            "handwritten": [],
+            "auxiliary_annotations": [],
+            "transcription_confidence": 95,
+        }
+        record.update(updates)
+        return record
+
     def test_maps_qwen_output_to_detector_independent_domain_values(self):
         model = FakeVisionModel(
             {
@@ -200,7 +236,19 @@ class QwenTextTranscriberTest(unittest.TestCase):
         self.assertIn("neighbouring boxes", model.calls[0][1])
 
     def test_flags_explicit_uncertainty_and_model_meta_comments(self):
-        markers = ("", "?", "[illegible]", "(handwritten annotation)", "(手写签名)")
+        markers = (
+            "",
+            "?",
+            "[illegible]",
+            "(handwritten annotation)",
+            "(手写签名)",
+            "possibly Jones",
+            "John ? Smith",
+            "[illegible: surname]",
+            "signature: Smith",
+            "??? maybe",
+            "Staff 1970e",
+        )
         for marker in markers:
             with self.subTest(marker=marker):
                 record = {
@@ -219,6 +267,50 @@ class QwenTextTranscriberTest(unittest.TestCase):
                 )[0]
 
                 self.assertTrue(transcription.needs_review)
+
+    def test_arbitrary_prose_does_not_corroborate_a_structured_unit(self):
+        model = FakeVisionModel(
+            {
+                "boxes": [
+                    self._record(
+                        typed=["1974.0056"], handwritten=["Staff 30 years"], unit="30"
+                    )
+                ]
+            }
+        )
+
+        transcription = QwenTextTranscriber(model).transcribe(self._box_for_prompt())[0]
+
+        self.assertTrue(transcription.needs_review)
+
+    def test_schema_and_validator_bound_transcription_output(self):
+        boxes_schema = SCHEMA["properties"]["boxes"]
+        self.assertEqual(boxes_schema["maxItems"], MAX_TRANSCRIPTION_RECORDS)
+        self.assertEqual(
+            boxes_schema["items"]["properties"]["typed"]["maxItems"],
+            MAX_TEXT_LINES_PER_FIELD,
+        )
+
+        with self.assertRaisesRegex(ValueError, "at most 100 boxes"):
+            validate_transcription_result(
+                {
+                    "boxes": [
+                        self._record() for _ in range(MAX_TRANSCRIPTION_RECORDS + 1)
+                    ]
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "at most 100 lines"):
+            validate_transcription_result(
+                {
+                    "boxes": [
+                        self._record(typed=["line"] * (MAX_TEXT_LINES_PER_FIELD + 1))
+                    ]
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "at most 4096 characters"):
+            validate_transcription_result(
+                {"boxes": [self._record(position="x" * (MAX_TEXT_CHARACTERS + 1))]}
+            )
 
     def test_reference_schema_accepts_multiple_box_records(self):
         record = {

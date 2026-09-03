@@ -144,6 +144,54 @@ class CatalogueMappingTest(unittest.TestCase):
         self.assertEqual(record["Description"], "Meeting 12/5")
         self.assertEqual(record["Flags"], "")
 
+    def test_unreported_standalone_legacy_identifier_is_not_silently_discarded(self):
+        transcription = self.transcription(
+            "box-1",
+            "8",
+            ("1974.0029", "96/9", "Unit 8"),
+            (),
+            identifiers=("1974.0029",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(
+            record["Flags"],
+            "Ambiguous identifier; Transcription mismatch",
+        )
+
+    def test_contextual_legacy_identifier_claim_is_not_corroborated(self):
+        transcription = self.transcription(
+            "box-1",
+            "8",
+            ("Unit 8",),
+            ("Meeting 96/9",),
+            identifiers=("96/9",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(
+            record["Flags"],
+            "Ambiguous identifier; Transcription mismatch",
+        )
+
+    def test_long_slash_date_is_not_prefix_matched_as_an_identifier(self):
+        transcription = self.transcription(
+            "box-1",
+            "8",
+            ("1974.0029", "Unit 8"),
+            ("Meeting 12/5/2020",),
+            identifiers=("1974.0029",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
+        self.assertEqual(record["Flags"], "")
+
     def test_never_infers_identifier_from_date_like_raw_text(self):
         transcription = self.transcription(
             "box-1",
@@ -302,6 +350,44 @@ class CatalogueMappingTest(unittest.TestCase):
         self.assertEqual(record["Node Title"], "")
         self.assertEqual(record["Flags"], "Invalid unit; Transcription mismatch")
 
+    def test_rejects_units_seen_only_in_arbitrary_prose(self):
+        transcription = self.transcription(
+            "box-1",
+            "30",
+            ("1974.0056",),
+            ("Staff 30 years",),
+            identifiers=("1974.0056",),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(record["Flags"], "Invalid unit; Transcription mismatch")
+
+    def test_ambiguous_contextual_unit_expressions_are_blank_and_flagged(self):
+        for raw_line in (
+            "Unit 7 or 8",
+            "Unit 7 / 8",
+            "Unit 7-8",
+            "Unit 7?",
+            "Unit 7 crossed out",
+        ):
+            with self.subTest(raw_line=raw_line):
+                transcription = self.transcription(
+                    "box-1",
+                    "7",
+                    ("1974.0056", raw_line),
+                    (),
+                    identifiers=("1974.0056",),
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], "")
+                self.assertEqual(
+                    record["Flags"], "Invalid unit; Transcription mismatch"
+                )
+
     def test_excludes_identity_only_handwriting_from_description(self):
         transcription = self.transcription(
             "box-1",
@@ -316,6 +402,21 @@ class CatalogueMappingTest(unittest.TestCase):
 
         self.assertEqual(record["Node Title"], "1974.0056 Unit 0030")
         self.assertEqual(record["Description"], "30 C1; Fragile")
+
+    def test_excludes_identity_only_text_even_when_canonical_identity_fails(self):
+        transcription = self.transcription(
+            "box-1",
+            "7",
+            ("Unit 7",),
+            ("1974.0029; Box 7", "30 C1"),
+            identifiers=("1974.0030",),
+            auxiliary=("Unit 7", "1974.0029", "Water damaged"),
+        )
+
+        record = map_catalogue_record(transcription, "box.png")
+
+        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(record["Description"], "30 C1; Water damaged")
 
     def test_existing_model_review_state_reaches_the_controlled_export_flag(self):
         transcription = self.transcription(

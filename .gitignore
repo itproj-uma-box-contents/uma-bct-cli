@@ -19,8 +19,6 @@ build/
 dist/
 *.egg-info/
 
-AGENTS.MD
-
 .ipynb_checkpoints/
 
 # Private source photographs must remain local.
@@ -33,6 +31,8 @@ AGENTS.MD
 /*.xlsx
 *.run.json
 *.uma-bct.lock
+.uma-bct-json-*.tmp
+.uma-bct-catalogue-*
 /outputs/
 
 # Local model storage and weights.

@@ -47,7 +47,10 @@ def record_identifiers(
         # YY/N identifiers are deliberately supported, but the same shape is also
         # common in dates such as "Meeting 12/5".  Never promote arbitrary raw
         # text into identity when the model did not classify it as an identifier.
-        return (), False, False
+        unexpected_evidence = identifier_evidence(
+            (*transcription.typed_lines, *transcription.handwritten_lines)
+        )
+        return (), bool(unexpected_evidence), bool(unexpected_evidence)
 
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()

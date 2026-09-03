@@ -15,6 +15,8 @@ from ..domain import BoundingBox, DetectedRegion, InputImage
 from ..imaging import read_image
 from ..ports import VisionModelClient
 
+MAX_DETECTOR_PROPOSALS = 100
+
 GROUNDING_QUESTION = """Locate every cardboard archive box whose front face is fully or
 substantially visible. Return one tight bounding box per physical box as bbox_2d
 [x1, y1, x2, y2], using coordinates normalized from 0 to 1000. Exclude thin box
@@ -26,6 +28,7 @@ GROUNDING_SCHEMA = {
     "properties": {
         "boxes": {
             "type": "array",
+            "maxItems": MAX_DETECTOR_PROPOSALS,
             "items": {
                 "type": "object",
                 "properties": {
@@ -51,6 +54,11 @@ def validate_grounding_proposals(
 
     if not isinstance(value, dict) or not isinstance(value.get("boxes"), list):
         raise TypeError("the response must be an object containing a boxes array")
+    if len(value["boxes"]) > MAX_DETECTOR_PROPOSALS:
+        raise ValueError(
+            f"the grounding response must contain at most "
+            f"{MAX_DETECTOR_PROPOSALS} boxes"
+        )
 
     boxes: list[tuple[float, float, float, float]] = []
     dropped: list[str] = []

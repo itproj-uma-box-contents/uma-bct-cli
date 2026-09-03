@@ -169,12 +169,21 @@ def ensure_readable_image(path: Path) -> None:
 
 
 def discover_images(path: Path) -> list[Path]:
-    if path.is_file():
+    try:
+        input_mode = path.lstat().st_mode
+    except OSError as error:
+        raise ValueError(f"Could not inspect input path {path}: {error}") from error
+    if stat.S_ISLNK(input_mode):
+        raise ValueError(
+            f"Input symbolic links are not accepted; select the real image or "
+            f"directory path explicitly: {path}"
+        )
+    if stat.S_ISREG(input_mode):
         if path.suffix.casefold() not in IMAGE_EXTENSIONS:
             raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
         ensure_readable_image(path)
         return [path]
-    if not path.is_dir():
+    if not stat.S_ISDIR(input_mode):
         raise ValueError(f"Input path does not exist: {path}")
     if not os.access(path, os.R_OK):
         raise ValueError(f"Input directory is not readable: {path}")
@@ -188,12 +197,17 @@ def discover_images(path: Path) -> list[Path]:
         if candidate.suffix.casefold() not in IMAGE_EXTENSIONS:
             continue
         try:
-            is_supported_file = stat.S_ISREG(candidate.stat().st_mode)
+            candidate_mode = candidate.lstat().st_mode
         except OSError as error:
             raise ValueError(
                 f"Could not inspect input path {candidate}: {error}"
             ) from error
-        if is_supported_file:
+        if stat.S_ISLNK(candidate_mode):
+            raise ValueError(
+                f"Input symbolic links are not accepted; select the real image "
+                f"path explicitly: {candidate}"
+            )
+        if stat.S_ISREG(candidate_mode):
             ensure_readable_image(candidate)
             images.append(candidate)
     return sorted(
@@ -204,11 +218,12 @@ def discover_images(path: Path) -> list[Path]:
 def bounded_generated_stem(value: str) -> str:
     """Bound generated sibling names while keeping long stems collision-safe."""
 
-    value = value.rstrip(" .") or "output"
-    encoded = value.encode("utf-8")
-    if len(encoded) <= GENERATED_STEM_MAX_BYTES:
-        return value
-    digest = hashlib.sha256(encoded).hexdigest()[:10]
+    original = value
+    normalized = original.rstrip(" .") or "output"
+    encoded = normalized.encode("utf-8")
+    if normalized == original and len(encoded) <= GENERATED_STEM_MAX_BYTES:
+        return normalized
+    digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:10]
     prefix_budget = GENERATED_STEM_MAX_BYTES - len(digest) - 1
     prefix = encoded[:prefix_budget].decode("utf-8", errors="ignore").rstrip(" .")
     return f"{prefix or 'output'}-{digest}"
@@ -387,6 +402,7 @@ def public_summary(
         "failure_count": len(detailed_summary["failures"]),
         "model": model_name,
         "run_manifest": detailed_summary["run_manifest"],
+        "catalogue_backup": detailed_summary.get("catalogue_backup"),
     }
 
 
@@ -462,16 +478,6 @@ def _run_batch(
         except Exception as error:
             failures.append({"stage": "export", "error": str(error)})
             print(f"Export failed: {error}", file=sys.stderr)
-            if catalogue_backup is not None:
-                try:
-                    catalogue_backup.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    print(
-                        f"Warning: could not remove catalogue backup "
-                        f"{catalogue_backup}: {cleanup_error}",
-                        file=sys.stderr,
-                    )
-                catalogue_backup = None
     elif pipeline is not None:
         failures.append(
             {
@@ -505,7 +511,9 @@ def _run_batch(
         "catalogue_output": catalogue_output,
         "catalogue_records": record_count,
         "run_manifest": str(actual_manifest_path),
+        "catalogue_backup": None,
     }
+    retained_backup: Path | None = None
     try:
         write_json_atomic(actual_manifest_path, summary)
     except Exception as error:
@@ -524,7 +532,21 @@ def _run_batch(
                         "backup": str(catalogue_backup) if catalogue_backup else "",
                     }
                 )
+                retained_backup = (
+                    catalogue_backup
+                    if catalogue_backup is not None and catalogue_backup.exists()
+                    else None
+                )
+                summary["catalogue_backup"] = (
+                    str(retained_backup) if retained_backup else None
+                )
                 print(f"Catalogue rollback failed: {rollback_error}", file=sys.stderr)
+                if retained_backup is not None:
+                    print(
+                        f"Private catalogue backup retained for recovery: "
+                        f"{retained_backup}",
+                        file=sys.stderr,
+                    )
                 # Preserve the private backup for manual recovery instead of
                 # deleting the user's previous catalogue after a failed rollback.
                 catalogue_backup = None
@@ -537,6 +559,25 @@ def _run_batch(
                 summary["catalogue_records"] = 0
         else:
             summary["status"] = "failed"
+            if catalogue_backup is not None:
+                try:
+                    catalogue_backup.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    retained_backup = catalogue_backup
+                    summary["catalogue_backup"] = str(retained_backup)
+                    summary["failures"].append(
+                        {
+                            "stage": "catalogue backup cleanup",
+                            "error": str(cleanup_error),
+                            "backup": str(retained_backup),
+                        }
+                    )
+                    print(
+                        f"Warning: could not remove catalogue backup "
+                        f"{retained_backup}: {cleanup_error}",
+                        file=sys.stderr,
+                    )
+                catalogue_backup = None
 
         recovery_manifest_path = failed_manifest_path(output_path)
         summary["run_manifest"] = str(recovery_manifest_path)
@@ -556,22 +597,41 @@ def _run_batch(
             try:
                 catalogue_backup.unlink(missing_ok=True)
             except OSError as error:
+                retained_backup = catalogue_backup
+                catalogue_backup = None
+                summary["catalogue_backup"] = str(retained_backup)
+                summary["failures"].append(
+                    {
+                        "stage": "catalogue backup cleanup",
+                        "error": str(error),
+                        "backup": str(retained_backup),
+                    }
+                )
+                if summary["status"] == "complete":
+                    summary["status"] = "partial"
                 print(
                     f"Warning: could not remove catalogue backup "
-                    f"{catalogue_backup}: {error}",
+                    f"{retained_backup}: {error}",
                     file=sys.stderr,
                 )
-            catalogue_backup = None
-    finally:
-        if catalogue_backup is not None:
-            try:
-                catalogue_backup.unlink(missing_ok=True)
-            except OSError as error:
-                print(
-                    f"Warning: could not remove catalogue backup "
-                    f"{catalogue_backup}: {error}",
-                    file=sys.stderr,
-                )
+                recovery_manifest_path = failed_manifest_path(output_path)
+                summary["run_manifest"] = str(recovery_manifest_path)
+                try:
+                    write_json_atomic(recovery_manifest_path, summary)
+                except Exception as recovery_error:
+                    summary["failures"].append(
+                        {
+                            "stage": "recovery manifest",
+                            "error": str(recovery_error),
+                        }
+                    )
+                    summary["run_manifest"] = None
+                    print(
+                        f"Recovery manifest write failed: {recovery_error}",
+                        file=sys.stderr,
+                    )
+            else:
+                catalogue_backup = None
 
     print(
         json.dumps(

@@ -39,6 +39,8 @@ exclude = [
     "/*.xlsx",
     "/*.run.json",
     "**/*.run.json",
+    "**/.uma-bct-json-*.tmp",
+    "**/.uma-bct-catalogue-*",
     "/.ollama",
     "/models",
     "*.gguf",

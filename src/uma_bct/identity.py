@@ -6,9 +6,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-STRONG_RECORD_IDENTIFIER_PATTERN = (
-    r"(?:UMA-(?:AC|SR)E?-\d{8,9}|\d{4}\.\d{4})"
-)
+STRONG_RECORD_IDENTIFIER_PATTERN = r"(?:UMA-(?:AC|SR)E?-\d{8,9}|\d{4}\.\d{4})"
 LEGACY_RECORD_IDENTIFIER_PATTERN = r"\d{2}/\d+"
 RECORD_IDENTIFIER = re.compile(
     rf"(?<![A-Z0-9/])(?:{STRONG_RECORD_IDENTIFIER_PATTERN}|"
@@ -25,7 +23,7 @@ CONTEXTUAL_UNIT = re.compile(
     re.IGNORECASE,
 )
 IDENTIFIER_LABEL_PREFIX = re.compile(
-    r"^\s*(?:(?:record(?:\s+set)?|accession)"
+    r"^\s*(?:(?:records?(?:\s+set)?|accession)"
     r"(?:\s+(?:identifier|id|number|no\.?))?|identifier|id)"
     r"\s*[:#-]?\s*",
     re.IGNORECASE,
@@ -33,13 +31,13 @@ IDENTIFIER_LABEL_PREFIX = re.compile(
 HANDWRITTEN_UNIT = re.compile(r"^\s*(\d{1,4})(?:\s+[A-Z]\d{1,2})?\s*$", re.I)
 AMBIGUOUS_UNIT_CONNECTOR = re.compile(
     rf"\b{UNIT_PREFIX}\s*[:#-]?\s*\d{{1,4}}\s*"
-    rf"(?:\?|(?:and\s*/\s*)?or\b|&|/|,|\bto\b|[-–—])\s*"
+    rf"(?:\?|(?:and\s*/\s*)?or\b|\bwas\b|&|/|,|\bto\b|[-–—])\s*"
     rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?\d{{1,4}}\b",
     re.IGNORECASE,
 )
 AMBIGUOUS_UNIT_WORD = re.compile(
-    r"\b(?:maybe|possibly|unclear|unknown|ambiguous|overwritten|"
-    r"crossed\s*out|struck\s*out)\b",
+    r"\b(?:or|was|maybe|possibly|unclear|unknown|ambiguous|overwritten|"
+    r"crossed\s*out|struck\s*out)\b|\band\s*/\s*or\b",
     re.IGNORECASE,
 )
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:/|&+()\[\]{}\-–—]*$")
@@ -155,17 +153,22 @@ def identity_only_line(
         if RECORD_IDENTIFIER.fullmatch(identifier.strip())
     }
 
+    removed_identifier = False
+
     def remove_identifier(match: re.Match[str]) -> str:
+        nonlocal removed_identifier
         identifier = normalise_identifier(match.group(0))
         if "/" not in identifier or identifier.casefold() in structured_keys:
+            removed_identifier = True
             return " "
         return match.group(0)
 
     body = RECORD_IDENTIFIER.sub(remove_identifier, body)
-    body = IDENTIFIER_LABEL_PREFIX.sub("", body, count=1)
+    if removed_identifier:
+        body = IDENTIFIER_LABEL_PREFIX.sub("", body, count=1)
     body = re.sub(r"\band\b", " ", body, flags=re.IGNORECASE)
     body = body.strip(" \t,;:/|&+()[]{}-–—")
-    if not body:
+    if not body and removed_identifier:
         return True
 
     if match := re.match(rf"^\s*{UNIT_PREFIX}\s*[:#-]?\s*", body, re.I):

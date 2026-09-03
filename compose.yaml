@@ -39,10 +39,15 @@ services:
     environment:
       HOME: /tmp
       OLLAMA_HOST: http://ollama:11434
+      UMA_BCT_ALLOW_CONTAINER_OLLAMA: "1"
     volumes:
       - ./inputs:/data/inputs:ro
       - ./outputs:/data/outputs
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
       - /tmp:size=256m
     init: true

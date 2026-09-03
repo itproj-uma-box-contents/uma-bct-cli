@@ -106,9 +106,8 @@ def normalize_ollama_host(value: str) -> str:
         except ValueError:
             is_loopback = False
 
-    container_allowed = (
-        hostname == "ollama"
-        and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
+    container_allowed = hostname == "ollama" and environment_flag(
+        CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE
     )
     remote_allowed = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
     if not is_loopback and not container_allowed and not remote_allowed:
