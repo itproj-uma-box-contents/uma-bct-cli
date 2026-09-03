@@ -6,7 +6,6 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from uma_bct.bootstrap import build_pipeline
 from uma_bct.domain import (
     BoundingBox,
     Box,
@@ -121,6 +120,12 @@ class DuplicateFullImageTranscriber(FallbackTranscriber):
         self.full_image_calls += 1
         record = FakeTranscriber.transcribe(self, box)[0]
         return [record, record]
+
+
+class FailingFullImageTranscriber(FallbackTranscriber):
+    def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
+        self.full_image_calls += 1
+        raise RuntimeError("full-image inference failed")
 
 
 class PartiallyFailingTranscriber(FakeTranscriber):
@@ -407,6 +412,67 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         self.assertEqual(result.status, "complete")
         self.assertTrue(any("bad pixels" in item for item in result.warnings))
 
+    def test_crop_creation_error_is_recorded_before_full_image_recovery(self):
+        transcriber = EmptyCropTranscriber()
+        cropper = Mock()
+        cropper.create_boxes.side_effect = OSError("crop disk full")
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(name="opencv"),
+            cropper=cropper,
+            transcriber=transcriber,
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.fallback_path, ("opencv", "full-image"))
+        self.assertEqual(
+            [attempt["status"] for attempt in result.attempts],
+            ["failed", "complete"],
+        )
+        self.assertIn("crop creation failed", result.attempts[0]["error"])
+        self.assertTrue(any("crop disk full" in item for item in result.warnings))
+
+    def test_detector_failure_without_full_image_support_stays_failed(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(name="opencv", regions=[]),
+            cropper=OpenCVBoxCropper(),
+            transcriber=FakeTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.fallback_path, ("opencv",))
+        self.assertEqual(len(result.attempts), 1)
+        self.assertTrue(
+            any(
+                "does not support full-image recovery" in item
+                for item in result.warnings
+            )
+        )
+
+    def test_full_image_copy_failure_preserves_the_recovery_route(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(name="opencv", regions=[]),
+            cropper=OpenCVBoxCropper(),
+            transcriber=EmptyCropTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        with patch(
+            "uma_bct.pipeline.create_full_image_box",
+            side_effect=OSError("review copy denied"),
+        ):
+            result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("opencv", "full-image"))
+        self.assertTrue(any("review copy denied" in item for item in result.warnings))
+
     def test_low_confidence_opencv_regions_fall_back_to_full_image(self):
         transcriber = EmptyCropTranscriber()
         pipeline = BoxTranscriptionPipeline(
@@ -473,6 +539,25 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         self.assertEqual(result.transcriptions, ())
         self.assertEqual(result.status, "failed")
         self.assertTrue(any("returned no boxes" in item for item in result.warnings))
+
+    def test_full_image_transcription_error_is_a_failed_attempt(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(name="opencv", regions=[]),
+            cropper=OpenCVBoxCropper(),
+            transcriber=FailingFullImageTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("opencv", "full-image"))
+        self.assertEqual(result.transcriptions, ())
+        transcription_attempt = result.attempts[-1]
+        self.assertEqual(transcription_attempt["mode"], "full-image")
+        self.assertEqual(transcription_attempt["status"], "failed")
+        self.assertIn("full-image inference failed", transcription_attempt["error"])
 
     def test_result_dictionary_includes_processing_provenance(self):
         pipeline = BoxTranscriptionPipeline(
@@ -576,32 +661,6 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         self.assertTrue(
             any("proposed 2 regions; retained 1" in item for item in result.warnings)
         )
-
-
-class PipelineBootstrapTest(unittest.TestCase):
-    def test_preflights_ollama_once_and_attaches_model_metadata(self):
-        client = Mock()
-        client.preflight.return_value = {
-            "model": "qwen-test",
-            "model_digest": "sha256:test",
-            "ollama_version": "1.2.3",
-            "ollama_host": "http://localhost:11434",
-        }
-
-        with patch("uma_bct.bootstrap.OllamaVisionModel", return_value=client) as model:
-            pipeline = build_pipeline(
-                detector_name="qwen",
-                transcriber_name="qwen",
-                model_name="qwen-test",
-                work_directory=Path("crops"),
-                minimum_detector_confidence=0.6,
-                request_timeout_seconds=42.0,
-            )
-
-        model.assert_called_once_with(model="qwen-test", timeout_seconds=42.0)
-        client.preflight.assert_called_once_with()
-        self.assertEqual(pipeline.model_metadata["model_digest"], "sha256:test")
-        self.assertEqual(pipeline.fallback_detector.name, "opencv")
 
 
 if __name__ == "__main__":

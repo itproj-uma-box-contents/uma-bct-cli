@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+import uma_bct
+from uma_bct import pipeline as pipeline_module
 from uma_bct.adapters.ollama_client import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_MODEL,
@@ -22,8 +24,18 @@ from uma_bct.adapters.opencv_detector import (
     INTERNAL_CONFIDENCE_FLOOR,
     detect_regions,
 )
-from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, GROUNDING_SCHEMA
-from uma_bct.adapters.qwen_transcriber import QUESTION, SCHEMA, crop_question
+from uma_bct.adapters.qwen_detector import (
+    GROUNDING_QUESTION,
+    GROUNDING_SCHEMA,
+    validate_grounding_result,
+)
+from uma_bct.adapters.qwen_transcriber import (
+    QUESTION,
+    SCHEMA,
+    TRANSCRIPTION_SCHEMA,
+    crop_question,
+)
+from uma_bct.cli import parse_args
 from uma_bct.constants import (
     CONTAINMENT_THRESHOLD,
     MAX_AREA_FRACTION,
@@ -48,6 +60,29 @@ def schema_digest(value: dict[str, object]) -> str:
 
 
 class ReferencePromptCompatibilityTest(unittest.TestCase):
+    def test_legacy_public_symbols_remain_compatible(self):
+        arguments = parse_args(
+            [
+                "--path-to-output",
+                "legacy.csv",
+                "--work-dir",
+                "legacy-crops",
+            ]
+        )
+
+        self.assertEqual(arguments.path_to_outputs, Path("legacy.csv"))
+        self.assertEqual(arguments.path_to_box_images, Path("legacy-crops"))
+        self.assertEqual(
+            validate_grounding_result({"boxes": [{"bbox_2d": [1, 2, 3, 4]}]}),
+            [(1.0, 2.0, 3.0, 4.0)],
+        )
+        self.assertIs(TRANSCRIPTION_SCHEMA, SCHEMA)
+        self.assertIs(
+            uma_bct.BoxTranscriptionPipeline,
+            pipeline_module.BoxTranscriptionPipeline,
+        )
+        self.assertIs(uma_bct.ImageResult, pipeline_module.ImageResult)
+
     def test_qwen_detection_prompt_and_schema_match_reference_hashes(self):
         self.assertEqual(
             text_digest(GROUNDING_QUESTION),

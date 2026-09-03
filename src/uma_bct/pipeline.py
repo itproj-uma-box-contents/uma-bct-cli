@@ -377,16 +377,93 @@ class BoxTranscriptionPipeline:
             return []
         return observations_from_response(box, returned, 0)
 
-    def process(self, image_path: str | Path) -> ImageResult:
-        image = load_input_image(image_path)
-        warnings: list[str] = []
-        attempts: list[dict[str, object]] = []
-        localization = self.localize(image, warnings, attempts)
-        route = list(localization.fallback_path)
-        actual_detector = localization.actual_detector
+    def transcribe_crops(
+        self,
+        localization: Localization,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+    ) -> tuple[list[ObservedBox], int]:
+        """Transcribe localized crops and count requests that remain unresolved."""
+
         observations: list[ObservedBox] = []
         unresolved_crops = 0
+        if localization.full_image:
+            return observations, unresolved_crops
 
+        for crop_index, box in enumerate(localization.boxes, start=1):
+            print(
+                f"Crop {crop_index}/{len(localization.boxes)}: "
+                f"bbox={box.bounding_box.as_xywh()}, hint={box.position}",
+                file=sys.stderr,
+            )
+            try:
+                started_at = perf_counter()
+                returned = self.transcriber.transcribe(box)
+            except Exception as error:  # Continue after one failed crop request.
+                message = warning_text(error)
+                attempts.append(
+                    {
+                        "stage": "transcription",
+                        "mode": "crop",
+                        "box_id": box.box_id,
+                        "bbox": list(box.bounding_box.as_xywh()),
+                        "status": "failed",
+                        "error": message,
+                        "duration_seconds": round(
+                            perf_counter() - started_at,
+                            6,
+                        ),
+                    }
+                )
+                warnings.append(
+                    f"Crop {crop_index} {box.bounding_box.as_xywh()} failed: {message}"
+                )
+                unresolved_crops += 1
+                print(f"Crop {crop_index} failed; continuing.", file=sys.stderr)
+                continue
+            attempts.append(
+                {
+                    "stage": "transcription",
+                    "mode": "crop",
+                    "box_id": box.box_id,
+                    "bbox": list(box.bounding_box.as_xywh()),
+                    "status": "complete" if returned else "empty",
+                    "record_count": len(returned),
+                    "records": [item.to_dict() for item in returned],
+                    "duration_seconds": round(
+                        perf_counter() - started_at,
+                        6,
+                    ),
+                }
+            )
+            if not returned:
+                warnings.append(
+                    f"Crop {crop_index} {box.bounding_box.as_xywh()} returned no boxes."
+                )
+                unresolved_crops += 1
+                print(f"Crop {crop_index} returned no boxes.", file=sys.stderr)
+                continue
+            print(
+                f"Crop {crop_index} returned {len(returned)} box(es).",
+                file=sys.stderr,
+            )
+            observations.extend(observations_from_response(box, returned, crop_index))
+
+        return observations, unresolved_crops
+
+    def recover(
+        self,
+        image: InputImage,
+        localization: Localization,
+        observations: list[ObservedBox],
+        unresolved_crops: int,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+    ) -> tuple[list[ObservedBox], int, str, list[str]]:
+        """Use full-image transcription when localization or every crop fails."""
+
+        route = list(localization.fallback_path)
+        actual_detector = localization.actual_detector
         if localization.full_image and localization.boxes:
             observations = self.transcribe_full_image(
                 localization.boxes[0],
@@ -395,123 +472,94 @@ class BoxTranscriptionPipeline:
                 warning_prefix="Full-image transcription",
             )
             unresolved_crops = 0 if observations else 1
-        else:
-            for crop_index, box in enumerate(localization.boxes, start=1):
-                print(
-                    f"Crop {crop_index}/{len(localization.boxes)}: "
-                    f"bbox={box.bounding_box.as_xywh()}, hint={box.position}",
-                    file=sys.stderr,
-                )
-                try:
-                    started_at = perf_counter()
-                    returned = self.transcriber.transcribe(box)
-                except Exception as error:  # Continue after one failed crop request.
-                    message = warning_text(error)
-                    attempts.append(
-                        {
-                            "stage": "transcription",
-                            "mode": "crop",
-                            "box_id": box.box_id,
-                            "bbox": list(box.bounding_box.as_xywh()),
-                            "status": "failed",
-                            "error": message,
-                            "duration_seconds": round(
-                                perf_counter() - started_at,
-                                6,
-                            ),
-                        }
-                    )
-                    warnings.append(
-                        f"Crop {crop_index} {box.bounding_box.as_xywh()} failed: "
-                        f"{message}"
-                    )
-                    unresolved_crops += 1
-                    print(f"Crop {crop_index} failed; continuing.", file=sys.stderr)
-                    continue
-                attempts.append(
-                    {
-                        "stage": "transcription",
-                        "mode": "crop",
-                        "box_id": box.box_id,
-                        "bbox": list(box.bounding_box.as_xywh()),
-                        "status": "complete" if returned else "empty",
-                        "record_count": len(returned),
-                        "records": [item.to_dict() for item in returned],
-                        "duration_seconds": round(
-                            perf_counter() - started_at,
-                            6,
-                        ),
-                    }
-                )
-                if not returned:
-                    warnings.append(
-                        f"Crop {crop_index} {box.bounding_box.as_xywh()} returned no boxes."
-                    )
-                    unresolved_crops += 1
-                    print(f"Crop {crop_index} returned no boxes.", file=sys.stderr)
-                    continue
-                print(
-                    f"Crop {crop_index} returned {len(returned)} box(es).",
-                    file=sys.stderr,
-                )
-                observations.extend(
-                    observations_from_response(box, returned, crop_index)
-                )
+            return observations, unresolved_crops, actual_detector, route
 
-            if localization.boxes and not observations:
+        if localization.boxes and not observations:
+            warnings.append(
+                "All crop requests failed or returned no boxes; retried the "
+                "original full image once."
+            )
+            print(
+                "All crop requests failed or returned no boxes. Retrying the "
+                "original full image once.",
+                file=sys.stderr,
+            )
+            try:
+                full_box = create_full_image_box(image, self.work_directory)
+            except Exception as error:
                 warnings.append(
-                    "All crop requests failed or returned no boxes; retried the "
-                    "original full image once."
+                    "Could not create the full-image review copy: "
+                    f"{warning_text(error)}"
                 )
-                print(
-                    "All crop requests failed or returned no boxes. Retrying the "
-                    "original full image once.",
-                    file=sys.stderr,
-                )
-                try:
-                    full_box = create_full_image_box(image, self.work_directory)
-                except Exception as error:
-                    warnings.append(
-                        "Could not create the full-image review copy: "
-                        f"{warning_text(error)}"
-                    )
-                else:
-                    observations = self.transcribe_full_image(
-                        full_box,
-                        warnings,
-                        attempts,
-                        warning_prefix="Full-image retry",
-                    )
-                    if "full-image" not in route:
-                        route.append("full-image")
-                    actual_detector = "full-image"
-                    if (
-                        observations
-                        and unresolved_crops == 1
-                        and len(observations) == 1
-                    ):
-                        # A one-crop/one-record retry is the only association that
-                        # is unambiguous without response-level bounding boxes.
-                        unresolved_crops = 0
-                    elif observations and unresolved_crops:
-                        warnings.append(
-                            "Full-image retry records could not be associated "
-                            "one-to-one with failed crops; "
-                            f"{unresolved_crops} remain unresolved."
-                        )
+                return observations, unresolved_crops, actual_detector, route
 
-        consolidated = deduplicate(observations)
+            observations = self.transcribe_full_image(
+                full_box,
+                warnings,
+                attempts,
+                warning_prefix="Full-image retry",
+            )
+            if "full-image" not in route:
+                route.append("full-image")
+            actual_detector = "full-image"
+            if observations and unresolved_crops == 1 and len(observations) == 1:
+                # Only one crop and one record can be associated unambiguously.
+                unresolved_crops = 0
+            elif observations and unresolved_crops:
+                warnings.append(
+                    "Full-image retry records could not be associated "
+                    "one-to-one with failed crops; "
+                    f"{unresolved_crops} remain unresolved."
+                )
+
+        return observations, unresolved_crops, actual_detector, route
+
+    @staticmethod
+    def consolidate(observations: list[ObservedBox]) -> list[ObservedBox]:
+        """Merge overlapping observations without merging physical boxes."""
+
+        return deduplicate(observations)
+
+    @staticmethod
+    def determine_status(
+        consolidated: Sequence[ObservedBox],
+        unresolved_crops: int,
+        attempts: Sequence[Mapping[str, object]],
+    ) -> ImageStatus:
+        """Classify the image after all recovery and consolidation stages."""
+
         has_dropped_proposals = any(
             int(attempt.get("dropped_proposal_count", 0)) > 0
             for attempt in attempts
             if attempt.get("stage") == "detection"
         )
         if not consolidated:
-            status: ImageStatus = "failed"
-        elif unresolved_crops or has_dropped_proposals:
-            status = "partial"
-        else:
-            status = "complete"
+            return "failed"
+        if unresolved_crops or has_dropped_proposals:
+            return "partial"
+        return "complete"
+
+    def process(self, image_path: str | Path) -> ImageResult:
+        image = load_input_image(image_path)
+        warnings: list[str] = []
+        attempts: list[dict[str, object]] = []
+
+        localization = self.localize(image, warnings, attempts)
+        observations, unresolved_crops = self.transcribe_crops(
+            localization,
+            warnings,
+            attempts,
+        )
+        observations, unresolved_crops, actual_detector, route = self.recover(
+            image,
+            localization,
+            observations,
+            unresolved_crops,
+            warnings,
+            attempts,
+        )
+        consolidated = self.consolidate(observations)
+        status = self.determine_status(consolidated, unresolved_crops, attempts)
 
         return ImageResult(
             input_image=image,

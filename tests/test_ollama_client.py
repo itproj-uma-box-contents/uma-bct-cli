@@ -108,6 +108,71 @@ class OllamaPreflightTest(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), ".")
         client.close.assert_called_once_with()
 
+    def test_stream_uses_valid_thinking_when_content_is_not_json(self):
+        chunks = [
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="not JSON",
+                    thinking='analysis before {"boxes": []} analysis after',
+                )
+            )
+        ]
+        client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with patch.dict(sys.modules, {"ollama": fake_ollama}):
+            value = OllamaVisionModel().query(
+                Path("box.png"), "prompt", {"type": "object"}
+            )
+
+        self.assertEqual(value, {"boxes": []})
+
+    def test_stream_prefers_valid_content_over_valid_thinking(self):
+        chunk = SimpleNamespace(
+            message={
+                "content": '{"source": "content"}',
+                "thinking": '{"source": "thinking"}',
+            }
+        )
+        client = SimpleNamespace(chat=Mock(return_value=iter([chunk])), close=Mock())
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with patch.dict(sys.modules, {"ollama": fake_ollama}):
+            value = OllamaVisionModel().query(
+                Path("box.png"), "prompt", {"type": "object"}
+            )
+
+        self.assertEqual(value, {"source": "content"})
+
+    def test_stream_reports_both_invalid_response_sources(self):
+        chunk = SimpleNamespace(
+            message={"content": "no object", "thinking": "still no object"}
+        )
+        client = SimpleNamespace(chat=Mock(return_value=iter([chunk])), close=Mock())
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            self.assertRaisesRegex(
+                ValueError,
+                "content: .*thinking:",
+            ),
+        ):
+            OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
+
+    def test_stream_rejects_a_response_without_content_or_thinking(self):
+        client = SimpleNamespace(
+            chat=Mock(return_value=iter([SimpleNamespace(message={})])),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with (
+            patch.dict(sys.modules, {"ollama": fake_ollama}),
+            self.assertRaisesRegex(ValueError, "neither content nor thinking"),
+        ):
+            OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
+
 
 class OllamaSettingsTest(unittest.TestCase):
     def test_timeout_environment_requires_a_positive_number(self):

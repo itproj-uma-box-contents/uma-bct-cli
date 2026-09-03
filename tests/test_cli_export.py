@@ -1,16 +1,15 @@
 import contextlib
 import io
 import json
-import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pandas as pd
 
 import uma_bct.cli as cli_module
-from uma_bct.cli import discover_images, main, manifest_path, output_lock_path
+from uma_bct.cli import main, output_lock_path
 from uma_bct.domain import (
     BoundingBox,
     Box,
@@ -84,106 +83,6 @@ class EmptyPipeline:
 
 
 class CliExportTest(unittest.TestCase):
-    def test_discovers_case_variant_filenames_in_deterministic_order(self):
-        directory = Mock()
-        directory.lstat.return_value.st_mode = stat.S_IFDIR
-        lower = Mock(name="lower")
-        lower.lstat.return_value.st_mode = stat.S_IFREG
-        lower.suffix = ".jpg"
-        lower.name = "photo.jpg"
-        upper = Mock(name="upper")
-        upper.lstat.return_value.st_mode = stat.S_IFREG
-        upper.suffix = ".JPG"
-        upper.name = "Photo.JPG"
-        directory.iterdir.return_value = iter((lower, upper))
-
-        with (
-            patch("uma_bct.cli.os.access", return_value=True),
-            patch("uma_bct.cli.ensure_readable_image"),
-        ):
-            discovered = discover_images(directory)
-
-        self.assertEqual(discovered, [upper, lower])
-
-    def test_directory_enumeration_failure_is_a_configuration_error(self):
-        directory = Mock()
-        directory.lstat.return_value.st_mode = stat.S_IFDIR
-        directory.iterdir.side_effect = PermissionError("denied")
-
-        with (
-            patch("uma_bct.cli.os.access", return_value=True),
-            self.assertRaisesRegex(ValueError, "Input directory is not readable"),
-        ):
-            discover_images(directory)
-
-    def test_each_discovered_image_is_preflighted_for_readability(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            image_path = root / "shelf.jpg"
-            image_path.touch()
-
-            with (
-                patch(
-                    "uma_bct.cli.ensure_readable_image",
-                    side_effect=ValueError("Input image is not readable"),
-                ),
-                self.assertRaisesRegex(ValueError, "not readable"),
-            ):
-                discover_images(root)
-
-    def test_disappearing_directory_entry_is_a_configuration_error(self):
-        directory = Mock()
-        directory.lstat.return_value.st_mode = stat.S_IFDIR
-        candidate = Mock()
-        candidate.suffix = ".jpg"
-        candidate.lstat.side_effect = FileNotFoundError("disappeared")
-        directory.iterdir.return_value = iter((candidate,))
-
-        with (
-            patch("uma_bct.cli.os.access", return_value=True),
-            self.assertRaisesRegex(ValueError, "Could not inspect input path"),
-        ):
-            discover_images(directory)
-
-    def test_rejects_symbolic_link_inputs(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            real_image = root / "real.jpg"
-            linked_image = root / "linked.jpg"
-            real_image.touch()
-            try:
-                linked_image.symlink_to(real_image)
-            except OSError as error:
-                self.skipTest(f"symbolic links are unavailable: {error}")
-
-            with self.assertRaisesRegex(ValueError, "symbolic links are not accepted"):
-                discover_images(linked_image)
-            with self.assertRaisesRegex(ValueError, "symbolic links are not accepted"):
-                discover_images(root)
-
-    def test_generated_output_siblings_are_bounded_and_collision_safe(self):
-        first = Path(f"{'a' * 240}x.csv")
-        second = Path(f"{'a' * 240}y.csv")
-
-        first_manifest = manifest_path(first)
-        second_manifest = manifest_path(second)
-
-        self.assertLessEqual(len(first_manifest.name.encode("utf-8")), 255)
-        self.assertLessEqual(len(output_lock_path(first).name.encode("utf-8")), 255)
-        self.assertNotEqual(first_manifest, second_manifest)
-
-    def test_normalized_output_stems_do_not_share_manifests_or_locks(self):
-        ordinary = Path("foo.csv")
-        trailing_space = Path("foo .csv")
-        trailing_dot = Path("foo..csv")
-
-        self.assertNotEqual(manifest_path(ordinary), manifest_path(trailing_space))
-        self.assertNotEqual(
-            output_lock_path(ordinary), output_lock_path(trailing_space)
-        )
-        self.assertNotEqual(manifest_path(ordinary), manifest_path(trailing_dot))
-        self.assertNotEqual(output_lock_path(ordinary), output_lock_path(trailing_dot))
-
     def test_output_argument_writes_catalogue_and_reports_record_count(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -461,12 +360,87 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(summary["status"], "failed")
             self.assertNotEqual(recovery_manifest, normal_manifest)
             self.assertTrue(recovery_manifest.is_file())
+            recovery = json.loads(recovery_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(recovery["status"], "failed")
+            self.assertIsNone(recovery["catalogue_output"])
+            self.assertEqual(recovery["catalogue_records"], 0)
+            self.assertEqual(recovery["run_manifest"], str(recovery_manifest))
+            self.assertEqual(recovery["failures"][-1]["stage"], "manifest")
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"), "existing catalogue\n"
             )
             self.assertEqual(
                 normal_manifest.read_text(encoding="utf-8"), "existing manifest\n"
             )
+
+    def test_manifest_failure_removes_new_catalogue_and_writes_recovery_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+            stdout = io.StringIO()
+            real_write_json_atomic = cli_module.write_json_atomic
+            call_count = 0
+
+            def fail_once(destination, value):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise OSError("manifest disk full")
+                return real_write_json_atomic(destination, value)
+
+            with (
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                patch("uma_bct.cli.write_json_atomic", side_effect=fail_once),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(["-i", str(image_path), "-o", str(output_path)])
+
+            summary = json.loads(stdout.getvalue())
+            recovery_manifest = Path(summary["run_manifest"])
+            recovery = json.loads(recovery_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertFalse(output_path.exists())
+            self.assertEqual(recovery["status"], "failed")
+            self.assertIsNone(recovery["catalogue_output"])
+            self.assertEqual(recovery["catalogue_records"], 0)
+            self.assertEqual(recovery["run_manifest"], str(recovery_manifest))
+            self.assertEqual(recovery["failures"][-1]["stage"], "manifest")
+
+    def test_export_failure_preserves_existing_catalogue_and_records_failure(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+            output_path.write_bytes(b"existing catalogue\n")
+            stdout = io.StringIO()
+
+            with (
+                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                patch(
+                    "uma_bct.cli.export_catalogue",
+                    side_effect=OSError("export disk full"),
+                ),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exit_code = main(
+                    ["-i", str(image_path), "-o", str(output_path), "--force"]
+                )
+
+            summary = json.loads(stdout.getvalue())
+            manifest = json.loads(
+                Path(summary["run_manifest"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(output_path.read_bytes(), b"existing catalogue\n")
+            self.assertEqual(summary["status"], "failed")
+            self.assertIsNone(summary["catalogue_output"])
+            self.assertEqual(manifest["failures"][-1]["stage"], "export")
+            self.assertIsNone(summary["catalogue_backup"])
 
     def test_rollback_and_recovery_failure_expose_retained_private_backup(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

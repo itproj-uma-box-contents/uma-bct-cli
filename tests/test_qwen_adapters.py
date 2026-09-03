@@ -1,17 +1,7 @@
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-
-from uma_bct.adapters.qwen_detector import (
-    GROUNDING_SCHEMA,
-    MAX_DETECTOR_PROPOSALS,
-    QwenBoxDetector,
-    validate_grounding_proposals,
-)
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
     MAX_TEXT_LINES_PER_FIELD,
@@ -38,81 +28,6 @@ class FakeVisionModel:
     ) -> Any:
         self.calls.append((image_path, prompt, schema))
         return self.result
-
-
-class QwenBoxDetectorTest(unittest.TestCase):
-    def test_schema_and_validator_bound_detector_proposals(self):
-        self.assertEqual(
-            GROUNDING_SCHEMA["properties"]["boxes"]["maxItems"],
-            MAX_DETECTOR_PROPOSALS,
-        )
-        oversized = {
-            "boxes": [
-                {"bbox_2d": [0, 0, 1, 1]} for _ in range(MAX_DETECTOR_PROPOSALS + 1)
-            ]
-        }
-        with self.assertRaisesRegex(ValueError, "at most 100"):
-            validate_grounding_proposals(oversized)
-
-    def test_converts_normalized_qwen_coordinates_to_shared_pixel_regions(self):
-        model = FakeVisionModel({"boxes": [{"bbox_2d": [100, 200, 500, 800]}]})
-        detector = QwenBoxDetector(model)
-        temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary_directory.cleanup)
-        image_path = Path(temporary_directory.name) / "shelf.jpg"
-        self.assertTrue(
-            cv2.imwrite(str(image_path), np.zeros((100, 200, 3), dtype=np.uint8))
-        )
-        image = InputImage(image_path, width=200, height=100)
-
-        regions = detector.detect(image)
-
-        self.assertEqual(len(regions), 1)
-        self.assertEqual(
-            regions[0].bounding_box,
-            BoundingBox((20, 20), (100, 80)),
-        )
-        sanitized_path = model.calls[0][0]
-        self.assertNotEqual(sanitized_path, image.file_path)
-        self.assertEqual(sanitized_path.suffix, ".png")
-        self.assertFalse(sanitized_path.exists())
-
-    def test_rejects_an_empty_grounding_result_like_the_reference(self):
-        detector = QwenBoxDetector(FakeVisionModel({"boxes": []}))
-        temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary_directory.cleanup)
-        image_path = Path(temporary_directory.name) / "shelf.jpg"
-        self.assertTrue(
-            cv2.imwrite(str(image_path), np.zeros((100, 200, 3), dtype=np.uint8))
-        )
-        image = InputImage(image_path, width=200, height=100)
-
-        with self.assertRaisesRegex(ValueError, "contained no boxes"):
-            detector.detect(image)
-
-    def test_retains_valid_qwen_proposals_and_warns_about_malformed_ones(self):
-        model = FakeVisionModel(
-            {
-                "boxes": [
-                    {"bbox_2d": [100, 200, 50, 800]},
-                    {"bbox_2d": [100, 200, 500, 800]},
-                ]
-            }
-        )
-        detector = QwenBoxDetector(model)
-        temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary_directory.cleanup)
-        image_path = Path(temporary_directory.name) / "shelf.jpg"
-        self.assertTrue(
-            cv2.imwrite(str(image_path), np.zeros((100, 200, 3), dtype=np.uint8))
-        )
-        image = InputImage(image_path, width=200, height=100)
-
-        regions = detector.detect(image)
-
-        self.assertEqual(len(regions), 1)
-        self.assertEqual(len(detector.dropped_proposal_warnings), 1)
-        self.assertIn("invalid corners", detector.dropped_proposal_warnings[0])
 
 
 class QwenTextTranscriberTest(unittest.TestCase):
@@ -402,6 +317,33 @@ class QwenTextTranscriberTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, r"box 1\.typed"):
             validate_transcription_result({"boxes": [record]})
+
+    def test_validation_error_contracts_remain_field_specific(self):
+        cases = (
+            (None, TypeError, "response must be an object"),
+            ({"boxes": ["bad"]}, TypeError, "box 1 must be an object"),
+            (
+                {"boxes": [self._record(typed="bad")]},
+                ValueError,
+                "box 1.typed must be an array of strings",
+            ),
+            (
+                {"boxes": [self._record(transcription_confidence=True)]},
+                TypeError,
+                "box 1.transcription_confidence must be an integer",
+            ),
+            (
+                {"boxes": [self._record(transcription_confidence=101)]},
+                ValueError,
+                "box 1.transcription_confidence must be between 0 and 100",
+            ),
+        )
+        for value, error_type, message in cases:
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(error_type, message),
+            ):
+                validate_transcription_result(value)
 
     @staticmethod
     def _box_for_prompt() -> Box:

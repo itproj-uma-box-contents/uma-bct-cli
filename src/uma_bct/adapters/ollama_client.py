@@ -63,6 +63,46 @@ def json_from_text(raw: str) -> Any:
         return json.loads(raw[start : end + 1])
 
 
+def collect_stream_text(stream: Any) -> tuple[str, str]:
+    """Collect bounded content and thinking text from an Ollama stream."""
+
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    response_characters = 0
+    for chunk_number, chunk in enumerate(stream, start=1):
+        if chunk_number > MAX_MODEL_STREAM_CHUNKS:
+            raise ValueError("The model response exceeded the stream-chunk limit.")
+        chunk_content = message_text(chunk, "content")
+        chunk_thinking = message_text(chunk, "thinking")
+        response_characters += len(chunk_content) + len(chunk_thinking)
+        if response_characters > MAX_MODEL_RESPONSE_CHARACTERS:
+            raise ValueError("The model response exceeded the 4 MiB safety limit.")
+        if chunk_content:
+            content_parts.append(chunk_content)
+        if chunk_thinking:
+            thinking_parts.append(chunk_thinking)
+        if chunk_number % 20 == 0:
+            print(".", end="", file=sys.stderr)
+            sys.stderr.flush()
+    return "".join(content_parts).strip(), "".join(thinking_parts).strip()
+
+
+def parse_model_response(content: str, thinking: str) -> Any:
+    """Parse content first, then thinking, preserving both validation errors."""
+
+    errors: list[str] = []
+    for source_name, raw in (("content", content), ("thinking", thinking)):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            return json_from_text(raw)
+        except (TypeError, ValueError) as error:
+            errors.append(f"{source_name}: {error}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    raise ValueError("The model returned neither content nor thinking text.")
+
+
 def timeout_from_environment() -> float:
     """Return the positive per-request timeout configured for local inference."""
 
@@ -274,44 +314,9 @@ class OllamaVisionModel:
                     stream=True,
                 )
 
-                content_parts: list[str] = []
-                thinking_parts: list[str] = []
-                response_characters = 0
-                for dots, chunk in enumerate(stream, start=1):
-                    if dots > MAX_MODEL_STREAM_CHUNKS:
-                        raise ValueError(
-                            "The model response exceeded the stream-chunk limit."
-                        )
-                    chunk_content = message_text(chunk, "content")
-                    chunk_thinking = message_text(chunk, "thinking")
-                    response_characters += len(chunk_content) + len(chunk_thinking)
-                    if response_characters > MAX_MODEL_RESPONSE_CHARACTERS:
-                        raise ValueError(
-                            "The model response exceeded the 4 MiB safety limit."
-                        )
-                    if chunk_content:
-                        content_parts.append(chunk_content)
-                    if chunk_thinking:
-                        thinking_parts.append(chunk_thinking)
-                    if dots % 20 == 0:
-                        print(".", end="", file=sys.stderr)
-                        sys.stderr.flush()
+                content, thinking = collect_stream_text(stream)
         except Exception as error:  # Ollama exposes transport-specific errors.
             raise RuntimeError(
                 f"Local Ollama request failed for model '{self.model}': {error}"
             ) from error
-
-        content = "".join(content_parts).strip()
-        thinking = "".join(thinking_parts).strip()
-
-        errors: list[str] = []
-        for source_name, raw in (("content", content), ("thinking", thinking)):
-            if not isinstance(raw, str) or not raw.strip():
-                continue
-            try:
-                return json_from_text(raw)
-            except (TypeError, ValueError) as error:
-                errors.append(f"{source_name}: {error}")
-        if errors:
-            raise ValueError("; ".join(errors))
-        raise ValueError("The model returned neither content nor thinking text.")
+        return parse_model_response(content, thinking)

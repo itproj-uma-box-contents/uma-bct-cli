@@ -14,6 +14,7 @@ from ..identity import (
     unit_claim_is_corroborated,
 )
 from ..ports import VisionModelClient
+from .qwen_response import bounded_string, bounded_string_list, response_boxes
 
 MAX_TRANSCRIPTION_RECORDS = 100
 MAX_TEXT_LINES_PER_FIELD = 100
@@ -193,58 +194,59 @@ class BoxRecord(TypedDict):
 def validate_transcription_result(value: Any) -> list[BoxRecord]:
     """Validate the same multi-box response accepted by the reference pipeline."""
 
-    if not isinstance(value, dict) or not isinstance(value.get("boxes"), list):
-        raise TypeError("the response must be an object containing a boxes array")
-    if len(value["boxes"]) > MAX_TRANSCRIPTION_RECORDS:
-        raise ValueError(
-            f"the response must contain at most {MAX_TRANSCRIPTION_RECORDS} boxes"
-        )
+    records = response_boxes(
+        value,
+        maximum=MAX_TRANSCRIPTION_RECORDS,
+        limit_subject="the response",
+    )
 
     validated: list[BoxRecord] = []
-    for index, item in enumerate(value["boxes"], start=1):
+    for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             raise TypeError(f"box {index} must be an object")
-        for field in ("position", "unit"):
-            if not isinstance(item.get(field), str):
-                raise TypeError(f"box {index}.{field} must be a string")
-            if len(item[field]) > MAX_TEXT_CHARACTERS:
-                raise ValueError(
-                    f"box {index}.{field} must contain at most "
-                    f"{MAX_TEXT_CHARACTERS} characters"
-                )
-        for field in ("typed", "handwritten"):
-            lines = item.get(field)
-            if not isinstance(lines, list) or not all(
-                isinstance(line, str) for line in lines
-            ):
-                raise ValueError(f"box {index}.{field} must be an array of strings")
-            if len(lines) > MAX_TEXT_LINES_PER_FIELD:
-                raise ValueError(
-                    f"box {index}.{field} must contain at most "
-                    f"{MAX_TEXT_LINES_PER_FIELD} lines"
-                )
-            if any(len(line) > MAX_TEXT_CHARACTERS for line in lines):
-                raise ValueError(
-                    f"box {index}.{field} lines must contain at most "
-                    f"{MAX_TEXT_CHARACTERS} characters"
-                )
-        for field in ("record_identifiers", "auxiliary_annotations"):
-            # Accept omitted additive fields to keep old cached responses readable.
-            lines = item.get(field, [])
-            if not isinstance(lines, list) or not all(
-                isinstance(line, str) for line in lines
-            ):
-                raise ValueError(f"box {index}.{field} must be an array of strings")
-            if len(lines) > MAX_TEXT_LINES_PER_FIELD:
-                raise ValueError(
-                    f"box {index}.{field} must contain at most "
-                    f"{MAX_TEXT_LINES_PER_FIELD} lines"
-                )
-            if any(len(line) > MAX_TEXT_CHARACTERS for line in lines):
-                raise ValueError(
-                    f"box {index}.{field} lines must contain at most "
-                    f"{MAX_TEXT_CHARACTERS} characters"
-                )
+        position = bounded_string(
+            item,
+            box_number=index,
+            field="position",
+            maximum_characters=MAX_TEXT_CHARACTERS,
+        )
+        unit = bounded_string(
+            item,
+            box_number=index,
+            field="unit",
+            maximum_characters=MAX_TEXT_CHARACTERS,
+        )
+        typed = bounded_string_list(
+            item,
+            box_number=index,
+            field="typed",
+            maximum_items=MAX_TEXT_LINES_PER_FIELD,
+            maximum_characters=MAX_TEXT_CHARACTERS,
+        )
+        handwritten = bounded_string_list(
+            item,
+            box_number=index,
+            field="handwritten",
+            maximum_items=MAX_TEXT_LINES_PER_FIELD,
+            maximum_characters=MAX_TEXT_CHARACTERS,
+        )
+        # Additive fields remain optional so older cached responses stay readable.
+        record_identifiers = bounded_string_list(
+            item,
+            box_number=index,
+            field="record_identifiers",
+            maximum_items=MAX_TEXT_LINES_PER_FIELD,
+            maximum_characters=MAX_TEXT_CHARACTERS,
+            default=[],
+        )
+        auxiliary_annotations = bounded_string_list(
+            item,
+            box_number=index,
+            field="auxiliary_annotations",
+            maximum_items=MAX_TEXT_LINES_PER_FIELD,
+            maximum_characters=MAX_TEXT_CHARACTERS,
+            default=[],
+        )
         confidence = item.get("transcription_confidence")
         if not isinstance(confidence, int) or isinstance(confidence, bool):
             raise TypeError(f"box {index}.transcription_confidence must be an integer")
@@ -254,12 +256,12 @@ def validate_transcription_result(value: Any) -> list[BoxRecord]:
             )
         validated.append(
             {
-                "position": item["position"],
-                "record_identifiers": list(item.get("record_identifiers", [])),
-                "unit": item["unit"],
-                "typed": list(item["typed"]),
-                "handwritten": list(item["handwritten"]),
-                "auxiliary_annotations": list(item.get("auxiliary_annotations", [])),
+                "position": position,
+                "record_identifiers": record_identifiers,
+                "unit": unit,
+                "typed": typed,
+                "handwritten": handwritten,
+                "auxiliary_annotations": auxiliary_annotations,
                 "transcription_confidence": confidence,
             }
         )

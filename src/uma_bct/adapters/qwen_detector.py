@@ -14,6 +14,7 @@ import cv2
 from ..domain import BoundingBox, DetectedRegion, InputImage
 from ..imaging import read_image
 from ..ports import VisionModelClient
+from .qwen_response import response_boxes
 
 MAX_DETECTOR_PROPOSALS = 100
 
@@ -52,17 +53,15 @@ def validate_grounding_proposals(
 ) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
     """Validate proposals independently and report malformed entries."""
 
-    if not isinstance(value, dict) or not isinstance(value.get("boxes"), list):
-        raise TypeError("the response must be an object containing a boxes array")
-    if len(value["boxes"]) > MAX_DETECTOR_PROPOSALS:
-        raise ValueError(
-            f"the grounding response must contain at most "
-            f"{MAX_DETECTOR_PROPOSALS} boxes"
-        )
+    proposals = response_boxes(
+        value,
+        maximum=MAX_DETECTOR_PROPOSALS,
+        limit_subject="the grounding response",
+    )
 
     boxes: list[tuple[float, float, float, float]] = []
     dropped: list[str] = []
-    for index, item in enumerate(value["boxes"], start=1):
+    for index, item in enumerate(proposals, start=1):
         try:
             bbox = item.get("bbox_2d") if isinstance(item, dict) else None
             if not isinstance(bbox, list) or len(bbox) != 4:
@@ -86,7 +85,7 @@ def validate_grounding_proposals(
             continue
         boxes.append((x1, y1, x2, y2))
     if not boxes:
-        if not value["boxes"]:
+        if not proposals:
             raise ValueError("the grounding response contained no boxes")
         detail = f": {'; '.join(dropped[:3])}" if dropped else ""
         raise ValueError(f"the grounding response contained no valid boxes{detail}")
