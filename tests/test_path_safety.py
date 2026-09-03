@@ -1,3 +1,4 @@
+import os
 import stat
 import unittest
 from pathlib import Path
@@ -33,7 +34,10 @@ class PathSafetyTest(unittest.TestCase):
         with patch("pathlib.Path.lstat", return_value=metadata):
             redirected = redirected_component(Path("outputs"))
 
-        self.assertEqual(redirected, (Path("outputs"), "symbolic link"))
+        self.assertEqual(
+            redirected,
+            (Path(os.path.abspath("outputs")), "symbolic link"),
+        )
 
 
 if __name__ == "__main__":

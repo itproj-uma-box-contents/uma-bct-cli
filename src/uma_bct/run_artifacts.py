@@ -86,9 +86,7 @@ def acquire_output_lock(output_path: Path) -> tuple[int, Path, tuple[int, int]]:
         raise ValueError(f"could not reserve output {output_path}: {error}") from error
 
 
-def release_output_lock(
-    descriptor: int, lock_path: Path, identity: tuple[int, int]
-) -> None:
+def release_output_lock(descriptor: int, lock_path: Path, identity: tuple[int, int]) -> None:
     """Release only the reservation created by this process."""
 
     os.close(descriptor)

@@ -115,9 +115,7 @@ def position_hint(box: BoundingBox, image_width: int, image_height: int) -> str:
     return f"{('top', 'middle', 'bottom')[row]}-{('left', 'middle', 'right')[column]}"
 
 
-def clipped_box(
-    box: BoundingBox, image_width: int, image_height: int
-) -> BoundingBox | None:
+def clipped_box(box: BoundingBox, image_width: int, image_height: int) -> BoundingBox | None:
     x1 = max(0, min(image_width, box.top_left[0]))
     y1 = max(0, min(image_height, box.top_left[1]))
     x2 = max(0, min(image_width, box.bottom_right[0]))
@@ -169,12 +167,8 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 class OpenCVBoxCropper:
     """Create clean PNG crops from regions proposed by any detector."""
 
-    def create_boxes(
-        self,
-        image: InputImage,
-        regions: Sequence[DetectedRegion],
-        output_directory: Path,
-    ) -> list[Box]:
+    def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion],
+                    output_directory: Path) -> list[Box]:
         original = read_image(image.file_path)
         valid_regions: list[DetectedRegion] = []
         for region in regions:

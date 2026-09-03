@@ -44,6 +44,17 @@ class CliInputTest(unittest.TestCase):
         ):
             discover_images(directory)
 
+    def test_missing_input_has_a_portable_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "missing"
+
+            with self.assertRaisesRegex(
+                ValueError, r"^Input path does not exist:"
+            ) as raised:
+                discover_images(missing)
+
+            self.assertNotIn("Errno", str(raised.exception))
+
     def test_each_discovered_image_is_preflighted_for_readability(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

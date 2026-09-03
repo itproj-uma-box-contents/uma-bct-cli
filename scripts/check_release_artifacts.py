@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import stat
 import sys
 import tarfile
 import zipfile
@@ -68,13 +69,25 @@ def artifact_paths(arguments: Iterable[str]) -> list[Path]:
 def member_names(artifact: Path) -> Iterable[str]:
     if artifact.name.endswith(".whl"):
         with zipfile.ZipFile(artifact) as archive:
-            yield from archive.namelist()
+            for member in archive.infolist():
+                unix_mode = (member.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(unix_mode)
+                if member.create_system == 3 and file_type not in {
+                    0,
+                    stat.S_IFREG,
+                    stat.S_IFDIR,
+                }:
+                    yield f"{member.filename} -> <zip link or special entry>"
+                else:
+                    yield member.filename
         return
     if artifact.name.endswith(".tar.gz"):
         with tarfile.open(artifact, mode="r:gz") as archive:
             for member in archive.getmembers():
                 if member.issym() or member.islnk():
                     yield f"{member.name} -> {member.linkname}"
+                elif not member.isfile() and not member.isdir():
+                    yield f"{member.name} -> <tar special entry>"
                 else:
                     yield member.name
         return
@@ -92,16 +105,24 @@ def unsafe_reason(member_name: str) -> str | None:
     if private:
         return f"private/runtime directory {sorted(private)[0]!r}"
 
-    if path.name.casefold().endswith(".run.json"):
+    folded_name = path.name.casefold()
+    if folded_name.endswith(".run.json") or ".run.json." in folded_name:
         return "generated run manifest"
-    if path.name.casefold().startswith(PRIVATE_RUNTIME_PREFIXES):
+    if folded_name.startswith(PRIVATE_RUNTIME_PREFIXES):
         return "generated private runtime file"
 
-    suffix = Path(path.name).suffix.casefold()
-    if suffix in PRIVATE_FILE_SUFFIXES:
-        return f"private image, catalogue, or model file ({suffix})"
+    private_suffix = next(
+        (
+            suffix.casefold()
+            for suffix in Path(path.name).suffixes
+            if suffix.casefold() in PRIVATE_FILE_SUFFIXES
+        ),
+        None,
+    )
+    if private_suffix is not None:
+        return f"private image, catalogue, or model file ({private_suffix})"
     if " -> " in member_name:
-        return "archive link"
+        return "archive link or special entry"
     return None
 
 

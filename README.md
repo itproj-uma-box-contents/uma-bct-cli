@@ -99,7 +99,7 @@ The catalogue starts with the client import columns in the required order:
 | `Date Range` | Blank in version 0.1. |
 | `Confidence Score` | A guide for human review, not a guarantee. |
 | `Flags` | Missing, ambiguous, low-confidence, duplicate, mismatch, or fallback conditions to check. |
-| `Image` | The saved review crop for that physical box. |
+| `Image` | The saved review image used to produce that row. |
 
 Recognised record identifiers include `1960.0009`, `96/9`,
 `UMA-AC-000000330`, and `UMA-SRE-20160038`. Separate physical boxes remain
@@ -148,7 +148,8 @@ the command or Ollama preflight was invalid.
   is slow; supported GPU acceleration depends on the installed hardware and
   drivers. Docker is an optional alternative for container-based teams.
 
-At least 16 GB of memory is recommended for the default 8B quantized model.
+As a conservative project recommendation, allow at least 16 GB of memory for
+the default 8B quantized model.
 
 ## Common setup and run failures
 
@@ -157,8 +158,7 @@ At least 16 GB of memory is recommended for the default 8B quantized model.
 - **Ollama is too old:** update Ollama to version 0.12.7 or newer, restart it,
   and rerun setup.
 - **Model download fails:** check the internet connection and free disk space,
-  then rerun setup. It resumes through Ollama where supported. The error also
-  shows the equivalent `ollama pull` command.
+  then rerun setup. The error also shows the equivalent `ollama pull` command.
 - **No supported images found:** confirm the photos are directly inside
   `inputs/` and use one of the supported extensions above. Symbolic-link inputs
   are intentionally rejected.
@@ -198,8 +198,9 @@ $env:OLLAMA_HOST = "https://approved-model-service.example.edu:11434"
 uma-bct
 ```
 
-HTTP remote endpoints, embedded endpoint credentials, and unapproved hostnames
-are rejected. Do not enable this override without organisational approval.
+HTTP remote endpoints, embedded endpoint credentials, and remote hostnames
+without the explicit privacy opt-in are rejected. The tool cannot verify
+organisational approval, so do not enable this override without it.
 
 ## Current architecture and recovery flow
 
@@ -224,7 +225,7 @@ design-level class and system-sequence diagrams were not accessible for exact
 comparison, so no exact diagram alignment is claimed and no GitHub copy was
 substituted.
 
-## Known version 0.1 limitations
+## Current version limitations
 
 - Printed and handwritten transcription requires human review; low confidence
   and fallback flags are conservative aids, not accuracy guarantees.

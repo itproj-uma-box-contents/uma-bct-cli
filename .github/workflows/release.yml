@@ -150,6 +150,7 @@ jobs:
               "$smoke_dir/.venv/bin/python" -c "import uma_bct"
               "$smoke_dir/.venv/bin/uma-bct" --help
               "$smoke_dir/.venv/bin/uma-bct" --version
+              "$smoke_dir/.venv/bin/uma-bct" setup --help
               "$smoke_dir/.venv/bin/python" -m uma_bct --help
             )
           done

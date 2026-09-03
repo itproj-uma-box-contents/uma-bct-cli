@@ -287,6 +287,20 @@ class OllamaPreflightTest(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), ".")
         client.close.assert_called_once_with()
 
+    def test_stream_accepts_dictionary_chunks(self):
+        client = SimpleNamespace(
+            chat=Mock(return_value=iter([{"message": {"content": '{"boxes": []}'}}])),
+            close=Mock(),
+        )
+        fake_ollama = SimpleNamespace(Client=Mock(return_value=client))
+
+        with patch.dict(sys.modules, {"ollama": fake_ollama}):
+            value = OllamaVisionModel().query(
+                Path("box.png"), "prompt", {"type": "object"}
+            )
+
+        self.assertEqual(value, {"boxes": []})
+
     def test_stream_uses_valid_thinking_when_content_is_not_json(self):
         chunks = [
             SimpleNamespace(

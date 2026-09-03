@@ -85,6 +85,7 @@ def positive_float(value: str) -> float:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="uma-bct",
         description="Detect and transcribe UMA archive boxes using local components.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Shortest workflow:
@@ -212,6 +213,8 @@ def discover_images(path: Path) -> list[Path]:
     try:
         input_metadata = path.lstat()
         redirected_kind = redirected_path_kind(path, input_metadata)
+    except FileNotFoundError:
+        raise ValueError(f"Input path does not exist: {path}") from None
     except OSError as error:
         raise ValueError(f"Could not inspect input path {path}: {error}") from error
     if redirected_kind is not None:
@@ -259,15 +262,12 @@ def discover_images(path: Path) -> list[Path]:
     )
 
 
-def _run_batch(
-    arguments: argparse.Namespace,
-    images: list[Path],
-    output_path: Path,
-    normal_manifest_path: Path,
-    *,
-    preserve_existing_manifest_on_failure: bool,
-) -> int:
-    """Delegate a batch while preserving the legacy patchable CLI symbols."""
+def run_batch(arguments: argparse.Namespace, images: list[Path],
+    output_path: Path, normal_manifest_path: Path, *,
+    preserve_existing_manifest_on_failure: bool) -> int:
+    """
+    Delegate a batch while preserving the legacy patchable CLI symbols.
+    """
 
     operations = BatchOperations(
         build_pipeline=build_pipeline,
@@ -304,9 +304,10 @@ def main(argv: list[str] | None = None) -> int:
     if output_path.suffix.casefold() not in SUPPORTED_OUTPUT_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_OUTPUT_EXTENSIONS))
         parser.error(f"output path must end in one of: {supported}")
-    for purpose, root in (
-        ("catalogue output", output_path.parent),
-        ("review crop", arguments.path_to_box_images),
+    for purpose, root, must_be_regular_file in (
+        ("catalogue output", output_path, True),
+        ("run manifest", run_manifest_path, True),
+        ("review crop", arguments.path_to_box_images, False),
     ):
         try:
             redirected = redirected_component(root)
@@ -318,6 +319,18 @@ def main(argv: list[str] | None = None) -> int:
                 f"{purpose} paths must not use a {kind}: {component}. Select a "
                 "real local directory instead."
             )
+        if must_be_regular_file:
+            normalized = Path(os.path.abspath(root))
+            try:
+                metadata = normalized.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                parser.error(f"could not inspect {purpose} path {root}: {error}")
+            if not stat.S_ISREG(metadata.st_mode):
+                parser.error(
+                    f"{purpose} must be a regular file when it already exists: {root}"
+                )
     try:
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
@@ -346,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"output already exists; pass --force to replace it: {existing_output}"
             )
-        return _run_batch(
+        return run_batch(
             arguments,
             images,
             output_path,

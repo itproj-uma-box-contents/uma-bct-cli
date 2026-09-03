@@ -31,7 +31,7 @@ IDENTIFIER_LABEL_PREFIX = re.compile(
 HANDWRITTEN_UNIT = re.compile(r"^\s*(\d{1,4})(?:\s+[A-Z]\d{1,2})?\s*$", re.I)
 AMBIGUOUS_UNIT_CONNECTOR = re.compile(
     rf"\b{UNIT_PREFIX}\s*[:#-]?\s*\d{{1,4}}\s*"
-    rf"(?:\?|(?:and\s*/\s*)?or\b|\bwas\b|&|/|,|\bto\b|[-–—])\s*"
+    rf"(?:\?|(?:and\s*/\s*)?or\b|\band\b|\bwas\b|&|\+|/|,|\bto\b|[-–—])\s*"
     rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?\d{{1,4}}\b",
     re.IGNORECASE,
 )
@@ -61,7 +61,7 @@ def normalise_unit_claim(value: str) -> str | None:
     return match.group(1).zfill(4)
 
 
-def _identifier_list_line(line: str) -> bool:
+def identifier_list_line(line: str) -> bool:
     """Recognise a line whose semantic content is only record identifiers."""
 
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
@@ -80,7 +80,7 @@ def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     identifiers: list[str] = []
     seen: set[str] = set()
     for line in visual_lines(lines):
-        legacy_is_identity = _identifier_list_line(line)
+        legacy_is_identity = identifier_list_line(line)
         for match in RECORD_IDENTIFIER.finditer(line):
             identifier = normalise_identifier(match.group(0))
             if "/" in identifier and not legacy_is_identity:
@@ -98,10 +98,10 @@ class UnitEvidence:
     ambiguous: bool
 
 
-def collect_unit_evidence(
-    typed_lines: Iterable[str], handwritten_lines: Iterable[str]
-) -> UnitEvidence:
-    """Collect narrowly supported raw box-number evidence and ambiguity signals."""
+def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterable[str]) -> UnitEvidence:
+    """
+    Collect narrowly supported raw box-number evidence and ambiguity signals.
+    """
 
     candidates: set[str] = set()
     ambiguous = False
@@ -135,11 +135,7 @@ def collect_unit_evidence(
     return UnitEvidence(frozenset(candidates), ambiguous)
 
 
-def unit_claim_is_corroborated(
-    value: str,
-    typed_lines: Iterable[str],
-    handwritten_lines: Iterable[str],
-) -> bool:
+def unit_claim_is_corroborated(value: str, typed_lines: Iterable[str], handwritten_lines: Iterable[str]) -> bool:
     normalized = normalise_unit_claim(value)
     if normalized is None:
         return False
@@ -147,12 +143,11 @@ def unit_claim_is_corroborated(
     return not evidence.ambiguous and evidence.candidates == {normalized}
 
 
-def identity_only_line(
-    line: str,
-    structured_identifiers: Iterable[str],
-    structured_unit: str,
-) -> bool:
-    """Return whether a raw line contains identity syntax and no annotation text."""
+def identity_only_line(line: str, structured_identifiers: Iterable[str],
+    structured_unit: str) -> bool:
+    """
+    Return whether a raw line contains identity syntax and no annotation text.
+    """
 
     body = line.strip()
     if not body:

@@ -144,10 +144,13 @@ class CropOnlyFailingTranscriber(FakeTranscriber):
 
 class PipelineValueTest(unittest.TestCase):
     def test_warning_text_is_single_line_and_bounded(self):
-        warning = warning_text(RuntimeError("first line\nsecond line " + "x" * 300))
+        warning = warning_text(
+            RuntimeError("\x1b[31mfirst line\nsecond line " + "x" * 300)
+        )
 
         self.assertEqual(len(warning), 240)
         self.assertNotIn("\n", warning)
+        self.assertNotIn("\x1b", warning)
         self.assertTrue(warning.endswith("..."))
 
     def test_image_result_rejects_an_unknown_status(self):
@@ -482,7 +485,7 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
             )
         )
 
-    def test_failed_crop_records_unavailable_full_image_recovery(self):
+    def test_failed_crop_skips_unsupported_full_image_recovery(self):
         pipeline = BoxTranscriptionPipeline(
             detector=FakeDetector(),
             cropper=OpenCVBoxCropper(),
@@ -493,12 +496,38 @@ class BoxTranscriptionPipelineTest(unittest.TestCase):
         result = pipeline.process(self.image_path)
 
         self.assertEqual(result.status, "failed")
-        self.assertEqual(result.actual_detector, "full-image")
-        self.assertEqual(result.fallback_path, ("fake-detector", "full-image"))
+        self.assertEqual(result.actual_detector, "fake-detector")
+        self.assertEqual(result.fallback_path, ("fake-detector",))
         self.assertEqual(
             [attempt["status"] for attempt in result.attempts],
-            ["complete", "failed", "unavailable"],
+            ["complete", "failed"],
         )
+        self.assertEqual(list((self.root / "crops").rglob("full_image.png")), [])
+        self.assertTrue(
+            any(
+                "does not support full-image recovery" in item
+                for item in result.warnings
+            )
+        )
+
+    def test_failed_crop_records_full_image_route_when_review_copy_fails(self):
+        pipeline = BoxTranscriptionPipeline(
+            detector=FakeDetector(),
+            cropper=OpenCVBoxCropper(),
+            transcriber=FallbackTranscriber(),
+            work_directory=self.root / "crops",
+        )
+
+        with patch(
+            "uma_bct.pipeline.create_full_image_box",
+            side_effect=OSError("review copy denied"),
+        ):
+            result = pipeline.process(self.image_path)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("fake-detector", "full-image"))
+        self.assertTrue(any("review copy denied" in item for item in result.warnings))
 
     def test_full_image_copy_failure_preserves_the_recovery_route(self):
         pipeline = BoxTranscriptionPipeline(

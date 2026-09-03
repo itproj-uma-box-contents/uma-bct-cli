@@ -394,6 +394,8 @@ class CatalogueMappingTest(unittest.TestCase):
     def test_ambiguous_contextual_unit_expressions_are_blank_and_flagged(self):
         for raw_line in (
             "Unit 7 or 8",
+            "Unit 7 and 8",
+            "Unit 7 + 8",
             "Unit 7 / 8",
             "Unit 7-8",
             "Unit 7?",

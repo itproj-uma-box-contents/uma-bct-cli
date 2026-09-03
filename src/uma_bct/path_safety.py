@@ -39,7 +39,8 @@ def redirected_paths_label(kind: str) -> str:
 def redirected_component(path: Path) -> tuple[Path, str] | None:
     """Find an existing path component that redirects to another location."""
 
-    for candidate in (path, *path.parents):
+    normalized = Path(os.path.abspath(path))
+    for candidate in (normalized, *normalized.parents):
         try:
             metadata = candidate.lstat()
         except FileNotFoundError:

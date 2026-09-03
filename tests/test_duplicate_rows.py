@@ -8,8 +8,16 @@ from uma_bct.duplicates import check_duplicate_rows
 
 class CheckDuplicateRowsTest(unittest.TestCase):
     def test_requires_title_and_flag_columns(self):
-        with self.assertRaisesRegex(ValueError, "Node Title"):
-            check_duplicate_rows(pd.DataFrame({"Flags": []}))
+        cases = (
+            (pd.DataFrame({"Flags": []}), "Node Title"),
+            (pd.DataFrame({"Node Title": []}), "Flags"),
+        )
+        for dataframe, missing_column in cases:
+            with (
+                self.subTest(missing_column=missing_column),
+                self.assertRaisesRegex(ValueError, missing_column),
+            ):
+                check_duplicate_rows(dataframe)
 
     def test_flags_every_row_with_a_duplicate_canonical_title(self):
         records = pd.DataFrame(

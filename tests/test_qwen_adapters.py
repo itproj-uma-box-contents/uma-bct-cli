@@ -159,6 +159,9 @@ class QwenTextTranscriberTest(unittest.TestCase):
             "(handwritten annotation)",
             "(手写签名)",
             "possibly Jones",
+            "ambiguous",
+            "[ambiguous]",
+            "ambiguous handwriting",
             "John ? Smith",
             "[illegible: surname]",
             "signature: Smith",
@@ -249,6 +252,10 @@ class QwenTextTranscriberTest(unittest.TestCase):
             validate_transcription_result(
                 {"boxes": [self._record(position="x" * (MAX_TEXT_CHARACTERS + 1))]}
             )
+        with self.assertRaisesRegex(ValueError, "lines must contain at most 4096"):
+            validate_transcription_result(
+                {"boxes": [self._record(typed=["x" * (MAX_TEXT_CHARACTERS + 1)])]}
+            )
 
     def test_reference_schema_accepts_multiple_box_records(self):
         record = {
@@ -276,6 +283,14 @@ class QwenTextTranscriberTest(unittest.TestCase):
         self.assertIn("handwritten box/unit number", crop_prompt)
         self.assertIn("Never translate", QUESTION)
         self.assertIn("score below 80", crop_prompt)
+
+    def test_full_image_transcription_uses_the_full_image_prompt(self):
+        model = FakeVisionModel({"boxes": [self._record()]})
+        box = self._box_for_prompt()
+
+        QwenTextTranscriber(model).transcribe_full_image(box)
+
+        self.assertEqual(model.calls, [(box.image_file_path, QUESTION, SCHEMA)])
 
     def test_accepts_old_cached_records_without_new_optional_lists(self):
         record = {

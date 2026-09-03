@@ -222,6 +222,38 @@ class SetupCommandTest(unittest.TestCase):
             self.assertEqual(input_path.read_text(encoding="utf-8"), "keep me")
             self.assertIn("not a directory", json.loads(stdout.getvalue())["error"])
 
+    def test_rejects_an_inaccessible_existing_directory_before_model_setup(self):
+        for inaccessible_name in ("inputs", "outputs"):
+            with self.subTest(inaccessible_name=inaccessible_name):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    (root / "inputs").mkdir()
+                    (root / "outputs").mkdir()
+                    stdout = io.StringIO()
+
+                    def accessible(path, _mode, denied=inaccessible_name):
+                        return Path(path).name != denied
+
+                    with (
+                        patch(
+                            "uma_bct.setup_command.os.access",
+                            side_effect=accessible,
+                        ),
+                        patch("uma_bct.setup_command.OllamaVisionModel") as model,
+                        contextlib.redirect_stdout(stdout),
+                        contextlib.redirect_stderr(io.StringIO()),
+                    ):
+                        exit_code = run_setup(root=root)
+
+                    result = json.loads(stdout.getvalue())
+                    self.assertEqual(exit_code, 2)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertIn(
+                        "readable, writable, and searchable",
+                        result["error"],
+                    )
+                    model.assert_not_called()
+
     def test_rejects_an_existing_symbolic_link_without_touching_its_target(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

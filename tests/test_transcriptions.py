@@ -226,6 +226,31 @@ class TranscriptionMergeTest(unittest.TestCase):
 
         self.assertEqual(len(deduplicate(observations)), 2)
 
+    def test_other_crops_cannot_bridge_same_response_records_into_one_group(self):
+        first_box = self.box("crop-1", BoundingBox((0, 0), (220, 200)))
+        second_box = self.box("crop-2", BoundingBox((10, 0), (230, 200)))
+        first = ObservedBox(
+            first_box,
+            self.transcription(first_box, "0001", ("Unit 0001",), (), 90),
+            1,
+        )
+        second_response = [
+            self.transcription(second_box, "0001", ("Unit 0001",), (), 90),
+            self.transcription(second_box, "0001", ("Unit 0001",), (), 88),
+        ]
+        observations = [
+            first,
+            *observations_from_response(second_box, second_response, crop_index=2),
+        ]
+
+        result = deduplicate(observations)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            [item.transcription.label.unit_number for item in result],
+            ["0001", "0001"],
+        )
+
     def box(self, box_id: str, bounding_box: BoundingBox) -> Box:
         return Box(
             box_id=box_id,

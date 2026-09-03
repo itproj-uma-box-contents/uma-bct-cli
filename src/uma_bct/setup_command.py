@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -34,6 +35,11 @@ def ensure_directory(path: Path) -> int:
     mode = metadata.st_mode
     if not stat.S_ISDIR(mode):
         raise RuntimeError(f"Setup path exists but is not a directory: {path}")
+    required_access = os.R_OK | os.W_OK | os.X_OK
+    if not os.access(path, required_access):
+        raise RuntimeError(
+            f"Setup directory must be readable, writable, and searchable: {path}"
+        )
     return mode
 
 

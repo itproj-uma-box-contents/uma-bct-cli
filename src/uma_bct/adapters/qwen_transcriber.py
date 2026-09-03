@@ -161,20 +161,21 @@ UNCERTAINTY_MARKERS = {
     "unreadable",
     "unclear",
     "unknown",
+    "ambiguous",
     "handwritten",
     "handwritten annotation",
     "handwritten note",
     "signature",
 }
 BRACKETED_META_COMMENT = re.compile(
-    r"^[\[(]\s*(?:illegible|unreadable|unclear|unknown|"
+    r"^[\[(]\s*(?:illegible|unreadable|unclear|unknown|ambiguous|"
     r"handwritten(?:\s+(?:annotation|note))?|signature)\s*[\])]$",
     re.IGNORECASE,
 )
 CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 UNCERTAINTY_EVIDENCE = re.compile(
     r"\?|\b(?:possibly|probably|maybe|uncertain|illegible|unreadable|"
-    r"unclear|unknown)\b|\b(?:handwritten(?:\s+(?:annotation|note))?|"
+    r"unclear|unknown|ambiguous)\b|\b(?:handwritten(?:\s+(?:annotation|note))?|"
     r"signature)\s*:",
     re.IGNORECASE,
 )
@@ -381,7 +382,7 @@ def text_fields_need_review(item: BoxRecord) -> bool:
     return False
 
 
-def _to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
+def to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
     confidence = item["transcription_confidence"]
     typed = tuple(item["typed"])
     record_identifiers = tuple(item["record_identifiers"])
@@ -419,15 +420,15 @@ class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
 
-    def _request(self, box: Box, prompt: str) -> list[BoxTranscription]:
+    def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         result = self.client.query(box.image_file_path, prompt, SCHEMA)
         records = validate_transcription_result(result)
-        return [_to_domain(box, record) for record in records]
+        return [to_domain(box, record) for record in records]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
-        return self._request(box, crop_question(box))
+        return self.request(box, crop_question(box))
 
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
         """Retry the untouched source image using the old full-image prompt."""
 
-        return self._request(box, QUESTION)
+        return self.request(box, QUESTION)

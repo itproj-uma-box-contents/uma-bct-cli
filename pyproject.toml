@@ -64,6 +64,6 @@ select = ["B", "E4", "E7", "E9", "F", "I", "UP"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 75
+fail_under = 92
 show_missing = true
 skip_covered = true

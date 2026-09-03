@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 import uma_bct
+import uma_bct.cli as cli_module
 from uma_bct import pipeline as pipeline_module
 from uma_bct.adapters.ollama_client import (
     DEFAULT_CONTEXT_LENGTH,
@@ -48,6 +49,7 @@ from uma_bct.constants import (
     PADDING_FRACTION,
 )
 from uma_bct.domain import BoundingBox, Box, DetectedRegion, InputImage
+from uma_bct.run_artifacts import manifest_path, write_json_atomic
 
 
 def text_digest(value: str) -> str:
@@ -82,6 +84,8 @@ class ReferencePromptCompatibilityTest(unittest.TestCase):
             pipeline_module.BoxTranscriptionPipeline,
         )
         self.assertIs(uma_bct.ImageResult, pipeline_module.ImageResult)
+        self.assertIs(cli_module.manifest_path, manifest_path)
+        self.assertIs(cli_module.write_json_atomic, write_json_atomic)
 
     def test_qwen_detection_prompt_and_schema_match_reference_hashes(self):
         self.assertEqual(

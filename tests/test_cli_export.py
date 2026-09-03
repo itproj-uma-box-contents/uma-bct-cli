@@ -82,6 +82,11 @@ class EmptyPipeline:
         )
 
 
+class ControlCharacterFailingPipeline:
+    def process(self, image_path: Path) -> ImageResult:
+        raise RuntimeError("\x1b[31munsafe failure\nsecond line")
+
+
 class CliExportTest(unittest.TestCase):
     def test_default_paths_support_the_shortest_successful_workflow(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -156,6 +161,7 @@ class CliExportTest(unittest.TestCase):
     def test_help_shows_setup_and_the_short_workflow_with_advanced_controls(self):
         help_text = build_argument_parser().format_help()
 
+        self.assertTrue(help_text.startswith("usage: uma-bct"))
         self.assertIn("uma-bct setup", help_text)
         self.assertIn("uma-bct", help_text)
         self.assertIn("--detector", help_text)
@@ -276,6 +282,111 @@ class CliExportTest(unittest.TestCase):
 
                 self.assertEqual(raised.exception.code, 2)
 
+    def test_normalizes_parent_segments_before_redirect_checks(self):
+        for purpose in ("output", "crops"):
+            with self.subTest(purpose=purpose):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    image_path = root / "shelf.jpg"
+                    target = root / "target"
+                    linked = root / "linked"
+                    image_path.touch()
+                    target.mkdir()
+                    try:
+                        linked.symlink_to(target, target_is_directory=True)
+                    except OSError as error:
+                        self.skipTest(f"symbolic links are unavailable: {error}")
+                    crafted = root / "missing" / ".." / "linked"
+                    arguments = ["-i", str(image_path)]
+                    if purpose == "output":
+                        arguments.extend(["-o", str(crafted / "catalogue.csv")])
+                    else:
+                        arguments.extend(
+                            [
+                                "-o",
+                                str(root / "catalogue.csv"),
+                                "-b",
+                                str(crafted),
+                            ]
+                        )
+
+                    with (
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(arguments)
+
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertFalse((root / "missing").exists())
+
+    def test_rejects_existing_output_and_manifest_symlinks_before_processing(self):
+        for linked_name in ("catalogue.csv", "catalogue.run.json"):
+            with self.subTest(linked_name=linked_name):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    image_path = root / "shelf.jpg"
+                    target = root / "private-target"
+                    link = root / linked_name
+                    image_path.touch()
+                    target.write_text("do not read or replace", encoding="utf-8")
+                    try:
+                        link.symlink_to(target)
+                    except OSError as error:
+                        self.skipTest(f"symbolic links are unavailable: {error}")
+
+                    with (
+                        patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                        patch(
+                            "uma_bct.cli.backup_existing_catalogue"
+                        ) as backup_catalogue,
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(
+                            [
+                                "-i",
+                                str(image_path),
+                                "-o",
+                                str(root / "catalogue.csv"),
+                                "--force",
+                            ]
+                        )
+
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertEqual(
+                        target.read_text(encoding="utf-8"),
+                        "do not read or replace",
+                    )
+                    build_pipeline.assert_not_called()
+                    backup_catalogue.assert_not_called()
+
+    def test_rejects_non_file_output_and_manifest_targets(self):
+        for directory_name in ("catalogue.csv", "catalogue.run.json"):
+            with self.subTest(directory_name=directory_name):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    image_path = root / "shelf.jpg"
+                    image_path.touch()
+                    (root / directory_name).mkdir()
+
+                    with (
+                        patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(
+                            [
+                                "-i",
+                                str(image_path),
+                                "-o",
+                                str(root / "catalogue.csv"),
+                                "--force",
+                            ]
+                        )
+
+                    self.assertEqual(raised.exception.code, 2)
+                    build_pipeline.assert_not_called()
+
     def test_refuses_to_replace_existing_output_without_force(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -385,6 +496,34 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("Warning for", stderr.getvalue())
             self.assertIn("OpenCV fallback used", stderr.getvalue())
+
+    def test_batch_errors_are_sanitized_in_stderr_and_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with (
+                patch(
+                    "uma_bct.cli.build_pipeline",
+                    return_value=ControlCharacterFailingPipeline(),
+                ),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(["-i", str(image_path), "-o", str(output_path)])
+
+            summary = json.loads(stdout.getvalue())
+            manifest = json.loads(
+                Path(summary["run_manifest"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(exit_code, 1)
+            self.assertNotIn("\x1b", stderr.getvalue())
+            self.assertNotIn("\n", manifest["failures"][0]["error"])
+            self.assertNotIn("\x1b", manifest["failures"][0]["error"])
 
     def test_partial_batch_exports_successful_rows_and_returns_one(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

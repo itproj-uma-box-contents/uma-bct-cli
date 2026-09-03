@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .pipeline import ImageResult
+from .pipeline import ImageResult, warning_text
 
 
 @dataclass(frozen=True)
@@ -28,11 +28,8 @@ class BatchOperations:
     write_json_atomic: Callable[[Path, dict[str, Any]], None]
 
 
-def configuration(
-    arguments: argparse.Namespace,
-    work_directory: Path | None,
-    request_timeout_seconds: float | None,
-) -> dict[str, Any]:
+def configuration(arguments: argparse.Namespace, work_directory: Path | None,
+    request_timeout_seconds: float | None) -> dict[str, Any]:
     return {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
@@ -46,9 +43,7 @@ def configuration(
     }
 
 
-def public_summary(
-    detailed_summary: dict[str, Any], *, image_count: int, model_name: str
-) -> dict[str, Any]:
+def public_summary(detailed_summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
     images = detailed_summary["images"]
     complete_count = sum(item.get("status") == "complete" for item in images)
     partial_count = sum(item.get("status") == "partial" for item in images)
@@ -70,62 +65,54 @@ def public_summary(
     }
 
 
-def _process_images(
-    pipeline: Any,
-    images: list[Path],
-    failures: list[dict[str, str]],
-) -> list[ImageResult]:
+def _process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]]) -> list[ImageResult]:
     results: list[ImageResult] = []
     for image_path in images:
-        print(f"Processing {image_path}", file=sys.stderr)
+        displayed_path = ascii(str(image_path))
+        print(f"Processing {displayed_path}", file=sys.stderr)
         try:
             result = pipeline.process(image_path)
         except Exception as error:  # Continue after one failed image.
-            failures.append({"source_image": str(image_path), "error": str(error)})
-            print(f"Failed {image_path}: {error}", file=sys.stderr)
+            message = warning_text(error)
+            failures.append({"source_image": str(image_path), "error": message})
+            print(f"Failed {displayed_path}: {message}", file=sys.stderr)
             continue
         results.append(result)
         for warning in result.warnings:
-            print(f"Warning for {image_path}: {warning}", file=sys.stderr)
+            message = warning_text(ValueError(warning))
+            print(f"Warning for {displayed_path}: {message}", file=sys.stderr)
     return results
 
 
-def _write_recovery_manifest(
-    output_path: Path,
-    summary: dict[str, Any],
-    operations: BatchOperations,
-) -> None:
+def write_recovery_manifest(output_path: Path, summary: dict[str, Any],
+                            operations: BatchOperations) -> None:
     recovery_manifest_path = operations.failed_manifest_path(output_path)
     summary["run_manifest"] = str(recovery_manifest_path)
     try:
         operations.write_json_atomic(recovery_manifest_path, summary)
     except Exception as error:
-        summary["failures"].append({"stage": "recovery manifest", "error": str(error)})
+        message = warning_text(error)
+        summary["failures"].append({"stage": "recovery manifest", "error": message})
         summary["run_manifest"] = None
-        print(f"Recovery manifest write failed: {error}", file=sys.stderr)
+        print(f"Recovery manifest write failed: {message}", file=sys.stderr)
 
 
-def _handle_manifest_failure(
-    *,
-    error: Exception,
-    summary: dict[str, Any],
-    output_path: Path,
-    catalogue_output: str | None,
-    catalogue_backup: Path | None,
-    operations: BatchOperations,
-) -> None:
-    summary["failures"].append({"stage": "manifest", "error": str(error)})
-    print(f"Manifest write failed: {error}", file=sys.stderr)
+def handle_manifest_failure(*, error: Exception, summary: dict[str, Any], output_path: Path,
+    catalogue_output: str | None, catalogue_backup: Path | None, operations: BatchOperations) -> None:
+    message = warning_text(error)
+    summary["failures"].append({"stage": "manifest", "error": message})
+    print(f"Manifest write failed: {message}", file=sys.stderr)
 
     if catalogue_output is not None:
         try:
             operations.restore_catalogue(output_path, catalogue_backup)
         except Exception as rollback_error:
+            rollback_message = warning_text(rollback_error)
             summary["status"] = "partial"
             summary["failures"].append(
                 {
                     "stage": "catalogue rollback",
-                    "error": str(rollback_error),
+                    "error": rollback_message,
                     "backup": str(catalogue_backup) if catalogue_backup else "",
                 }
             )
@@ -137,11 +124,11 @@ def _handle_manifest_failure(
             summary["catalogue_backup"] = (
                 str(retained_backup) if retained_backup else None
             )
-            print(f"Catalogue rollback failed: {rollback_error}", file=sys.stderr)
+            print(f"Catalogue rollback failed: {rollback_message}", file=sys.stderr)
             if retained_backup is not None:
                 print(
                     f"Private catalogue backup retained for recovery: "
-                    f"{retained_backup}",
+                    f"{ascii(str(retained_backup))}",
                     file=sys.stderr,
                 )
         else:
@@ -154,62 +141,57 @@ def _handle_manifest_failure(
             try:
                 catalogue_backup.unlink(missing_ok=True)
             except OSError as cleanup_error:
+                cleanup_message = warning_text(cleanup_error)
                 summary["catalogue_backup"] = str(catalogue_backup)
                 summary["failures"].append(
                     {
                         "stage": "catalogue backup cleanup",
-                        "error": str(cleanup_error),
+                        "error": cleanup_message,
                         "backup": str(catalogue_backup),
                     }
                 )
                 print(
                     f"Warning: could not remove catalogue backup "
-                    f"{catalogue_backup}: {cleanup_error}",
+                    f"{ascii(str(catalogue_backup))}: {cleanup_message}",
                     file=sys.stderr,
                 )
 
-    _write_recovery_manifest(output_path, summary, operations)
+    write_recovery_manifest(output_path, summary, operations)
 
 
-def _remove_catalogue_backup(
-    *,
-    catalogue_backup: Path | None,
-    output_path: Path,
-    summary: dict[str, Any],
-    operations: BatchOperations,
-) -> None:
+def remove_catalogue_backup(*, catalogue_backup: Path | None, output_path: Path,
+    summary: dict[str, Any], operations: BatchOperations) -> None:
+
     if catalogue_backup is None:
         return
     try:
         catalogue_backup.unlink(missing_ok=True)
     except OSError as error:
+        message = warning_text(error)
         summary["catalogue_backup"] = str(catalogue_backup)
         summary["failures"].append(
             {
                 "stage": "catalogue backup cleanup",
-                "error": str(error),
+                "error": message,
                 "backup": str(catalogue_backup),
             }
         )
         if summary["status"] == "complete":
             summary["status"] = "partial"
         print(
-            f"Warning: could not remove catalogue backup {catalogue_backup}: {error}",
+            f"Warning: could not remove catalogue backup "
+            f"{ascii(str(catalogue_backup))}: {message}",
             file=sys.stderr,
         )
-        _write_recovery_manifest(output_path, summary, operations)
+        write_recovery_manifest(output_path, summary, operations)
 
 
-def run_batch(
-    arguments: argparse.Namespace,
-    images: list[Path],
-    output_path: Path,
-    normal_manifest_path: Path,
-    *,
-    preserve_existing_manifest_on_failure: bool,
-    operations: BatchOperations,
-) -> int:
-    """Process one image batch and emit its single public JSON summary."""
+def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path,
+    normal_manifest_path: Path, *, preserve_existing_manifest_on_failure: bool, 
+    operations: BatchOperations) -> int:
+    """
+    Process one image batch and emit its single public JSON summary.
+    """
 
     started_at = datetime.now(UTC)
     failures: list[dict[str, str]] = []
@@ -229,10 +211,11 @@ def run_batch(
             request_timeout_seconds=request_timeout_seconds,
         )
         model_metadata.update(getattr(pipeline, "model_metadata", {}))
+        # Invalid model setup should not leave behind an empty crop-run directory.
         work_directory = operations.run_directory(arguments.path_to_box_images)
         pipeline.work_directory = work_directory
     except Exception as error:
-        failures.append({"stage": "preflight", "error": str(error)})
+        failures.append({"stage": "preflight", "error": warning_text(error)})
         pipeline = None
 
     results = (
@@ -263,8 +246,9 @@ def run_batch(
             record_count = len(records)
             catalogue_output = str(output_path)
         except Exception as error:
-            failures.append({"stage": "export", "error": str(error)})
-            print(f"Export failed: {error}", file=sys.stderr)
+            message = warning_text(error)
+            failures.append({"stage": "export", "error": message})
+            print(f"Export failed: {message}", file=sys.stderr)
     elif pipeline is not None:
         failures.append(
             {
@@ -304,7 +288,7 @@ def run_batch(
     try:
         operations.write_json_atomic(actual_manifest_path, summary)
     except Exception as error:
-        _handle_manifest_failure(
+        handle_manifest_failure(
             error=error,
             summary=summary,
             output_path=output_path,
@@ -313,7 +297,7 @@ def run_batch(
             operations=operations,
         )
     else:
-        _remove_catalogue_backup(
+        remove_catalogue_backup(
             catalogue_backup=catalogue_backup,
             output_path=output_path,
             summary=summary,

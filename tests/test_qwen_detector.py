@@ -81,6 +81,23 @@ class QwenBoxDetectorTest(unittest.TestCase):
         self.assertEqual(sanitized_path.suffix, ".png")
         self.assertFalse(sanitized_path.exists())
 
+    def test_fractional_pixel_mapping_expands_outward_to_image_edges(self):
+        model = FakeVisionModel({"boxes": [{"bbox_2d": [1, 1, 999, 999]}]})
+        detector = QwenBoxDetector(model)
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        image_path = Path(temporary_directory.name) / "shelf.jpg"
+        self.assertTrue(
+            cv2.imwrite(str(image_path), np.zeros((99, 101, 3), dtype=np.uint8))
+        )
+
+        regions = detector.detect(InputImage(image_path, width=101, height=99))
+
+        self.assertEqual(
+            regions[0].bounding_box,
+            BoundingBox((0, 0), (101, 99)),
+        )
+
     def test_rejects_an_empty_grounding_result_like_the_reference(self):
         detector = QwenBoxDetector(FakeVisionModel({"boxes": []}))
         temporary_directory = tempfile.TemporaryDirectory()

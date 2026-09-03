@@ -48,9 +48,7 @@ GROUNDING_SCHEMA = {
 }
 
 
-def validate_grounding_proposals(
-    value: Any,
-) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
+def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
     """Validate proposals independently and report malformed entries."""
 
     proposals = response_boxes(

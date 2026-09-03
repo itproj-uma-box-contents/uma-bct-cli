@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from uma_bct.cli import (
+from uma_bct.run_artifacts import (
     acquire_output_lock,
     backup_existing_catalogue,
     manifest_path,
@@ -65,7 +65,10 @@ class RunArtifactTest(unittest.TestCase):
             output_path = Path(temporary_directory) / "catalogue.csv"
 
             with (
-                patch("uma_bct.cli.os.write", side_effect=OSError("disk full")),
+                patch(
+                    "uma_bct.run_artifacts.os.write",
+                    side_effect=OSError("disk full"),
+                ),
                 self.assertRaisesRegex(ValueError, "could not reserve output"),
             ):
                 acquire_output_lock(output_path)

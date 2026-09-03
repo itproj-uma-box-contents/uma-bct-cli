@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -19,6 +20,13 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
             with zipfile.ZipFile(wheel, mode="w") as archive:
                 archive.writestr("../outside.txt", b"unsafe")
 
+            linked_wheel = root / "linked.whl"
+            with zipfile.ZipFile(linked_wheel, mode="w") as archive:
+                link = zipfile.ZipInfo("package/link")
+                link.create_system = 3
+                link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(link, "target")
+
             sdist = root / "unsafe.tar.gz"
             with tarfile.open(sdist, mode="w:gz") as archive:
                 link = tarfile.TarInfo("package/link")
@@ -27,7 +35,30 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
                 archive.addfile(link)
 
             self.assertIn("unsafe archive path", inspect_artifact(wheel)[0])
+            self.assertIn("archive link", inspect_artifact(linked_wheel)[0])
             self.assertIn("archive link", inspect_artifact(sdist)[0])
+
+    def test_private_suffixes_are_rejected_before_backup_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            wheel = Path(temporary_directory) / "unsafe.whl"
+            names = (
+                "package/photo.jpg.gz",
+                "package/catalogue.csv.bak",
+                "package/model.safetensors.index.json",
+                "package/catalogue.run.json.bak",
+            )
+            with zipfile.ZipFile(wheel, mode="w") as archive:
+                for name in names:
+                    archive.writestr(name, b"private")
+
+            findings = inspect_artifact(wheel)
+
+            self.assertEqual(len(findings), len(names))
+            for name in names:
+                self.assertTrue(
+                    any(name in finding for finding in findings),
+                    msg=f"expected a privacy finding for {name}",
+                )
 
     def test_safe_wheel_and_sdist_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

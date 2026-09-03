@@ -33,9 +33,8 @@ def with_box_id(transcription: BoxTranscription, box_id: str) -> BoxTranscriptio
     return replace(transcription, box_id=box_id, label=label)
 
 
-def observations_from_response(
-    box: Box, transcriptions: Sequence[BoxTranscription], crop_index: int
-) -> list[ObservedBox]:
+def observations_from_response(box: Box, transcriptions: Sequence[BoxTranscription], 
+                               crop_index: int) -> list[ObservedBox]:
     """Give every record from one crop a stable, exportable identity."""
 
     observations: list[ObservedBox] = []
@@ -277,6 +276,8 @@ def deduplicate(observations: Sequence[ObservedBox]) -> list[ObservedBox]:
     for observation in observations:
         matching_group: list[ObservedBox] | None = None
         for group in groups:
+            if any(member.crop_index == observation.crop_index for member in group):
+                continue
             if any(unit_conflict(observation, member) for member in group):
                 continue
             if any(is_duplicate(observation, member) for member in group):
