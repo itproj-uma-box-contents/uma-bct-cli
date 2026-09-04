@@ -80,6 +80,17 @@ public class Program {
 """
 
 
+def replace_fixture_once(source: str, original: str, replacement: str) -> str:
+    """Replace one launcher fixture token, failing if the fixture drifted."""
+
+    occurrences = source.count(original)
+    if occurrences != 1:
+        raise AssertionError(
+            f"Expected one launcher fixture token, found {occurrences}: {original!r}"
+        )
+    return source.replace(original, replacement, 1)
+
+
 class ClientBundleTest(unittest.TestCase):
     def test_bundle_command_builds_and_then_verifies_the_release(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -106,6 +117,71 @@ class ClientBundleTest(unittest.TestCase):
 
         self.assertIn("$Installer.WaitForExit()", launcher)
         self.assertNotIn("-PassThru -Wait", launcher)
+
+    def test_windows_launcher_materializes_zero_one_or_many_input_images(self):
+        launcher = (Path(__file__).parents[1] / "run-uma-bct.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(launcher.count("@(Get-InputImages).Count"), 2)
+
+    def test_posix_launcher_pins_each_supported_download(self):
+        launcher = (Path(__file__).parents[1] / "run-uma-bct.sh").read_text(
+            encoding="utf-8"
+        )
+
+        expected_mappings = (
+            (
+                "Darwin-*",
+                "ollama_",
+                "ollama-darwin.tgz",
+                "52acbca4e89c53db9abc586a22b5633fd101db293177264b9a0fe5d64a42a064",
+            ),
+            (
+                "Linux-x86_64|Linux-amd64",
+                "ollama_",
+                "ollama-linux-amd64.tar.zst",
+                "ffe2b2c2f2f5f5b30c081ec353c2e0bb2d9ead516064a8e22663b24b8fd8dca0",
+            ),
+            (
+                "Linux-arm64|Linux-aarch64",
+                "ollama_",
+                "ollama-linux-arm64.tar.zst",
+                "668a6f934b0b0455128bb4a76c9e50b9e5f274f9dc7710a066b7073e5bd36588",
+            ),
+            (
+                "Darwin-arm64",
+                "",
+                "uv-aarch64-apple-darwin.tar.gz",
+                "301f72afaf54060f92da7016cb0115bd077f43a9c8e39c1d8170a0bac80fd398",
+            ),
+            (
+                "Darwin-x86_64",
+                "",
+                "uv-x86_64-apple-darwin.tar.gz",
+                "e1ca175824f1056589ce9908f7631879ebc3c36535b5e63dc06510beb370b4c1",
+            ),
+            (
+                "Linux-arm64|Linux-aarch64",
+                "",
+                "uv-aarch64-unknown-linux-gnu.tar.gz",
+                "c36fe17937ff6bd16dc42fc13854b5465999fcab2efe0af559381e945e3c6001",
+            ),
+            (
+                "Linux-x86_64|Linux-amd64",
+                "",
+                "uv-x86_64-unknown-linux-gnu.tar.gz",
+                "ec7a99cd05e0cd7f80243f135ce1361c76835cb0ee60055d14d20eba8eba1460",
+            ),
+        )
+        for platform, variable_prefix, archive, sha256 in expected_mappings:
+            with self.subTest(platform=platform, archive=archive):
+                self.assertIn(
+                    f"{platform})\n"
+                    f'            {variable_prefix}archive_name="{archive}"\n'
+                    f'            {variable_prefix}archive_sha256="{sha256}"',
+                    launcher,
+                )
 
     def test_builds_one_client_folder_around_the_wheel(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -275,6 +351,8 @@ class ClientBundleTest(unittest.TestCase):
             environment.update(
                 {
                     "HOME": str(fake_home),
+                    "UV_VERSION": "hostile-inherited-version",
+                    "UV_RELEASE_URL": "https://remote.invalid/uv",
                     "OLLAMA_HOST": "https://remote.invalid",
                     "OLLAMA_NO_CLOUD": "0",
                     "UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1",
@@ -385,6 +463,46 @@ class ClientBundleTest(unittest.TestCase):
             self.assertFalse((root / ".uma-bct-runtime" / "uv-install.sh").exists())
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher test")
+    def test_posix_launcher_does_not_download_if_private_folders_cannot_be_inspected(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            launcher = root / "run-uma-bct.sh"
+            launcher_text = (Path(__file__).parents[1] / launcher.name).read_text(
+                encoding="utf-8"
+            )
+            launcher_text = replace_fixture_once(
+                launcher_text,
+                'find "$INPUTS" "$OUTPUTS" -mindepth 1 -maxdepth 1 -print -quit',
+                'sh "$ROOT/failing-find" "$INPUTS" "$OUTPUTS" '
+                "-mindepth 1 -maxdepth 1 -print -quit",
+            )
+            launcher_text = replace_fixture_once(
+                launcher_text,
+                "curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 "
+                '\\\n        -LsSf "$url" -o "$destination"',
+                ': > "$ROOT/download-attempted"',
+            )
+            launcher.write_text(launcher_text, encoding="utf-8")
+            (root / "failing-find").write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+            (root / "uma_bct_cli-0.1.0-py3-none-any.whl").touch()
+            (root / "client-constraints.txt").touch()
+
+            completed = subprocess.run(
+                ["sh", str(launcher)],
+                cwd=root,
+                env={**os.environ, "HOME": str(root / "home")},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("could not be inspected safely", completed.stderr)
+            self.assertFalse((root / "download-attempted").exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher test")
     def test_posix_launcher_rejects_an_unverified_download(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -394,10 +512,13 @@ class ClientBundleTest(unittest.TestCase):
             )
             download = root / "unverified.tar.gz"
             download.write_bytes(b"not the verified uv archive")
-            launcher_text = launcher_text.replace(
-                '"$UV_RELEASE_URL/$archive_name"',
+            launcher_text = replace_fixture_once(
+                launcher_text,
+                '"$BUNDLED_UV_RELEASE_URL/$archive_name"',
                 f'"{download.as_uri()}"',
-            ).replace(
+            )
+            launcher_text = replace_fixture_once(
+                launcher_text,
                 "curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 "
                 '\\\n        -LsSf "$url" -o "$destination"',
                 'cp "${url#file://}" "$destination"',
@@ -479,14 +600,24 @@ class ClientBundleTest(unittest.TestCase):
                 archive.add(uv_program, arcname="uv-test/uvx")
 
             replacements = {
-                '"$UV_RELEASE_URL/$archive_name"': f'"{uv_archive.as_uri()}"',
+                '"$BUNDLED_UV_RELEASE_URL/$archive_name"': f'"{uv_archive.as_uri()}"',
                 '"$OLLAMA_RELEASE_URL/$ollama_archive_name"': f'"{ollama_archive.as_uri()}"',
                 "curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 "
                 '\\\n        -LsSf "$url" -o "$destination"': (
                     'cp "${url#file://}" "$destination"'
                 ),
-                'ollama_archive_type="zstd"': 'ollama_archive_type="gzip"',
             }
+            for official_hash in (
+                "ffe2b2c2f2f5f5b30c081ec353c2e0bb2d9ead516064a8e22663b24b8fd8dca0",
+                "668a6f934b0b0455128bb4a76c9e50b9e5f274f9dc7710a066b7073e5bd36588",
+            ):
+                launcher_text = replace_fixture_once(
+                    launcher_text,
+                    f'ollama_archive_sha256="{official_hash}"\n'
+                    '            ollama_archive_type="zstd"',
+                    f'ollama_archive_sha256="{official_hash}"\n'
+                    '            ollama_archive_type="gzip"',
+                )
             uv_archive_hash = hashlib.sha256(uv_archive.read_bytes()).hexdigest()
             for official_hash in (
                 "301f72afaf54060f92da7016cb0115bd077f43a9c8e39c1d8170a0bac80fd398",
@@ -505,7 +636,9 @@ class ClientBundleTest(unittest.TestCase):
             ):
                 replacements[official_hash] = ollama_archive_hash
             for original, replacement in replacements.items():
-                launcher_text = launcher_text.replace(original, replacement)
+                launcher_text = replace_fixture_once(
+                    launcher_text, original, replacement
+                )
             launcher.write_text(launcher_text, encoding="utf-8")
 
             environment = os.environ.copy()
@@ -598,16 +731,21 @@ class ClientBundleTest(unittest.TestCase):
                 "-OutFile $OllamaInstaller -UseBasicParsing": "Copy-Item "
                 "-LiteralPath $OllamaInstallerUrl -Destination $OllamaInstaller",
                 "Assert-OllamaSignature $OllamaInstaller": "# Test fixture hash verified above",
+                '(Join-Path $env:ProgramFiles "Ollama\\ollama.exe")': (
+                    '(Join-Path $env:UMA_BCT_TEST_PROGRAM_FILES "Ollama\\ollama.exe")'
+                ),
             }
             for original, replacement in replacements.items():
-                launcher_text = launcher_text.replace(original, replacement)
+                launcher_text = replace_fixture_once(
+                    launcher_text, original, replacement
+                )
             launcher.write_text(launcher_text, encoding="utf-8")
 
             environment = os.environ.copy()
             environment.update(
                 {
                     "LOCALAPPDATA": str(local_app_data),
-                    "ProgramFiles": str(root / "program-files"),
+                    "UMA_BCT_TEST_PROGRAM_FILES": str(root / "program-files"),
                     "OLLAMA_INSTALL_DIR": "C:\\untrusted",
                     "OLLAMA_NO_START": "1",
                     "OLLAMA_UNINSTALL": "1",

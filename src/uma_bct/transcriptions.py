@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from .domain import Box, BoxText, BoxTranscription, Label
+from .identity import CONTEXTUAL_UNIT, normalise_unit_claim
 from .imaging import iou
 
 TYPED_SIMILARITY_THRESHOLD = 0.92
@@ -69,30 +70,18 @@ def unit_value(item: ObservedBox) -> str:
 
 
 def unit_evidence(item: ObservedBox) -> set[str]:
-    def canonical(value: str) -> str:
-        return str(int(value)).zfill(4)
-
     evidence: set[str] = set()
     stated_unit = unit_value(item).strip().casefold()
     if stated_unit:
-        match = re.fullmatch(
-            r"(?:unit\s*[:#-]?\s*)?(\d{1,4})",
-            stated_unit,
-            re.IGNORECASE,
-        )
-        evidence.add(canonical(match.group(1)) if match else stated_unit)
+        evidence.add(normalise_unit_claim(stated_unit) or stated_unit)
     for line in (
         *item.transcription.typed_lines,
         *item.transcription.handwritten_lines,
     ):
-        for match in re.finditer(
-            r"\b(?:unit|box(?:\s*(?:no\.?|number))?)\s*[:#-]?\s*(\d{1,4})\b",
-            line,
-            re.IGNORECASE,
-        ):
-            evidence.add(canonical(match.group(1)))
-        if match := re.fullmatch(r"\s*(\d{1,4})\s*", line):
-            evidence.add(canonical(match.group(1)))
+        for match in CONTEXTUAL_UNIT.finditer(line):
+            evidence.add(match.group(1).zfill(4))
+        if normalized := normalise_unit_claim(line):
+            evidence.add(normalized)
     return evidence
 
 

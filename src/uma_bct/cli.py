@@ -7,6 +7,7 @@ import math
 import os
 import stat
 import sys
+import unicodedata
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -270,6 +271,50 @@ def discover_images(path: Path) -> list[Path]:
     )
 
 
+def validate_output_layout(
+    output_path: Path,
+    run_manifest_path: Path,
+    crop_root: Path,
+) -> None:
+    """Reject layouts that cannot safely contain file and crop outputs."""
+
+    normalized_output = Path(os.path.abspath(output_path))
+    normalized_manifest = Path(os.path.abspath(run_manifest_path))
+    normalized_crop_root = Path(os.path.abspath(crop_root))
+    windows_semantics = os.name == "nt" or sys.platform == "win32"
+    case_insensitive = windows_semantics or sys.platform == "darwin"
+
+    def comparison_parts(path: Path) -> tuple[str, ...]:
+        parts = path.parts
+        if windows_semantics:
+            parts = tuple(part.rstrip(" .") for part in parts)
+        if case_insensitive:
+            return tuple(
+                unicodedata.normalize("NFC", part).casefold() for part in parts
+            )
+        return parts
+
+    crop_parts = comparison_parts(normalized_crop_root)
+
+    for label, artifact_path in (
+        ("catalogue output", normalized_output),
+        ("run manifest", normalized_manifest),
+    ):
+        artifact_parts = comparison_parts(artifact_path)
+        if crop_parts[: len(artifact_parts)] == artifact_parts:
+            raise ValueError(
+                f"review crop directory must not be inside the {label} file path: "
+                f"{crop_root}"
+            )
+
+    try:
+        os.path.relpath(normalized_crop_root, normalized_output.parent)
+    except ValueError:
+        raise ValueError(
+            "catalogue output and review crop directory must be on the same drive"
+        ) from None
+
+
 def _run_batch(
     arguments: argparse.Namespace,
     images: list[Path],
@@ -345,6 +390,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"{purpose} must be a directory when it already exists: {root}"
             )
+    try:
+        validate_output_layout(
+            output_path,
+            run_manifest_path,
+            arguments.path_to_box_images,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     try:
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:

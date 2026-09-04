@@ -196,18 +196,18 @@ jobs:
         run: |
           docker run --rm uma-bct-cli:ci --help
           docker run --rm uma-bct-cli:ci setup --help
-      - name: Verify a host-UID output bind mount is writable
+      - name: Verify Compose writes outputs as the host user
         shell: bash
         run: |
-          output_dir="$RUNNER_TEMP/uma-bct-container-output"
-          mkdir -p "$output_dir"
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
+          mkdir -p inputs outputs
+          UMA_BCT_IMAGE=uma-bct-cli:ci \
+          UMA_BCT_UID="$(id -u)" \
+          UMA_BCT_GID="$(id -g)" \
+          docker compose run --rm --no-deps \
             --entrypoint python \
-            --mount "type=bind,source=$output_dir,target=/data/outputs" \
-            uma-bct-cli:ci \
+            app \
             -c "from pathlib import Path; Path('/data/outputs/probe').write_text('ok', encoding='utf-8')"
-          test "$(cat "$output_dir/probe")" = "ok"
+          test "$(cat outputs/probe)" = "ok"
       - name: Build model-free test image
         run: docker build --target test -t uma-bct-cli:test .
       - name: Run mocked-model tests in the container

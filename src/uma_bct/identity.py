@@ -6,39 +6,50 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-STRONG_RECORD_IDENTIFIER_PATTERN = r"(?:UMA-(?:AC|SR)E?-\d{8,9}|\d{4}\.\d{4})"
-LEGACY_RECORD_IDENTIFIER_PATTERN = r"\d{2}/\d+"
+STRONG_RECORD_IDENTIFIER_PATTERN = r"(?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4})"
+LEGACY_RECORD_IDENTIFIER_PATTERN = r"[0-9]{2}/[0-9]+"
+RECORD_IDENTIFIER_BODY = (
+    rf"(?a:(?:{STRONG_RECORD_IDENTIFIER_PATTERN}|{LEGACY_RECORD_IDENTIFIER_PATTERN}))"
+)
+# A dash is a separator only when another complete identifier follows. This keeps
+# compact multi-identifier labels without accepting suffixes such as ``-extra``.
+RECORD_IDENTIFIER_TOKEN_END = (
+    r"(?=$|[\s,;:&+|!?)}\]]|\.(?=$|\s)|[-–—](?=" + RECORD_IDENTIFIER_BODY + r"))"
+)
+UNIT_TOKEN_END = r"(?=$|[\s,;:!?)}\]]|\.(?=$|\s))"
 RECORD_IDENTIFIER = re.compile(
-    rf"(?<![A-Z0-9/])(?:{STRONG_RECORD_IDENTIFIER_PATTERN}|"
-    rf"{LEGACY_RECORD_IDENTIFIER_PATTERN})(?![A-Z0-9/])",
+    rf"(?<![\w/]){RECORD_IDENTIFIER_BODY}{RECORD_IDENTIFIER_TOKEN_END}",
     re.IGNORECASE,
 )
 UNIT_PREFIX = r"(?:unit|box(?:\s*(?:no\.?|number))?|no\.?)"
 UNIT_NUMBER = re.compile(
-    rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?(\d{{1,4}})",
-    re.IGNORECASE,
+    rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?([0-9]{{1,4}})",
+    re.IGNORECASE | re.ASCII,
 )
 CONTEXTUAL_UNIT = re.compile(
-    rf"\b{UNIT_PREFIX}\s*[:#-]?\s*(\d{{1,4}})(?!\d)",
+    rf"(?<!\w)(?a:{UNIT_PREFIX})\s*[:#-]?\s*([0-9]{{1,4}})"
+    rf"{UNIT_TOKEN_END}",
     re.IGNORECASE,
 )
 IDENTIFIER_LABEL_PREFIX = re.compile(
     r"^\s*(?:(?:records?(?:\s+set)?|accession)"
     r"(?:\s+(?:identifier|id|number|no\.?))?|identifier|id)"
     r"\s*[:#-]?\s*",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
-HANDWRITTEN_UNIT = re.compile(r"^\s*(\d{1,4})(?:\s+[A-Z]\d{1,2})?\s*$", re.I)
+HANDWRITTEN_UNIT = re.compile(
+    r"^\s*([0-9]{1,4})(?:\s+[A-Z][0-9]{1,2})?\s*$", re.I | re.ASCII
+)
 AMBIGUOUS_UNIT_CONNECTOR = re.compile(
-    rf"\b{UNIT_PREFIX}\s*[:#-]?\s*\d{{1,4}}\s*"
+    rf"\b{UNIT_PREFIX}\s*[:#-]?\s*[0-9]{{1,4}}\s*"
     rf"(?:\?|(?:and\s*/\s*)?or\b|\band\b|\bwas\b|&|\+|/|,|\bto\b|[-–—])\s*"
-    rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?\d{{1,4}}\b",
-    re.IGNORECASE,
+    rf"(?:{UNIT_PREFIX}\s*[:#-]?\s*)?[0-9]{{1,4}}\b",
+    re.IGNORECASE | re.ASCII,
 )
 AMBIGUOUS_UNIT_WORD = re.compile(
     r"\b(?:or|was|maybe|possibly|unclear|unknown|ambiguous|overwritten|"
     r"crossed\s*out|struck\s*out)\b|\band\s*/\s*or\b",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:/|&+()\[\]{}\-–—]*$")
 
@@ -120,7 +131,7 @@ def collect_unit_evidence(
     # immediately after the record identifier. This adjacency is required;
     # arbitrary standalone typed numbers remain unsafe as unit evidence.
     for index, line in enumerate(typed):
-        bare_typed_unit = re.fullmatch(r"\s*(\d{1,4})\s*", line)
+        bare_typed_unit = re.fullmatch(r"\s*([0-9]{1,4})\s*", line)
         if (
             bare_typed_unit is not None
             and index > 0
@@ -182,7 +193,7 @@ def identity_only_line(
     if not body and removed_identifier:
         return True
 
-    if match := re.match(rf"^\s*{UNIT_PREFIX}\s*[:#-]?\s*", body, re.I):
+    if match := re.match(rf"^\s*{UNIT_PREFIX}\s*[:#-]?\s*", body, re.I | re.ASCII):
         unit_body = body[match.end() :]
         unit_body = re.sub(
             r"\b(?:and\s*/\s*or|or|to|maybe|possibly|unclear|unknown|"
@@ -191,11 +202,11 @@ def identity_only_line(
             unit_body,
             flags=re.IGNORECASE,
         )
-        unit_body = re.sub(r"\d{1,4}", " ", unit_body)
+        unit_body = re.sub(r"[0-9]{1,4}", " ", unit_body)
         return IDENTITY_SEPARATORS.fullmatch(unit_body) is not None
 
     normalized_claim = normalise_unit_claim(structured_unit)
-    bare_unit = re.fullmatch(r"\d{1,4}", body)
+    bare_unit = re.fullmatch(r"[0-9]{1,4}", body)
     return bool(
         normalized_claim
         and bare_unit

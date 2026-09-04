@@ -349,6 +349,123 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             build_pipeline.assert_not_called()
 
+    def test_rejects_crop_roots_beneath_catalogue_artifact_paths_before_pipeline(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            output_path = root / "catalogue.csv"
+            image_path.touch()
+
+            for artifact_path in (output_path, root / "catalogue.run.json"):
+                with self.subTest(artifact_path=artifact_path):
+                    with (
+                        patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(
+                            [
+                                "-i",
+                                str(image_path),
+                                "-o",
+                                str(output_path),
+                                "-b",
+                                str(artifact_path / "crops"),
+                            ]
+                        )
+
+                    self.assertEqual(raised.exception.code, 2)
+                    build_pipeline.assert_not_called()
+
+    def test_rejects_cross_drive_crop_layout_before_pipeline(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            image_path.touch()
+
+            with (
+                patch("uma_bct.cli.os.path.relpath", side_effect=ValueError),
+                patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "-i",
+                        str(image_path),
+                        "-o",
+                        str(root / "catalogue.csv"),
+                        "-b",
+                        str(root / "crops"),
+                    ]
+                )
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("same drive", stderr.getvalue())
+            build_pipeline.assert_not_called()
+
+    def test_rejects_case_and_unicode_equivalent_artifact_paths_on_macos(self):
+        cases = (
+            ("Catalogue.csv", "catalogue.csv"),
+            ("Caf\u00e9.csv", "Cafe\u0301.csv"),
+        )
+        for output_name, crop_artifact_name in cases:
+            with self.subTest(output_name=output_name):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    image_path = root / "shelf.jpg"
+                    image_path.touch()
+
+                    with (
+                        patch("uma_bct.cli.sys.platform", "darwin"),
+                        patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                        contextlib.redirect_stdout(io.StringIO()),
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(
+                            [
+                                "-i",
+                                str(image_path),
+                                "-o",
+                                str(root / output_name),
+                                "-b",
+                                str(root / crop_artifact_name / "crops"),
+                            ]
+                        )
+
+                    self.assertEqual(raised.exception.code, 2)
+                    build_pipeline.assert_not_called()
+
+    def test_rejects_windows_trailing_dot_and_space_artifact_aliases(self):
+        for alias in ("catalogue.csv.", "catalogue.csv "):
+            with self.subTest(alias=alias):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    image_path = root / "shelf.jpg"
+                    image_path.touch()
+
+                    with (
+                        patch("uma_bct.cli.sys.platform", "win32"),
+                        patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                        contextlib.redirect_stdout(io.StringIO()),
+                        contextlib.redirect_stderr(io.StringIO()),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(
+                            [
+                                "-i",
+                                str(image_path),
+                                "-o",
+                                str(root / "catalogue.csv"),
+                                "-b",
+                                str(root / alias / "crops"),
+                            ]
+                        )
+
+                    self.assertEqual(raised.exception.code, 2)
+                    build_pipeline.assert_not_called()
+
     def test_rejects_existing_output_and_manifest_symlinks_before_processing(self):
         for linked_name in ("catalogue.csv", "catalogue.run.json"):
             with self.subTest(linked_name=linked_name):

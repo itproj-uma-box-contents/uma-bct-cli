@@ -15,6 +15,20 @@ from .duplicates import check_duplicate_rows
 from .pipeline import ImageResult
 from .validation import check_low_confidence_rows
 
+EXCEL_CELL_CHARACTER_LIMIT = 32_767
+
+
+def _validate_xlsx_cell_lengths(dataframe: pd.DataFrame) -> None:
+    """Reject values that Excel would silently truncate."""
+
+    for column in dataframe.columns:
+        for value in dataframe[column]:
+            if isinstance(value, str) and len(value) > EXCEL_CELL_CHARACTER_LIMIT:
+                raise ValueError(
+                    "XLSX cells cannot exceed 32,767 characters; export this "
+                    "catalogue as CSV to preserve the complete text."
+                )
+
 
 def catalogue_dataframe(
     results: Iterable[ImageResult],
@@ -107,6 +121,8 @@ def export_catalogue(
         minimum_confidence=minimum_confidence,
         catalogue_path=destination,
     )
+    if extension == ".xlsx":
+        _validate_xlsx_cell_lengths(dataframe)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:

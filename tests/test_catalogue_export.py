@@ -67,6 +67,32 @@ class CatalogueMappingTest(unittest.TestCase):
                 self.assertEqual(record["Node Title"], expected)
                 self.assertEqual(record["Flags"], "")
 
+    def test_rejects_non_ascii_and_decimal_embedded_identifiers(self):
+        cases = (
+            ("１９７４.００５６", "１９７４.００５６"),
+            ("UMA-ſRE-20160038", "UMA-ſRE-20160038"),
+            ("1974.0056", "1974.0056.7"),
+            ("1974.0056", "1974.0056-extra"),
+            ("UMA-AC-000000330", "UMA-AC-000000330-extra"),
+        )
+        for structured_identifier, raw_identifier in cases:
+            with self.subTest(raw_identifier=raw_identifier):
+                transcription = self.transcription(
+                    "box-1",
+                    "12",
+                    (raw_identifier, "Unit 12"),
+                    (),
+                    identifiers=(structured_identifier,),
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], "")
+                self.assertEqual(
+                    record["Flags"],
+                    "Ambiguous identifier; Transcription mismatch",
+                )
+
     def test_uses_first_of_multiple_identifiers_and_flags_for_review(self):
         transcription = self.transcription(
             "box-1",
@@ -80,6 +106,23 @@ class CatalogueMappingTest(unittest.TestCase):
 
         self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
         self.assertEqual(record["Flags"], "Multiple identifiers")
+
+    def test_accepts_multiple_identifiers_joined_by_clear_separators(self):
+        for separator in ("&", "+", "|", "-", "–", "—"):
+            with self.subTest(separator=separator):
+                identifiers = ("1974.0029", "1997.0138")
+                transcription = self.transcription(
+                    "box-1",
+                    "8",
+                    (f"{separator.join(identifiers)}", "Unit 8"),
+                    (),
+                    identifiers=identifiers,
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
+                self.assertEqual(record["Flags"], "Multiple identifiers")
 
     def test_blanks_identity_when_typed_text_has_unreported_extra_identifiers(self):
         transcription = self.transcription(
@@ -391,6 +434,31 @@ class CatalogueMappingTest(unittest.TestCase):
         self.assertEqual(record["Node Title"], "")
         self.assertEqual(record["Flags"], "Invalid unit; Transcription mismatch")
 
+    def test_rejects_a_unit_number_embedded_in_an_alphanumeric_token(self):
+        for unit_line in (
+            "Unit 12A",
+            "Unit 12-A",
+            "Unit 12.extra",
+            "Unit 12.３",
+            "Unit 12/A",
+            "Unit 12\u0301",
+        ):
+            with self.subTest(unit_line=unit_line):
+                transcription = self.transcription(
+                    "box-1",
+                    "12",
+                    ("1974.0056", unit_line),
+                    (),
+                    identifiers=("1974.0056",),
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], "")
+                self.assertEqual(
+                    record["Flags"], "Invalid unit; Transcription mismatch"
+                )
+
     def test_ambiguous_contextual_unit_expressions_are_blank_and_flagged(self):
         for raw_line in (
             "Unit 7 or 8",
@@ -584,6 +652,50 @@ class CatalogueExportTest(unittest.TestCase):
         self.assertEqual(written.loc[0, "Node Title"], "1974.0056 Unit 0001")
         self.assertEqual(written.loc[0, "Description"], 'Māori "records"')
         self.assertEqual(written.loc[0, "Date Range"], "")
+
+    def test_xlsx_accepts_a_cell_at_the_excel_character_limit(self):
+        output_path = self.root / "catalogue.xlsx"
+        description = "x" * 32_767
+
+        export_catalogue(
+            [self.result("shelf-a", "box-a", handwritten=(description,))],
+            output_path,
+        )
+
+        written = pd.read_excel(output_path, keep_default_na=False)
+        self.assertEqual(written.loc[0, "Description"], description)
+
+    def test_xlsx_rejects_an_oversized_cell_without_replacing_the_destination(self):
+        output_path = self.root / "catalogue.xlsx"
+        original = b"existing workbook"
+        output_path.write_bytes(original)
+        private_marker = "private-client-content"
+        description = private_marker + "x" * (32_768 - len(private_marker))
+
+        with self.assertRaises(ValueError) as raised:
+            export_catalogue(
+                [self.result("shelf-a", "box-a", handwritten=(description,))],
+                output_path,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("32,767", message)
+        self.assertIn("CSV", message)
+        self.assertNotIn(private_marker, message)
+        self.assertEqual(output_path.read_bytes(), original)
+        self.assertEqual(list(self.root.glob(".uma-bct-catalogue-*")), [])
+
+    def test_csv_preserves_a_cell_over_the_excel_character_limit(self):
+        output_path = self.root / "catalogue.csv"
+        description = "x" * 32_768
+
+        export_catalogue(
+            [self.result("shelf-a", "box-a", handwritten=(description,))],
+            output_path,
+        )
+
+        written = pd.read_csv(output_path, keep_default_na=False)
+        self.assertEqual(written.loc[0, "Description"], description)
 
     def test_applies_configurable_low_confidence_threshold(self):
         results = [self.result("shelf-a", "box-a", confidence=79)]

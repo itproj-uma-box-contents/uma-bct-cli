@@ -39,7 +39,8 @@ class OllamaArchiveTest(unittest.TestCase):
 
             executable = root / "installed" / "bin" / "ollama"
             self.assertEqual(executable.read_bytes(), content)
-            self.assertTrue(executable.stat().st_mode & 0o100)
+            if os.name != "nt":
+                self.assertTrue(executable.stat().st_mode & 0o100)
 
     @unittest.skipIf(os.name == "nt", "Linux archive link behavior")
     def test_preserves_an_internal_relative_library_link(self):

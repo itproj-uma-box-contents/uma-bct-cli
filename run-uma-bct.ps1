@@ -339,14 +339,14 @@ try {
             }
         }
 
-        if ((Get-InputImages).Count -eq 0) {
+        if (@(Get-InputImages).Count -eq 0) {
             Write-Host "Add JPG, PNG, TIF, or WEBP photos to the folder that just opened."
             Open-LocalFolder $Inputs
             if ([Environment]::UserInteractive) {
                 Read-Host "Press Enter after the photos have finished copying"
             }
         }
-        if ((Get-InputImages).Count -eq 0) {
+        if (@(Get-InputImages).Count -eq 0) {
             throw "No supported photos were found in $Inputs"
         }
 

@@ -13,8 +13,8 @@ CONSTRAINTS="$ROOT/client-constraints.txt"
 APP_ENV="$RUNTIME/app"
 APP_PYTHON="$APP_ENV/bin/python"
 APP_CLI="$APP_ENV/bin/uma-bct"
-UV_VERSION="0.12.9"
-UV_RELEASE_URL="https://releases.astral.sh/github/uv/releases/download/$UV_VERSION"
+BUNDLED_UV_VERSION="0.12.9"
+BUNDLED_UV_RELEASE_URL="https://releases.astral.sh/github/uv/releases/download/$BUNDLED_UV_VERSION"
 OLLAMA_VERSION="0.30.8"
 MINIMUM_OLLAMA_VERSION="$OLLAMA_VERSION"
 OLLAMA_RELEASE_URL="https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION"
@@ -37,7 +37,10 @@ has_input_images() {
 }
 
 has_private_data() {
-    find "$INPUTS" "$OUTPUTS" -mindepth 1 -maxdepth 1 -print -quit | grep -q .
+    if ! private_entry=$(find "$INPUTS" "$OUTPUTS" -mindepth 1 -maxdepth 1 -print -quit); then
+        fail "The inputs and outputs folders could not be inspected safely."
+    fi
+    [ -n "$private_entry" ]
 }
 
 open_folder() {
@@ -159,7 +162,7 @@ install_uv() {
     esac
     printf 'Preparing the private local Python runtime...\n'
     uv_archive="$RUNTIME/$archive_name"
-    download_script "$UV_RELEASE_URL/$archive_name" "$uv_archive" "$archive_sha256"
+    download_script "$BUNDLED_UV_RELEASE_URL/$archive_name" "$uv_archive" "$archive_sha256"
     tar -xzf "$uv_archive" --strip-components 1 -C "$RUNTIME/bin"
     rm -f "$uv_archive"
 }
@@ -235,14 +238,14 @@ UV="$RUNTIME/bin/uv"
 [ ! -L "$UV" ] || fail "$UV must not be a symbolic link."
 [ ! -e "$UV" ] || [ -f "$UV" ] || fail "$UV must be a regular file."
 uv_version=$({ "$UV" --version 2>/dev/null || true; } | awk '{print $2}')
-if [ "$uv_version" != "$UV_VERSION" ]; then
+if [ "$uv_version" != "$BUNDLED_UV_VERSION" ]; then
     [ "$private_data_present" -eq 0 ] || \
         fail "Move private files out of inputs and outputs before repairing the local runtime."
     install_uv
 fi
 [ -x "$UV" ] || fail "The local Python runtime could not be installed."
 uv_version=$({ "$UV" --version 2>/dev/null || true; } | awk '{print $2}')
-[ "$uv_version" = "$UV_VERSION" ] || fail "The local Python runtime has an unexpected version."
+[ "$uv_version" = "$BUNDLED_UV_VERSION" ] || fail "The local Python runtime has an unexpected version."
 
 export UV_CACHE_DIR="$RUNTIME/uv-cache"
 export UV_PYTHON_INSTALL_DIR="$RUNTIME/python"

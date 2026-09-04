@@ -119,7 +119,8 @@ Native Ollama remains the preferred technical path. For container-based teams:
 ```bash
 mkdir -p inputs outputs
 docker compose config --quiet
-docker compose run --rm app
+UMA_BCT_UID="$(id -u)" UMA_BCT_GID="$(id -g)" \
+  docker compose run --rm app
 ```
 
 The Compose service keeps inputs read-only, writes only to `outputs/`, stores
