@@ -224,7 +224,9 @@ class CliExportTest(unittest.TestCase):
             stderr = io.StringIO()
 
             with (
-                patch("uma_bct.cli.build_pipeline", return_value=FakePipeline()),
+                patch(
+                    "uma_bct.cli.build_pipeline", return_value=FakePipeline()
+                ) as build_pipeline,
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(stderr),
             ):
@@ -238,6 +240,10 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(summary["status"], "complete")
             self.assertEqual(written.loc[0, "Node Title"], "1974.0056 Unit 0001")
             self.assertTrue((root / "exports" / "catalogue.run.json").is_file())
+            self.assertEqual(
+                build_pipeline.call_args.kwargs["work_directory"],
+                output_path.parent / "crops",
+            )
             self.assertEqual(json.loads(stdout.getvalue())["schema_version"], 1)
             self.assertNotIn("Correspondence", stdout.getvalue())
             self.assertIn("Processing", stderr.getvalue())

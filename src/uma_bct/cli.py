@@ -126,8 +126,8 @@ Progress and warnings go to stderr. The final JSON result goes to stdout.""",
         "--work-dir",
         dest="path_to_box_images",
         type=Path,
-        default=Path("outputs") / "crops",
-        help="root directory for review crops (default: %(default)s)",
+        default=None,
+        help="root directory for review crops (default: crops beside the catalogue)",
     )
     parser.add_argument(
         "-d",
@@ -356,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         return run_setup()
     output_path = arguments.path_to_outputs
+    if arguments.path_to_box_images is None:
+        arguments.path_to_box_images = output_path.parent / "crops"
     run_manifest_path = manifest_path(output_path)
     if output_path.suffix.casefold() not in SUPPORTED_OUTPUT_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_OUTPUT_EXTENSIONS))

@@ -734,7 +734,14 @@ class ClientBundleTest(unittest.TestCase):
                 )
             launcher.write_text(launcher_text, encoding="utf-8")
 
-            environment = os.environ.copy()
+            # The uv test process may inherit PowerShell 7 module paths. Let
+            # Windows PowerShell rebuild its native module search path, as it
+            # does when the client starts the CMD launcher from Explorer.
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if key.casefold() != "psmodulepath"
+            }
             environment.update(
                 {
                     "LOCALAPPDATA": str(local_app_data),
@@ -770,7 +777,7 @@ class ClientBundleTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue(input_image.is_file())
             calls = call_log.read_text(encoding="utf-8")
-            self.assertLess(calls.index("uv venv"), calls.index("uma-bct setup"))
+            self.assertLess(calls.index("uv.exe venv"), calls.index("uma-bct setup"))
             self.assertLess(
                 calls.index("ollama installer"),
                 calls.index("uma-bct setup"),
@@ -890,7 +897,7 @@ class ClientBundleTest(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             calls = call_log.read_text(encoding="utf-8")
-            self.assertIn("ollama list", calls)
+            self.assertIn("ollama.exe list", calls)
             self.assertNotIn("uma-bct setup", calls)
             self.assertIn("uma-bct --force", calls)
             self.assertIn("pip install --no-config --offline", calls)
