@@ -142,11 +142,14 @@ def image_reference(
         ) from None
 
 
-def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path,
-    *, catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = ()) -> dict[str, str | int]:
-    """
-    Convert one transcription to the client import and review columns.
-    """
+def map_catalogue_record(
+    transcription: BoxTranscription,
+    image_file_path: str | Path,
+    *,
+    catalogue_path: str | Path | None = None,
+    additional_flags: Iterable[str] = (),
+) -> dict[str, str | int]:
+    """Convert one transcription to the client import and review columns."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(
         transcription

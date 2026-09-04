@@ -32,11 +32,14 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
 
-def range_score(value: float, minimum: float, preferred_minimum: float, 
-                preferred_maximum: float, maximum: float) -> float:
-    """
-    Score a value with a flat preferred range and tapered outer ranges.
-    """
+def range_score(
+    value: float,
+    minimum: float,
+    preferred_minimum: float,
+    preferred_maximum: float,
+    maximum: float,
+) -> float:
+    """Score a value with a flat preferred range and tapered outer ranges."""
 
     if value < minimum or value > maximum:
         return 0.0
@@ -65,7 +68,9 @@ def plausible_bbox(box: BoundingBox, image_width: int, image_height: int) -> boo
     )
 
 
-def line_segments(edges: np.ndarray) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
+def line_segments(
+    edges: np.ndarray,
+) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
     height, width = edges.shape
     short_side = min(height, width)
     lines = cv2.HoughLinesP(
@@ -91,11 +96,12 @@ def line_segments(edges: np.ndarray) -> tuple[list[tuple[int, ...]], list[tuple[
     return horizontal, vertical
 
 
-def line_support(bbox: tuple[int, int, int, int], horizontal: list[tuple[int, ...]], 
-                vertical: list[tuple[int, ...]]) -> float:
-    """
-    Estimate how many candidate sides have nearby straight-line support.
-    """
+def line_support(
+    bbox: tuple[int, int, int, int],
+    horizontal: list[tuple[int, ...]],
+    vertical: list[tuple[int, ...]],
+) -> float:
+    """Estimate how many candidate sides have nearby straight-line support."""
 
     x, y, width, height = bbox
     horizontal_tolerance = max(5, int(height * 0.09))
@@ -122,10 +128,13 @@ def line_support(bbox: tuple[int, int, int, int], horizontal: list[tuple[int, ..
     return sum((top, bottom, left, right)) / 4.0
 
 
-def candidate_confidence(contour: np.ndarray, bbox: tuple[int, int, int, int],
-    image_shape: tuple[int, int], horizontal_lines: list[tuple[int, ...]], 
-    vertical_lines: list[tuple[int, ...]]) -> float:
-
+def candidate_confidence(
+    contour: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    image_shape: tuple[int, int],
+    horizontal_lines: list[tuple[int, ...]],
+    vertical_lines: list[tuple[int, ...]],
+) -> float:
     _, _, width, height = bbox
     image_height, image_width = image_shape
     image_area = float(image_width * image_height)
@@ -248,7 +257,8 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
     for candidate in candidates:
         box = candidate.bounding_box
         # Resize dimensions are rounded independently. Match the reference by
-        # mapping each axis using the actual resized dimensions rather than the nominal floating-point scale.
+        # mapping each axis using the actual resized dimensions rather than the
+        # nominal floating-point scale.
         left = box.x * original_width // detection_width
         top = box.y * original_height // detection_height
         right = (

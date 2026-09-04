@@ -28,8 +28,11 @@ class BatchOperations:
     write_json_atomic: Callable[[Path, dict[str, Any]], None]
 
 
-def configuration(arguments: argparse.Namespace, work_directory: Path | None,
-    request_timeout_seconds: float | None) -> dict[str, Any]:
+def configuration(
+    arguments: argparse.Namespace,
+    work_directory: Path | None,
+    request_timeout_seconds: float | None,
+) -> dict[str, Any]:
     return {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
@@ -43,7 +46,9 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None,
     }
 
 
-def public_summary(detailed_summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
+def public_summary(
+    detailed_summary: dict[str, Any], *, image_count: int, model_name: str
+) -> dict[str, Any]:
     images = detailed_summary["images"]
     complete_count = sum(item.get("status") == "complete" for item in images)
     partial_count = sum(item.get("status") == "partial" for item in images)
@@ -65,7 +70,11 @@ def public_summary(detailed_summary: dict[str, Any], *, image_count: int, model_
     }
 
 
-def _process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]]) -> list[ImageResult]:
+def _process_images(
+    pipeline: Any,
+    images: list[Path],
+    failures: list[dict[str, str]],
+) -> list[ImageResult]:
     results: list[ImageResult] = []
     for image_path in images:
         displayed_path = ascii(str(image_path))
@@ -84,8 +93,11 @@ def _process_images(pipeline: Any, images: list[Path], failures: list[dict[str, 
     return results
 
 
-def write_recovery_manifest(output_path: Path, summary: dict[str, Any],
-                            operations: BatchOperations) -> None:
+def _write_recovery_manifest(
+    output_path: Path,
+    summary: dict[str, Any],
+    operations: BatchOperations,
+) -> None:
     recovery_manifest_path = operations.failed_manifest_path(output_path)
     summary["run_manifest"] = str(recovery_manifest_path)
     try:
@@ -97,8 +109,15 @@ def write_recovery_manifest(output_path: Path, summary: dict[str, Any],
         print(f"Recovery manifest write failed: {message}", file=sys.stderr)
 
 
-def handle_manifest_failure(*, error: Exception, summary: dict[str, Any], output_path: Path,
-    catalogue_output: str | None, catalogue_backup: Path | None, operations: BatchOperations) -> None:
+def _handle_manifest_failure(
+    *,
+    error: Exception,
+    summary: dict[str, Any],
+    output_path: Path,
+    catalogue_output: str | None,
+    catalogue_backup: Path | None,
+    operations: BatchOperations,
+) -> None:
     message = warning_text(error)
     summary["failures"].append({"stage": "manifest", "error": message})
     print(f"Manifest write failed: {message}", file=sys.stderr)
@@ -156,12 +175,16 @@ def handle_manifest_failure(*, error: Exception, summary: dict[str, Any], output
                     file=sys.stderr,
                 )
 
-    write_recovery_manifest(output_path, summary, operations)
+    _write_recovery_manifest(output_path, summary, operations)
 
 
-def remove_catalogue_backup(*, catalogue_backup: Path | None, output_path: Path,
-    summary: dict[str, Any], operations: BatchOperations) -> None:
-
+def _remove_catalogue_backup(
+    *,
+    catalogue_backup: Path | None,
+    output_path: Path,
+    summary: dict[str, Any],
+    operations: BatchOperations,
+) -> None:
     if catalogue_backup is None:
         return
     try:
@@ -183,15 +206,19 @@ def remove_catalogue_backup(*, catalogue_backup: Path | None, output_path: Path,
             f"{ascii(str(catalogue_backup))}: {message}",
             file=sys.stderr,
         )
-        write_recovery_manifest(output_path, summary, operations)
+        _write_recovery_manifest(output_path, summary, operations)
 
 
-def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path,
-    normal_manifest_path: Path, *, preserve_existing_manifest_on_failure: bool, 
-    operations: BatchOperations) -> int:
-    """
-    Process one image batch and emit its single public JSON summary.
-    """
+def run_batch(
+    arguments: argparse.Namespace,
+    images: list[Path],
+    output_path: Path,
+    normal_manifest_path: Path,
+    *,
+    preserve_existing_manifest_on_failure: bool,
+    operations: BatchOperations,
+) -> int:
+    """Process one image batch and emit its single public JSON summary."""
 
     started_at = datetime.now(UTC)
     failures: list[dict[str, str]] = []
@@ -288,7 +315,7 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
     try:
         operations.write_json_atomic(actual_manifest_path, summary)
     except Exception as error:
-        handle_manifest_failure(
+        _handle_manifest_failure(
             error=error,
             summary=summary,
             output_path=output_path,
@@ -297,7 +324,7 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
             operations=operations,
         )
     else:
-        remove_catalogue_backup(
+        _remove_catalogue_backup(
             catalogue_backup=catalogue_backup,
             output_path=output_path,
             summary=summary,

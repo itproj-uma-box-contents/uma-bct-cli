@@ -6,10 +6,35 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, OllamaVisionModel
 from .path_safety import redirected_path_kind
+
+
+def ensure_directory_access(path: Path) -> None:
+    """Verify directory access using the operations setup and later runs require."""
+
+    try:
+        with os.scandir(path) as entries:
+            next(entries, None)
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=path,
+            prefix=".uma-bct-access-",
+            delete=True,
+        ) as probe:
+            probe.write(b"ok")
+            probe.flush()
+            probe.seek(0)
+            if probe.read() != b"ok":
+                raise OSError("temporary access check could not read its data")
+    except OSError as error:
+        raise RuntimeError(
+            f"Setup directory must be readable, writable, and searchable: {path}: "
+            f"{error}"
+        ) from error
 
 
 def ensure_directory(path: Path) -> int:
@@ -35,11 +60,7 @@ def ensure_directory(path: Path) -> int:
     mode = metadata.st_mode
     if not stat.S_ISDIR(mode):
         raise RuntimeError(f"Setup path exists but is not a directory: {path}")
-    required_access = os.R_OK | os.W_OK | os.X_OK
-    if not os.access(path, required_access):
-        raise RuntimeError(
-            f"Setup directory must be readable, writable, and searchable: {path}"
-        )
+    ensure_directory_access(path)
     return mode
 
 

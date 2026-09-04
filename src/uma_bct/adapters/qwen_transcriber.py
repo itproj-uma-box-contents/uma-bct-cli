@@ -382,7 +382,7 @@ def text_fields_need_review(item: BoxRecord) -> bool:
     return False
 
 
-def to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
+def _to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
     confidence = item["transcription_confidence"]
     typed = tuple(item["typed"])
     record_identifiers = tuple(item["record_identifiers"])
@@ -420,15 +420,15 @@ class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
 
-    def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
+    def _request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         result = self.client.query(box.image_file_path, prompt, SCHEMA)
         records = validate_transcription_result(result)
-        return [to_domain(box, record) for record in records]
+        return [_to_domain(box, record) for record in records]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
-        return self.request(box, crop_question(box))
+        return self._request(box, crop_question(box))
 
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
         """Retry the untouched source image using the old full-image prompt."""
 
-        return self.request(box, QUESTION)
+        return self._request(box, QUESTION)

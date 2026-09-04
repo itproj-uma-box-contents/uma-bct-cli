@@ -34,9 +34,16 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
                 link.linkname = "target"
                 archive.addfile(link)
 
+            special_sdist = root / "special.tar.gz"
+            with tarfile.open(special_sdist, mode="w:gz") as archive:
+                fifo = tarfile.TarInfo("package/fifo")
+                fifo.type = tarfile.FIFOTYPE
+                archive.addfile(fifo)
+
             self.assertIn("unsafe archive path", inspect_artifact(wheel)[0])
             self.assertIn("archive link", inspect_artifact(linked_wheel)[0])
             self.assertIn("archive link", inspect_artifact(sdist)[0])
+            self.assertIn("special entry", inspect_artifact(special_sdist)[0])
 
     def test_private_suffixes_are_rejected_before_backup_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -46,6 +53,10 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
                 "package/catalogue.csv.bak",
                 "package/model.safetensors.index.json",
                 "package/catalogue.run.json.bak",
+                "package/.jpg",
+                "package/.jpg.bak",
+                "package/.csv.gz",
+                "package/.safetensors.index.json",
             )
             with zipfile.ZipFile(wheel, mode="w") as archive:
                 for name in names:

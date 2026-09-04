@@ -28,11 +28,16 @@ TRANSCRIBERS: dict[str, TranscriberFactory] = {
 }
 
 
-def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str,
-    work_directory: Path, minimum_detector_confidence: float, request_timeout_seconds: float | None = None) -> BoxTranscriptionPipeline:
-    """
-    Resolve the requested adapters and inject them into one pipeline.
-    """
+def build_pipeline(
+    *,
+    detector_name: str,
+    transcriber_name: str,
+    model_name: str,
+    work_directory: Path,
+    minimum_detector_confidence: float,
+    request_timeout_seconds: float | None = None,
+) -> BoxTranscriptionPipeline:
+    """Resolve the requested adapters and inject them into one pipeline."""
 
     try:
         detector_factory = DETECTORS[detector_name]

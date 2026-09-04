@@ -282,21 +282,21 @@ class CliExportTest(unittest.TestCase):
 
                 self.assertEqual(raised.exception.code, 2)
 
-    def test_normalizes_parent_segments_before_redirect_checks(self):
+    def test_parent_segments_cannot_hide_redirects(self):
         for purpose in ("output", "crops"):
             with self.subTest(purpose=purpose):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     root = Path(temporary_directory)
                     image_path = root / "shelf.jpg"
-                    target = root / "target"
+                    target = root / "target" / "child"
                     linked = root / "linked"
                     image_path.touch()
-                    target.mkdir()
+                    target.mkdir(parents=True)
                     try:
                         linked.symlink_to(target, target_is_directory=True)
                     except OSError as error:
                         self.skipTest(f"symbolic links are unavailable: {error}")
-                    crafted = root / "missing" / ".." / "linked"
+                    crafted = root / "missing" / ".." / "linked" / ".." / "redirected"
                     arguments = ["-i", str(image_path)]
                     if purpose == "output":
                         arguments.extend(["-o", str(crafted / "catalogue.csv")])
@@ -318,6 +318,33 @@ class CliExportTest(unittest.TestCase):
 
                     self.assertEqual(raised.exception.code, 2)
                     self.assertFalse((root / "missing").exists())
+
+    def test_rejects_an_existing_crop_file_before_building_pipeline(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image_path = root / "shelf.jpg"
+            crop_path = root / "crops"
+            image_path.touch()
+            crop_path.touch()
+
+            with (
+                patch("uma_bct.cli.build_pipeline") as build_pipeline,
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "-i",
+                        str(image_path),
+                        "-o",
+                        str(root / "catalogue.csv"),
+                        "-b",
+                        str(crop_path),
+                    ]
+                )
+
+            self.assertEqual(raised.exception.code, 2)
+            build_pipeline.assert_not_called()
 
     def test_rejects_existing_output_and_manifest_symlinks_before_processing(self):
         for linked_name in ("catalogue.csv", "catalogue.run.json"):
@@ -524,6 +551,18 @@ class CliExportTest(unittest.TestCase):
             self.assertNotIn("\x1b", stderr.getvalue())
             self.assertNotIn("\n", manifest["failures"][0]["error"])
             self.assertNotIn("\x1b", manifest["failures"][0]["error"])
+
+    def test_cli_errors_are_sanitized_before_printing(self):
+        stderr = io.StringIO()
+
+        with (
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            main(["-i", "missing\x1b[2J.jpg", "-o", "catalogue.csv"])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn("\x1b", stderr.getvalue())
 
     def test_partial_batch_exports_successful_rows_and_returns_one(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

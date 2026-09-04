@@ -113,9 +113,9 @@ def unsafe_reason(member_name: str) -> str | None:
 
     private_suffix = next(
         (
-            suffix.casefold()
-            for suffix in Path(path.name).suffixes
-            if suffix.casefold() in PRIVATE_FILE_SUFFIXES
+            f".{part}"
+            for part in folded_name.split(".")[1:]
+            if f".{part}" in PRIVATE_FILE_SUFFIXES
         ),
         None,
     )

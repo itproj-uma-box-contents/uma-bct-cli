@@ -33,8 +33,9 @@ def with_box_id(transcription: BoxTranscription, box_id: str) -> BoxTranscriptio
     return replace(transcription, box_id=box_id, label=label)
 
 
-def observations_from_response(box: Box, transcriptions: Sequence[BoxTranscription], 
-                               crop_index: int) -> list[ObservedBox]:
+def observations_from_response(
+    box: Box, transcriptions: Sequence[BoxTranscription], crop_index: int
+) -> list[ObservedBox]:
     """Give every record from one crop a stable, exportable identity."""
 
     observations: list[ObservedBox] = []

@@ -124,7 +124,11 @@ class BoxTranscriptionPipeline:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
             raise ValueError("Minimum detector confidence must be between 0 and 1.")
 
-    def retained_regions(self, detector: BoxDetector, detected: Sequence[DetectedRegion]) -> list[DetectedRegion]:
+    def retained_regions(
+        self,
+        detector: BoxDetector,
+        detected: Sequence[DetectedRegion],
+    ) -> list[DetectedRegion]:
         # Qwen localization does not expose meaningful confidence scores. The
         # user-facing detector threshold therefore applies only to OpenCV.
         if detector.name.casefold() != "opencv":
@@ -135,9 +139,13 @@ class BoxTranscriptionPipeline:
             if region.confidence >= self.minimum_detector_confidence
         ]
 
-    def detect_and_crop(self, image: InputImage, detector: BoxDetector,
-        warnings: list[str], attempts: list[dict[str, object]]) -> tuple[list[Box], str | None]:
-
+    def detect_and_crop(
+        self,
+        image: InputImage,
+        detector: BoxDetector,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+    ) -> tuple[list[Box], str | None]:
         started_at = perf_counter()
         attempt: dict[str, object] = {
             "stage": "detection",
@@ -255,7 +263,9 @@ class BoxTranscriptionPipeline:
         )
         return boxes, None
 
-    def localize(self, image: InputImage, warnings: list[str], attempts: list[dict[str, object]]) -> Localization:
+    def localize(
+        self, image: InputImage, warnings: list[str], attempts: list[dict[str, object]]
+    ) -> Localization:
         route: list[str] = [self.detector.name]
         boxes, failure = self.detect_and_crop(
             image,
@@ -315,8 +325,14 @@ class BoxTranscriptionPipeline:
             full_image=True,
         )
 
-    def transcribe_full_image(self, box: Box, warnings: list[str], attempts: list[dict[str, object]],
-        *, warning_prefix: str) -> list[ObservedBox]:
+    def transcribe_full_image(
+        self,
+        box: Box,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+        *,
+        warning_prefix: str,
+    ) -> list[ObservedBox]:
         attempt: dict[str, object] = {
             "stage": "transcription",
             "mode": "full-image",
@@ -364,11 +380,13 @@ class BoxTranscriptionPipeline:
             return []
         return observations_from_response(box, returned, 0)
 
-    def transcribe_crops(self, localization: Localization, warnings: list[str],
-        attempts: list[dict[str, object]]) -> tuple[list[ObservedBox], int]:
-        """
-        Transcribe localized crops and count requests that remain unresolved.
-        """
+    def transcribe_crops(
+        self,
+        localization: Localization,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+    ) -> tuple[list[ObservedBox], int]:
+        """Transcribe localized crops and count requests that remain unresolved."""
 
         observations: list[ObservedBox] = []
         unresolved_crops = 0
@@ -436,12 +454,16 @@ class BoxTranscriptionPipeline:
 
         return observations, unresolved_crops
 
-    def recover(self, image: InputImage, localization: Localization,
-        observations: list[ObservedBox], unresolved_crops: int, warnings: list[str],
-        attempts: list[dict[str, object]]) -> tuple[list[ObservedBox], int, str, list[str]]:
-        """
-        Use full-image transcription when localization or every crop fails.
-        """
+    def recover(
+        self,
+        image: InputImage,
+        localization: Localization,
+        observations: list[ObservedBox],
+        unresolved_crops: int,
+        warnings: list[str],
+        attempts: list[dict[str, object]],
+    ) -> tuple[list[ObservedBox], int, str, list[str]]:
+        """Use full-image transcription when localization or every crop fails."""
 
         route = list(localization.fallback_path)
         actual_detector = localization.actual_detector
@@ -516,8 +538,11 @@ class BoxTranscriptionPipeline:
         return deduplicate(observations)
 
     @staticmethod
-    def determine_status(consolidated: Sequence[ObservedBox], unresolved_crops: int,
-        attempts: Sequence[Mapping[str, object]]) -> ImageStatus:
+    def determine_status(
+        consolidated: Sequence[ObservedBox],
+        unresolved_crops: int,
+        attempts: Sequence[Mapping[str, object]],
+    ) -> ImageStatus:
         """Classify the image after all recovery and consolidation stages."""
 
         has_dropped_proposals = any(

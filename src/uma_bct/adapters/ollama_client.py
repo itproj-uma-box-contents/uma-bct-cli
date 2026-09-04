@@ -263,7 +263,7 @@ class OllamaVisionModel:
         configured = self.host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
         return normalize_ollama_host(configured)
 
-    def client(self) -> Any:
+    def _client(self) -> Any:
         try:
             import ollama
         except ImportError as error:
@@ -277,7 +277,7 @@ class OllamaVisionModel:
             trust_env=False,
         )
 
-    def server_inventory(self) -> tuple[str, str, dict[str, str]]:
+    def _server_inventory(self) -> tuple[str, str, dict[str, str]]:
         """Validate the endpoint and server, then return its installed models."""
 
         try:
@@ -285,7 +285,7 @@ class OllamaVisionModel:
         except ValueError as error:
             raise RuntimeError(str(error)) from error
         try:
-            with closing(self.client()) as client:
+            with closing(self._client()) as client:
                 response = client.list()
             available = {
                 str(getattr(item, "model", "")): str(getattr(item, "digest", ""))
@@ -305,7 +305,12 @@ class OllamaVisionModel:
             )
         return host, version, available
 
-    def model_metadata(self, host: str, version: str, available: dict[str, str]) -> dict[str, str]:
+    def _model_metadata(
+        self,
+        host: str,
+        version: str,
+        available: dict[str, str],
+    ) -> dict[str, str]:
         if self.model not in available:
             raise RuntimeError(
                 f"Ollama model '{self.model}' is not installed. Run: "
@@ -321,13 +326,13 @@ class OllamaVisionModel:
     def preflight(self) -> dict[str, str]:
         """Validate the local server and requested model before a batch starts."""
 
-        return self.model_metadata(*self.server_inventory())
+        return self._model_metadata(*self._server_inventory())
 
-    def pull_model(self, progress_stream: TextIO) -> None:
+    def _pull_model(self, progress_stream: TextIO) -> None:
         """Download the configured model while keeping progress off stdout."""
 
         try:
-            with closing(self.client()) as client:
+            with closing(self._client()) as client:
                 updates = client.pull(model=self.model, stream=True)
                 last_progress = ""
                 progress_lines = 0
@@ -367,26 +372,31 @@ class OllamaVisionModel:
         """Validate Ollama and download the configured model only when absent."""
 
         output = progress_stream if progress_stream is not None else sys.stderr
-        host, server_version, available = self.server_inventory()
+        host, server_version, available = self._server_inventory()
         if self.model not in available:
             print(
                 f"Downloading Ollama model '{self.model}'. This is a large, "
                 "one-time download.",
                 file=output,
             )
-            self.pull_model(output)
-            host, server_version, available = self.server_inventory()
+            self._pull_model(output)
+            host, server_version, available = self._server_inventory()
             if self.model not in available:
                 raise RuntimeError(
                     f"Ollama model '{self.model}' is still unavailable after the "
                     f"download. Try: ollama pull {self.model}"
                 )
             print(f"Ollama model '{self.model}' is ready.", file=output)
-        return self.model_metadata(host, server_version, available)
+        return self._model_metadata(host, server_version, available)
 
-    def query(self, image_path: Path, prompt: str, schema: dict[str, Any]) -> Any:
+    def query(
+        self,
+        image_path: Path,
+        prompt: str,
+        schema: dict[str, Any],
+    ) -> Any:
         try:
-            with closing(self.client()) as client:
+            with closing(self._client()) as client:
                 stream = client.chat(
                     model=self.model,
                     messages=[

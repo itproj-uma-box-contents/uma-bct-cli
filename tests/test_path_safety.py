@@ -1,5 +1,6 @@
 import os
 import stat
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,49 @@ from uma_bct.path_safety import redirected_component, redirected_path_kind
 
 
 class PathSafetyTest(unittest.TestCase):
+    def test_safe_parent_directory_references_are_supported(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "current").mkdir()
+            (root / "output").mkdir()
+
+            self.assertIsNone(redirected_component(root / "current" / ".." / "output"))
+
+    def test_symlink_before_parent_directory_reference_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "target"
+            linked = root / "linked"
+            target.mkdir()
+            try:
+                linked.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+
+            self.assertEqual(
+                redirected_component(linked / ".." / "output"),
+                (linked, "symbolic link"),
+            )
+
+    def test_missing_component_cannot_hide_a_later_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "target" / "child"
+            linked = root / "linked"
+            target.mkdir(parents=True)
+            try:
+                linked.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+
+            path = root / "missing" / ".." / "linked" / ".." / "output"
+
+            self.assertEqual(
+                redirected_component(path),
+                (linked, "symbolic link"),
+            )
+            self.assertFalse((root / "missing").exists())
+
     def test_windows_reparse_points_are_rejected_even_when_not_junctions(self):
         path = Mock()
         path.is_junction.return_value = False

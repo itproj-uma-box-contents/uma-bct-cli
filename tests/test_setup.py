@@ -231,12 +231,16 @@ class SetupCommandTest(unittest.TestCase):
                     (root / "outputs").mkdir()
                     stdout = io.StringIO()
 
-                    def accessible(path, _mode, denied=inaccessible_name):
-                        return Path(path).name != denied
+                    def accessible(path, denied=inaccessible_name):
+                        if Path(path).name == denied:
+                            raise RuntimeError(
+                                "Setup directory must be readable, writable, "
+                                f"and searchable: {path}"
+                            )
 
                     with (
                         patch(
-                            "uma_bct.setup_command.os.access",
+                            "uma_bct.setup_command.ensure_directory_access",
                             side_effect=accessible,
                         ),
                         patch("uma_bct.setup_command.OllamaVisionModel") as model,

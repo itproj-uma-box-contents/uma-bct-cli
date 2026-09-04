@@ -39,24 +39,30 @@ def redirected_paths_label(kind: str) -> str:
 def redirected_component(path: Path) -> tuple[Path, str] | None:
     """Find an existing path component that redirects to another location."""
 
-    normalized = Path(os.path.abspath(path))
-    for candidate in (normalized, *normalized.parents):
-        try:
-            metadata = candidate.lstat()
-        except FileNotFoundError:
-            continue
-        kind = redirected_path_kind(candidate, metadata)
-        if kind is not None:
-            # POSIX systems may provide root-owned aliases such as /tmp and /var.
-            # They are outside user control and safe to treat as system paths.
-            filesystem_root = Path(candidate.anchor)
-            if (
-                kind == "symbolic link"
-                and os.name != "nt"
-                and candidate.is_absolute()
-                and candidate.parent == filesystem_root
-                and metadata.st_uid == 0
-            ):
+    uncollapsed = path if path.is_absolute() else Path.cwd() / path
+    seen: set[Path] = set()
+    for prefix in (uncollapsed, *uncollapsed.parents):
+        # Normalizing each prefix exposes links after missing/.. components.
+        for candidate in (prefix, Path(os.path.abspath(prefix))):
+            if candidate in seen:
                 continue
-            return candidate, kind
+            seen.add(candidate)
+            try:
+                metadata = candidate.lstat()
+            except FileNotFoundError:
+                continue
+            kind = redirected_path_kind(candidate, metadata)
+            if kind is not None:
+                # POSIX systems may provide root-owned aliases such as /tmp and /var.
+                # They are outside user control and safe to treat as system paths.
+                filesystem_root = Path(candidate.anchor)
+                if (
+                    kind == "symbolic link"
+                    and os.name != "nt"
+                    and candidate.is_absolute()
+                    and candidate.parent == filesystem_root
+                    and metadata.st_uid == 0
+                ):
+                    continue
+                return candidate, kind
     return None

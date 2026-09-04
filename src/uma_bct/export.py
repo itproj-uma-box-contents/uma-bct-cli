@@ -16,11 +16,13 @@ from .pipeline import ImageResult
 from .validation import check_low_confidence_rows
 
 
-def catalogue_dataframe(results: Iterable[ImageResult], *,
-    minimum_confidence: int = 80, catalogue_path: str | Path | None = None) -> pd.DataFrame:
-    """
-    Map a batch and flag duplicates across every successfully processed image.
-    """
+def catalogue_dataframe(
+    results: Iterable[ImageResult],
+    *,
+    minimum_confidence: int = 80,
+    catalogue_path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Map a batch and flag duplicates across every successfully processed image."""
 
     records: list[dict[str, str | int]] = []
     for result in results:
@@ -83,11 +85,13 @@ def catalogue_dataframe(results: Iterable[ImageResult], *,
     )
 
 
-def export_catalogue(results: Iterable[ImageResult], output_path: str | Path, *,
-    minimum_confidence: int = 80) -> pd.DataFrame:
-    """
-    Atomically write a mapped batch as CSV or XLSX and return its DataFrame.
-    """
+def export_catalogue(
+    results: Iterable[ImageResult],
+    output_path: str | Path,
+    *,
+    minimum_confidence: int = 80,
+) -> pd.DataFrame:
+    """Atomically write a mapped batch as CSV or XLSX and return its DataFrame."""
 
     destination = Path(output_path)
     extension = destination.suffix.casefold()

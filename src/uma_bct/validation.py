@@ -28,7 +28,9 @@ def append_flag(current_flags: object, flag: str) -> str:
     return "; ".join(flags)
 
 
-def check_low_confidence_rows(dataframe: pd.DataFrame, threshold: int = LOW_CONFIDENCE_THRESHOLD) -> pd.DataFrame:
+def check_low_confidence_rows(
+    dataframe: pd.DataFrame, threshold: int = LOW_CONFIDENCE_THRESHOLD
+) -> pd.DataFrame:
     """Flag records whose transcription confidence is strictly below ``threshold``."""
 
     if not 0 <= threshold <= 100:

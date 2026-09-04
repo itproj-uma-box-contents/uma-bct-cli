@@ -7,7 +7,12 @@ from typing import Any
 _REQUIRED = object()
 
 
-def response_boxes(value: Any, *, maximum: int, limit_subject: str) -> list[Any]:
+def response_boxes(
+    value: Any,
+    *,
+    maximum: int,
+    limit_subject: str,
+) -> list[Any]:
     """Return the top-level boxes array after common shape and size checks."""
 
     if not isinstance(value, dict) or not isinstance(value.get("boxes"), list):
@@ -18,8 +23,13 @@ def response_boxes(value: Any, *, maximum: int, limit_subject: str) -> list[Any]
     return boxes
 
 
-def bounded_string(item: dict[str, Any], *, box_number: int, field: str,
-    maximum_characters: int) -> str:
+def bounded_string(
+    item: dict[str, Any],
+    *,
+    box_number: int,
+    field: str,
+    maximum_characters: int,
+) -> str:
     """Validate one required bounded string field."""
 
     value = item.get(field)
@@ -33,8 +43,15 @@ def bounded_string(item: dict[str, Any], *, box_number: int, field: str,
     return value
 
 
-def bounded_string_list(item: dict[str, Any], *, box_number: int, field: str,
-    maximum_items: int, maximum_characters: int, default: object = _REQUIRED) -> list[str]:
+def bounded_string_list(
+    item: dict[str, Any],
+    *,
+    box_number: int,
+    field: str,
+    maximum_items: int,
+    maximum_characters: int,
+    default: object = _REQUIRED,
+) -> list[str]:
     """Validate a bounded string array, optionally accepting an omitted field."""
 
     value = item.get(field) if default is _REQUIRED else item.get(field, default)
