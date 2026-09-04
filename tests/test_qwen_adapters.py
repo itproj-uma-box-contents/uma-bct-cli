@@ -151,6 +151,34 @@ class QwenTextTranscriberTest(unittest.TestCase):
         self.assertTrue(transcription.needs_review)
         self.assertIn("neighbouring boxes", model.calls[0][1])
 
+    def test_flags_malformed_unreported_identifier_evidence(self):
+        for malformed_identifier in (
+            "1997.0138-extra",
+            "96/9-extra",
+            "Ref.96/9-extra",
+            "1974.0056 and 96/9-extra",
+        ):
+            with self.subTest(malformed_identifier=malformed_identifier):
+                model = FakeVisionModel(
+                    {
+                        "boxes": [
+                            self._record(
+                                typed=[
+                                    "1974.0056",
+                                    malformed_identifier,
+                                    "Unit 7",
+                                ]
+                            )
+                        ]
+                    }
+                )
+
+                transcription = QwenTextTranscriber(model).transcribe(
+                    self._box_for_prompt()
+                )[0]
+
+                self.assertTrue(transcription.needs_review)
+
     def test_flags_explicit_uncertainty_and_model_meta_comments(self):
         markers = (
             "",

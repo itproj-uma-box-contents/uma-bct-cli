@@ -9,7 +9,7 @@ from typing import Any, TypedDict
 from ..domain import Box, BoxText, BoxTranscription, Label
 from ..identity import (
     RECORD_IDENTIFIER,
-    identifier_evidence,
+    identifier_evidence_details,
     normalise_identifier,
     unit_claim_is_corroborated,
 )
@@ -332,10 +332,10 @@ Rules:
 def identity_fields_need_review(item: BoxRecord) -> bool:
     """Flag structured identity fields not corroborated by transcribed text."""
 
-    observed_identifiers = {
-        identifier.casefold()
-        for identifier in identifier_evidence((*item["typed"], *item["handwritten"]))
-    }
+    observed_values, malformed_identifiers = identifier_evidence_details(
+        (*item["typed"], *item["handwritten"])
+    )
+    observed_identifiers = {identifier.casefold() for identifier in observed_values}
     structured_identifiers: set[str] = set()
     identifier_mismatch = False
     for candidate in item["record_identifiers"]:
@@ -352,7 +352,7 @@ def identity_fields_need_review(item: BoxRecord) -> bool:
     unit_mismatch = bool(unit) and not unit_claim_is_corroborated(
         unit, item["typed"], item["handwritten"]
     )
-    return identifier_mismatch or unit_mismatch
+    return malformed_identifiers or identifier_mismatch or unit_mismatch
 
 
 def text_fields_need_review(item: BoxRecord) -> bool:

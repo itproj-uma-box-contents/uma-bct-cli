@@ -19,7 +19,7 @@ from .domain import BoxTranscription
 from .identity import (
     RECORD_IDENTIFIER,
     collect_unit_evidence,
-    identifier_evidence,
+    identifier_evidence_details,
     identity_only_line,
     normalise_identifier,
     normalise_unit_claim,
@@ -47,10 +47,11 @@ def record_identifiers(
         # YY/N identifiers are deliberately supported, but the same shape is also
         # common in dates such as "Meeting 12/5".  Never promote arbitrary raw
         # text into identity when the model did not classify it as an identifier.
-        unexpected_evidence = identifier_evidence(
+        unexpected_evidence, malformed_evidence = identifier_evidence_details(
             (*transcription.typed_lines, *transcription.handwritten_lines)
         )
-        return (), bool(unexpected_evidence), bool(unexpected_evidence)
+        ambiguous = bool(unexpected_evidence) or malformed_evidence
+        return (), ambiguous, ambiguous
 
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()
@@ -68,8 +69,12 @@ def record_identifiers(
     if invalid_candidate or not explicit_identifiers:
         return (), True, True
 
-    typed_identifiers = identifier_evidence(transcription.typed_lines)
-    handwritten_identifiers = identifier_evidence(transcription.handwritten_lines)
+    typed_identifiers, malformed_typed = identifier_evidence_details(
+        transcription.typed_lines
+    )
+    handwritten_identifiers, malformed_handwritten = identifier_evidence_details(
+        transcription.handwritten_lines
+    )
     observed_identifiers = (*typed_identifiers, *handwritten_identifiers)
     observed_keys = {identifier.casefold() for identifier in observed_identifiers}
     explicit_keys = tuple(identifier.casefold() for identifier in explicit_identifiers)
@@ -94,7 +99,13 @@ def record_identifiers(
         identifier.casefold() not in explicit_key_set
         for identifier in observed_identifiers
     )
-    mismatch = missing_from_raw or unexpected_raw or order_mismatch
+    mismatch = (
+        missing_from_raw
+        or unexpected_raw
+        or order_mismatch
+        or malformed_typed
+        or malformed_handwritten
+    )
     if mismatch:
         return (), True, True
     return tuple(explicit_identifiers), False, False

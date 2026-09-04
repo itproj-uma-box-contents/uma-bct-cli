@@ -118,13 +118,6 @@ class ClientBundleTest(unittest.TestCase):
         self.assertIn("$Installer.WaitForExit()", launcher)
         self.assertNotIn("-PassThru -Wait", launcher)
 
-    def test_windows_launcher_materializes_zero_one_or_many_input_images(self):
-        launcher = (Path(__file__).parents[1] / "run-uma-bct.ps1").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertEqual(launcher.count("@(Get-InputImages).Count"), 2)
-
     def test_posix_launcher_pins_each_supported_download(self):
         launcher = (Path(__file__).parents[1] / "run-uma-bct.sh").read_text(
             encoding="utf-8"
@@ -756,16 +749,17 @@ class ClientBundleTest(unittest.TestCase):
                 }
             )
 
+            launcher_command = [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(launcher),
+            ]
             completed = subprocess.run(
-                [
-                    powershell,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(launcher),
-                ],
+                launcher_command,
                 cwd=root,
                 env=environment,
                 capture_output=True,
@@ -783,6 +777,31 @@ class ClientBundleTest(unittest.TestCase):
             )
             self.assertIn("pip sync --no-config --require-hashes", calls)
             self.assertIn("--offline", calls)
+
+            input_image.unlink()
+            zero_images = subprocess.run(
+                launcher_command,
+                cwd=root,
+                env={**environment, "UMA_BCT_TEST_INPUT": ""},
+                input="\n",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(zero_images.returncode, 2)
+            self.assertIn("No supported photos were found", zero_images.stderr)
+
+            input_image.touch()
+            (input_image.parent / "second-shelf.jpg").touch()
+            many_images = subprocess.run(
+                launcher_command,
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(many_images.returncode, 0, many_images.stderr)
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher test")
     def test_windows_launcher_uses_the_local_private_workflow(self):

@@ -74,6 +74,34 @@ class CatalogueMappingTest(unittest.TestCase):
             ("1974.0056", "1974.0056.7"),
             ("1974.0056", "1974.0056-extra"),
             ("UMA-AC-000000330", "UMA-AC-000000330-extra"),
+            ("1974.0056", "1974.0056-1997.0138-extra"),
+            ("1974.0056", "1974.0056-1997.0138.7"),
+            ("1974.0056", "1.1974.0056"),
+            ("1974.0056", "1974.0056 1997.0138-extra"),
+            ("1974.0056", "1974.0056; 96/9-extra"),
+            ("1974.0056", "1974.0056; 96/9.7"),
+            ("1974.0056", "1974.0056; 96/9A"),
+            ("1974.0056", "1974.0056; 96/9/2"),
+            ("1974.0056", "1974.0056 and 96/9-extra"),
+            ("1974.0056", "1974.0056 AND 96/9.7"),
+            ("1974.0056", "1974.0056 or 96/9-extra"),
+            ("1974.0056", "1974.0056; 31/2/2020"),
+            ("1974.0056", "1974.0056 and 12/5/2020-extra"),
+            ("1974.0056", "1974.0056 and 12/5/2020.7"),
+            ("1974.0056", "1974.0056 and 12/5/2020.foo"),
+            ("1974.0056", "1974.0056 and 12/5/2020–extra"),
+            ("1974.0056", "1974.0056 and “12/5/2020”x"),
+            ("1974.0056", "1974.0056.'extra"),
+            ("1974.0056", "1974.0056'.extra"),
+            ("1974.0056", "1974.0056”)extra"),
+            ("1974.0056", "1974.0056.'7"),
+            ("1974.0056", "1974.0056'.7"),
+            ("1974.0056", "1974.0056 and 12/5/2020.'extra"),
+            ("1974.0056", "1974.0056 and 12/5/2020'.extra"),
+            ("1974.0056", "1974.0056 and 12/5/2020.'7"),
+            ("1974.0056", "1974.0056 and 12/5/2020'.7"),
+            ("1974.0056", "1974.0056 and 12/5/2020 - 31/2/2020"),
+            ("1974.0056", "1974.0056 and 12/5/2020 - extra"),
         )
         for structured_identifier, raw_identifier in cases:
             with self.subTest(raw_identifier=raw_identifier):
@@ -108,7 +136,7 @@ class CatalogueMappingTest(unittest.TestCase):
         self.assertEqual(record["Flags"], "Multiple identifiers")
 
     def test_accepts_multiple_identifiers_joined_by_clear_separators(self):
-        for separator in ("&", "+", "|", "-", "–", "—"):
+        for separator in ("&", "+", "|", "-", "–", "—", "- ", "– ", "— "):
             with self.subTest(separator=separator):
                 identifiers = ("1974.0029", "1997.0138")
                 transcription = self.transcription(
@@ -123,6 +151,86 @@ class CatalogueMappingTest(unittest.TestCase):
 
                 self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
                 self.assertEqual(record["Flags"], "Multiple identifiers")
+
+        quoted = self.transcription(
+            "box-1",
+            "8",
+            ("“1974.0029”–“1997.0138”", "Unit 8"),
+            (),
+            identifiers=("1974.0029", "1997.0138"),
+        )
+        quoted_record = map_catalogue_record(quoted, "box.png")
+        self.assertEqual(quoted_record["Node Title"], "1974.0029 Unit 0008")
+        self.assertEqual(quoted_record["Flags"], "Multiple identifiers")
+
+    def test_accepts_identifiers_inside_ordinary_quotes(self):
+        for identifier in ("1974.0029", "96/9"):
+            for opening, closing in (
+                ('"', '"'),
+                ("'", "'"),
+                ("“", "”"),
+                ('"', '".'),
+                ("“", "”."),
+            ):
+                with self.subTest(identifier=identifier, opening=opening):
+                    transcription = self.transcription(
+                        "box-1",
+                        "8",
+                        (f"{opening}{identifier}{closing}", "Unit 8"),
+                        (),
+                        identifiers=(identifier,),
+                    )
+
+                    record = map_catalogue_record(transcription, "box.png")
+
+                    self.assertEqual(record["Node Title"], f"{identifier} Unit 0008")
+                    self.assertEqual(record["Flags"], "")
+
+    def test_accepts_no_space_dotted_label_prefixes(self):
+        for identifier_line, identifier in (
+            ("Record No.1974.0029", "1974.0029"),
+            ("ID.1974.0029", "1974.0029"),
+            ("Ref.1974.0029", "1974.0029"),
+            ("Record No.96/9", "96/9"),
+            ("ID.96/9", "96/9"),
+            ("Ref.96/9", "96/9"),
+            ("Record ID: (96/9)", "96/9"),
+            ("Record ID: [96/9]", "96/9"),
+            ("Accession: {96/9}", "96/9"),
+        ):
+            with self.subTest(identifier_line=identifier_line):
+                transcription = self.transcription(
+                    "box-1",
+                    "8",
+                    (identifier_line, "Unit 8"),
+                    (),
+                    identifiers=(identifier,),
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], f"{identifier} Unit 0008")
+                self.assertEqual(record["Flags"], "")
+
+    def test_accepts_identifier_before_spaced_record_origin_text(self):
+        for dash in ("-", "–", "—"):
+            for identifier_line in (
+                f"1974.0029 {dash} University of Melbourne records",
+                f"“1974.0029” {dash} correspondence",
+            ):
+                with self.subTest(dash=dash, identifier_line=identifier_line):
+                    transcription = self.transcription(
+                        "box-1",
+                        "8",
+                        (identifier_line, "Unit 8"),
+                        (),
+                        identifiers=("1974.0029",),
+                    )
+
+                    record = map_catalogue_record(transcription, "box.png")
+
+                    self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
+                    self.assertEqual(record["Flags"], "")
 
     def test_blanks_identity_when_typed_text_has_unreported_extra_identifiers(self):
         transcription = self.transcription(
@@ -140,6 +248,29 @@ class CatalogueMappingTest(unittest.TestCase):
             record["Flags"],
             "Ambiguous identifier; Transcription mismatch",
         )
+
+    def test_blanks_identity_for_malformed_labelled_legacy_evidence(self):
+        for malformed_line in (
+            "Ref.96/9-extra",
+            "Record ID: (96/9-extra)",
+            "Accession: [96/9.7]",
+        ):
+            with self.subTest(malformed_line=malformed_line):
+                transcription = self.transcription(
+                    "box-1",
+                    "8",
+                    ("1974.0029", malformed_line, "Unit 8"),
+                    (),
+                    identifiers=("1974.0029",),
+                )
+
+                record = map_catalogue_record(transcription, "box.png")
+
+                self.assertEqual(record["Node Title"], "")
+                self.assertEqual(
+                    record["Flags"],
+                    "Ambiguous identifier; Transcription mismatch",
+                )
 
     def test_blanks_identity_when_structured_identifier_order_conflicts(self):
         transcription = self.transcription(
@@ -222,18 +353,40 @@ class CatalogueMappingTest(unittest.TestCase):
         )
 
     def test_long_slash_date_is_not_prefix_matched_as_an_identifier(self):
-        transcription = self.transcription(
-            "box-1",
-            "8",
-            ("1974.0029", "Unit 8"),
-            ("Meeting 12/5/2020",),
-            identifiers=("1974.0029",),
-        )
+        for date_line in (
+            "Meeting 12/5/2020",
+            "12/5/2020",
+            "1/12/20",
+            "29/2/20",
+            "“12/5/2020”",
+            "“12/5/2020”.",
+            "12/5/2020.",
+            "12/5/2020–13/5/2020",
+            "12/5/2020 - 13/5/2020",
+            "“12/5/2020”–“13/5/2020”",
+            "Refund dated 12/5/2020",
+            "Refugees 12/5/2020",
+            "Ideas meeting 12/5/2020",
+            "Recording dated 12/5/2020",
+            "Record date 12/5/2020",
+            "Record created 12/5/2020",
+            "Reference material dated 12/5/2020",
+            "Record-setting notes 12/5/2020",
+            "ID-based filing 12/5/2020",
+        ):
+            with self.subTest(date_line=date_line):
+                transcription = self.transcription(
+                    "box-1",
+                    "8",
+                    ("1974.0029", "Unit 8"),
+                    (date_line,),
+                    identifiers=("1974.0029",),
+                )
 
-        record = map_catalogue_record(transcription, "box.png")
+                record = map_catalogue_record(transcription, "box.png")
 
-        self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
-        self.assertEqual(record["Flags"], "")
+                self.assertEqual(record["Node Title"], "1974.0029 Unit 0008")
+                self.assertEqual(record["Flags"], "")
 
     def test_never_infers_identifier_from_date_like_raw_text(self):
         transcription = self.transcription(
