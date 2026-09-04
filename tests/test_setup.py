@@ -20,7 +20,7 @@ class SetupCommandTest(unittest.TestCase):
             model.ensure_model.return_value = {
                 "model": DEFAULT_MODEL,
                 "model_digest": "sha256:test",
-                "ollama_version": "0.12.8",
+                "ollama_version": "0.30.8",
                 "ollama_host": "http://127.0.0.1:11434",
             }
             stdout = io.StringIO()
@@ -108,7 +108,7 @@ class SetupCommandTest(unittest.TestCase):
     def test_setup_failure_is_actionable_json_and_stderr(self):
         for message in (
             "Cannot connect to the local Ollama server. Start Ollama.",
-            "Ollama 0.12.7 or newer is required; server reported 0.11.0.",
+            "Ollama 0.30.8 or newer is required; server reported 0.11.0.",
         ):
             with self.subTest(message=message):
                 with tempfile.TemporaryDirectory() as temporary_directory:

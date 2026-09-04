@@ -14,6 +14,7 @@ htmlcov/
 .mypy_cache/
 .pyre/
 .ruff_cache/
+.uma-bct-runtime/
 
 build/
 dist/

@@ -13,6 +13,8 @@ htmlcov
 .mypy_cache
 .pyre
 .ruff_cache
+.uma-bct-runtime
+**/.uma-bct-runtime
 build
 dist
 *.egg-info

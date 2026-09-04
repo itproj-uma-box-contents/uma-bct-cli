@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_VERSION: "0.8.15"
+  UV_VERSION: "0.12.9"
 
 jobs:
   lint:
@@ -31,12 +31,20 @@ jobs:
         run: uv python install 3.12
       - name: Install locked development environment
         run: uv sync --locked --dev --python 3.12
+      - name: Check client dependency constraints
+        shell: bash
+        run: |
+          uv export --quiet --locked --no-dev --group client-bootstrap \
+            --no-emit-project --no-header \
+            --format requirements-txt \
+            --output-file "$RUNNER_TEMP/client-constraints.txt"
+          diff -u client-constraints.txt "$RUNNER_TEMP/client-constraints.txt"
       - name: Check lint
         run: uv run ruff check .
       - name: Check formatting
         run: uv run ruff format --check .
       - name: Compile Python sources
-        run: uv run python -m compileall -q src main.py
+        run: uv run python -m compileall -q src scripts main.py
 
   unit:
     name: Unit (${{ matrix.os }})
@@ -84,8 +92,49 @@ jobs:
         run: uv sync --locked --dev --python 3.12
       - name: Build wheel and source distribution
         run: uv build --no-build-isolation
+      - name: Build one-command client bundle
+        run: uv run python scripts/build_client_bundle.py dist
       - name: Reject private data in release artifacts
         run: uv run --no-project python scripts/check_release_artifacts.py dist
+      - name: Smoke-test exact client dependency workflow
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export UV_CACHE_DIR="$RUNNER_TEMP/uma-bct-client-cache"
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uma-bct-client-python"
+          wheel=(dist/*.whl)
+          app="$RUNNER_TEMP/uma-bct-client-app"
+          uv venv --no-config --clear --managed-python --python 3.12 "$app"
+          uv pip sync --no-config --require-hashes \
+            --python "$app/bin/python" client-constraints.txt
+          uv pip install --no-config --offline --no-deps \
+            --python "$app/bin/python" "${wheel[0]}"
+          "$app/bin/uma-bct" --help
+          uv pip install --no-config --offline --no-deps --reinstall \
+            --python "$app/bin/python" "${wheel[0]}"
+          "$app/bin/uma-bct" --version
+      - name: Smoke-test exact client dependency workflow
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:UV_CACHE_DIR = Join-Path $env:RUNNER_TEMP "uma-bct-client-cache"
+          $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "uma-bct-client-python"
+          $wheel = Get-ChildItem -Path dist -Filter "*.whl" -File
+          $app = Join-Path $env:RUNNER_TEMP "uma-bct-client-app"
+          uv venv --no-config --clear --managed-python --python 3.12 $app
+          $python = Join-Path $app "Scripts/python.exe"
+          $cli = Join-Path $app "Scripts/uma-bct.exe"
+          uv pip sync --no-config --require-hashes `
+            --python $python client-constraints.txt
+          uv pip install --no-config --offline --no-deps `
+            --python $python $wheel.FullName
+          & $cli --help
+          uv pip install --no-config --offline --no-deps --reinstall `
+            --python $python $wheel.FullName
+          & $cli --version
       - name: Install and inspect each distribution outside the checkout
         if: runner.os != 'Windows'
         shell: bash

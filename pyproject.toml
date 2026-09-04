@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+client-bootstrap = [
+    "zstandard==0.25.0",
+]
 dev = [
     "coverage[toml]>=7.10,<8",
     "hatchling==1.27.0",
@@ -43,6 +46,8 @@ exclude = [
     "**/*.run.json",
     "**/.uma-bct-json-*.tmp",
     "**/.uma-bct-catalogue-*",
+    "/.uma-bct-runtime",
+    "**/.uma-bct-runtime",
     "/.ollama",
     "/models",
     "*.gguf",

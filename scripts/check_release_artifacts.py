@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a wheel or sdist contains private/runtime-only UMA BCT data."""
+"""Fail when a release artifact contains private/runtime-only UMA BCT data."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import zipfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
-ARCHIVE_SUFFIXES = (".whl", ".tar.gz")
+ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".zip")
 PRIVATE_DIRECTORIES = {
+    ".uma-bct-runtime",
     ".ollama",
     "add_repository_photos",
     "archive box photos",
@@ -67,7 +68,7 @@ def artifact_paths(arguments: Iterable[str]) -> list[Path]:
 
 
 def member_names(artifact: Path) -> Iterable[str]:
-    if artifact.name.endswith(".whl"):
+    if artifact.name.endswith((".whl", ".zip")):
         with zipfile.ZipFile(artifact) as archive:
             for member in archive.infolist():
                 unix_mode = (member.external_attr >> 16) & 0xFFFF
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = artifact_paths(arguments.paths)
     if not artifacts:
-        print("No wheel or .tar.gz source distribution found.", file=sys.stderr)
+        print("No supported release artifact found.", file=sys.stderr)
         return 1
 
     findings = [

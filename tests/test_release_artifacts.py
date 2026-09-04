@@ -83,9 +83,13 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
                 member = tarfile.TarInfo("uma_bct_cli-0.1.0/README.md")
                 member.size = len(content)
                 archive.addfile(member, io.BytesIO(content))
+            bundle = root / "uma-bct-client.zip"
+            with zipfile.ZipFile(bundle, mode="w") as archive:
+                archive.writestr("UMA-BCT/README.md", "safe")
 
             self.assertEqual([], inspect_artifact(wheel))
             self.assertEqual([], inspect_artifact(sdist))
+            self.assertEqual([], inspect_artifact(bundle))
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(0, main([str(root)]))
 
@@ -96,10 +100,11 @@ class ReleaseArtifactPrivacyTests(unittest.TestCase):
                 archive.writestr("Archive box photos/private.JPG", b"photo")
                 archive.writestr("package/outputs/catalogue.json", b"{}")
                 archive.writestr("package/weights/model.gguf", b"weights")
+                archive.writestr("package/.uma-bct-runtime/setup.json", b"{}")
 
             findings = inspect_artifact(wheel)
 
-            self.assertEqual(3, len(findings))
+            self.assertEqual(4, len(findings))
             self.assertTrue(
                 any("private/runtime directory" in item for item in findings)
             )

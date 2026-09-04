@@ -32,7 +32,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
         ):
             metadata = OllamaVisionModel().ensure_model(progress_stream=io.StringIO())
@@ -76,7 +76,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
         ):
             metadata = OllamaVisionModel().ensure_model(progress_stream=progress)
@@ -111,7 +111,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
             self.assertRaisesRegex(RuntimeError, f"ollama pull {DEFAULT_MODEL}"),
         ):
@@ -141,7 +141,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
             self.assertRaisesRegex(RuntimeError, "still unavailable"),
         ):
@@ -184,7 +184,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
             patch("uma_bct.adapters.ollama_client.MAX_MODEL_PULL_PROGRESS_LINES", 1),
         ):
@@ -211,14 +211,14 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
         ):
             metadata = OllamaVisionModel(timeout_seconds=42).preflight()
 
         self.assertEqual(metadata["model"], DEFAULT_MODEL)
         self.assertEqual(metadata["model_digest"], "sha256:abc")
-        self.assertEqual(metadata["ollama_version"], "0.12.8")
+        self.assertEqual(metadata["ollama_version"], "0.30.8")
         client.close.assert_called_once_with()
         client_factory.assert_called_once_with(
             host="http://127.0.0.1:11434",
@@ -238,7 +238,7 @@ class OllamaPreflightTest(unittest.TestCase):
             patch.dict(sys.modules, {"ollama": fake_ollama}),
             patch(
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
-                return_value="0.12.8",
+                return_value="0.30.8",
             ),
             self.assertRaisesRegex(RuntimeError, f"ollama pull {DEFAULT_MODEL}"),
         ):
@@ -261,7 +261,7 @@ class OllamaPreflightTest(unittest.TestCase):
                 "uma_bct.adapters.ollama_client.fetch_ollama_version",
                 return_value="0.11.0",
             ),
-            self.assertRaisesRegex(RuntimeError, "0.12.7 or newer"),
+            self.assertRaisesRegex(RuntimeError, "0.30.8 or newer"),
         ):
             OllamaVisionModel().preflight()
 

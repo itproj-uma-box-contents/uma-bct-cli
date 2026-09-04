@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f2d8a391edc7896c54289ced0
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.9@sha256:8b940d3a9d65bed080436972241af2e21c84b5e8c9193f7014ed71479ee795ff
 
 FROM ${UV_IMAGE} AS uv
 
@@ -26,6 +26,8 @@ FROM builder AS test
 
 COPY tests ./tests
 COPY scripts ./scripts
+COPY DEVELOPMENT.md README.md client-constraints.txt run-uma-bct.ps1 run-uma-bct.sh ./
+COPY ["Run UMA BCT.cmd", "./"]
 CMD ["uv", "run", "--locked", "--no-dev", "python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 
 FROM ${PYTHON_IMAGE} AS production

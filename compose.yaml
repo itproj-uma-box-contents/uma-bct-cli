@@ -2,7 +2,7 @@ name: uma-bct
 
 services:
   ollama:
-    image: ollama/ollama:0.12.7@sha256:de29cf776a66aae03ace78d7b09660eebc4b0b4d547a67a04740353a171722f0
+    image: ollama/ollama:0.30.8@sha256:05b6fe5143ed006d6d4abd39bdd575f962a5822bdf81e6fbb5e6894eb984ab9c
     restart: unless-stopped
     volumes:
       - ollama-models:/root/.ollama
@@ -16,7 +16,7 @@ services:
     # reach archive transcriptions or the model API.
 
   model-init:
-    image: ollama/ollama:0.12.7@sha256:de29cf776a66aae03ace78d7b09660eebc4b0b4d547a67a04740353a171722f0
+    image: ollama/ollama:0.30.8@sha256:05b6fe5143ed006d6d4abd39bdd575f962a5822bdf81e6fbb5e6894eb984ab9c
     depends_on:
       ollama:
         condition: service_healthy
