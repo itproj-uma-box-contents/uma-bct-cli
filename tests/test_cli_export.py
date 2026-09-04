@@ -106,7 +106,10 @@ class CliExportTest(unittest.TestCase):
 
             summary = json.loads(stdout.getvalue())
             self.assertEqual(exit_code, 0)
-            self.assertEqual(summary["catalogue_output"], "outputs/catalogue.csv")
+            self.assertEqual(
+                Path(summary["catalogue_output"]),
+                Path("outputs") / "catalogue.csv",
+            )
             self.assertTrue((root / "outputs" / "catalogue.csv").is_file())
             self.assertTrue((root / "outputs" / "catalogue.run.json").is_file())
             self.assertEqual(len(list((root / "outputs" / "crops").iterdir())), 1)
@@ -818,7 +821,7 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(summary["status"], "partial")
             self.assertIsNone(summary["run_manifest"])
             self.assertTrue(retained_backup.is_file())
-            self.assertIn(str(retained_backup), stderr.getvalue())
+            self.assertIn(ascii(str(retained_backup)), stderr.getvalue())
 
     def test_backup_cleanup_failure_is_partial_and_recorded_for_recovery(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -854,7 +857,7 @@ class CliExportTest(unittest.TestCase):
             self.assertEqual(summary["status"], "partial")
             self.assertTrue(retained_backup.is_file())
             self.assertEqual(manifest["catalogue_backup"], str(retained_backup))
-            self.assertIn(str(retained_backup), stderr.getvalue())
+            self.assertIn(ascii(str(retained_backup)), stderr.getvalue())
 
     def test_refuses_an_output_reserved_by_another_run(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

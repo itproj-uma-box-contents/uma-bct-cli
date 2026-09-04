@@ -47,8 +47,11 @@ class PathSafetyTest(unittest.TestCase):
 
             path = root / "missing" / ".." / "linked" / ".." / "output"
 
+            redirected = redirected_component(path)
+            self.assertIsNotNone(redirected)
+            component, kind = redirected
             self.assertEqual(
-                redirected_component(path),
+                (Path(os.path.abspath(component)), kind),
                 (linked, "symbolic link"),
             )
             self.assertFalse((root / "missing").exists())
