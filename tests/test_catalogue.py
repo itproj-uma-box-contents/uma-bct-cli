@@ -174,7 +174,7 @@ class CsvExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "catalogue.csv"
             output.write_text("old\n", encoding="utf-8")
-            box = make_box()
+            box = make_box(crop_path=output.parent / "crops/box.png")
             result = make_result(BoxResult(box, make_transcription(box)))
             with (
                 patch(
