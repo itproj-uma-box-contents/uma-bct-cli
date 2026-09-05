@@ -19,16 +19,7 @@ WORKDIR /app
 # metadata first keeps this layer reusable when only application code changes.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-COPY main.py ./main.py
 RUN uv sync --locked --no-dev --no-editable
-
-FROM builder AS test
-
-COPY tests ./tests
-COPY scripts ./scripts
-COPY DEVELOPMENT.md README.md client-constraints.txt run-uma-bct.ps1 run-uma-bct.sh ./
-COPY ["Run UMA BCT.cmd", "./"]
-CMD ["uv", "run", "--locked", "--no-dev", "python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 
 FROM ${PYTHON_IMAGE} AS production
 

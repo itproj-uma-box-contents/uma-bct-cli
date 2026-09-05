@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -24,7 +25,23 @@ from .identity import (
     normalise_identifier,
     normalise_unit_claim,
 )
-from .validation import escape_spreadsheet_formula
+
+_SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
+
+
+def escape_spreadsheet_formula(value: str) -> str:
+    """Prevent spreadsheet applications from evaluating transcribed text."""
+
+    return f"'{value}" if _SPREADSHEET_FORMULA_PREFIX.match(value) else value
+
+
+def append_flag(current: str, flag: str) -> str:
+    """Append one review flag without repeating it."""
+
+    flags = [item.strip() for item in current.split(";") if item.strip()]
+    if flag not in flags:
+        flags.append(flag)
+    return "; ".join(flags)
 
 
 def non_empty_lines(lines: Iterable[str]) -> tuple[str, ...]:
@@ -36,39 +53,28 @@ def non_empty_lines(lines: Iterable[str]) -> tuple[str, ...]:
     )
 
 
-def record_identifiers(
-    transcription: BoxTranscription,
-) -> tuple[tuple[str, ...], bool, bool]:
-    """Return corroborated identifiers, ambiguity evidence, and mismatch state."""
-
-    label = transcription.label
-    explicit_candidates = label.record_identifiers if label else ()
-    if not explicit_candidates:
-        # YY/N identifiers are deliberately supported, but the same shape is also
-        # common in dates such as "Meeting 12/5".  Never promote arbitrary raw
-        # text into identity when the model did not classify it as an identifier.
-        unexpected_evidence, malformed_evidence = identifier_evidence_details(
-            (*transcription.typed_lines, *transcription.handwritten_lines)
-        )
-        ambiguous = bool(unexpected_evidence) or malformed_evidence
-        return (), ambiguous, ambiguous
-
+def _structured_identifiers(
+    candidates: Iterable[str],
+) -> tuple[tuple[str, ...], bool]:
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()
-    invalid_candidate = False
-    for candidate in explicit_candidates:
+    invalid = False
+    for candidate in candidates:
         match = RECORD_IDENTIFIER.fullmatch(candidate.strip())
         if match is None:
-            invalid_candidate = True
+            invalid = True
             continue
         identifier = normalise_identifier(match.group(0))
         key = identifier.casefold()
         if key not in explicit_seen:
             explicit_seen.add(key)
             explicit_identifiers.append(identifier)
-    if invalid_candidate or not explicit_identifiers:
-        return (), True, True
+    return tuple(explicit_identifiers), invalid
 
+
+def _raw_identifier_mismatch(
+    transcription: BoxTranscription, explicit_identifiers: tuple[str, ...]
+) -> bool:
     typed_identifiers, malformed_typed = identifier_evidence_details(
         transcription.typed_lines
     )
@@ -79,40 +85,49 @@ def record_identifiers(
     observed_keys = {identifier.casefold() for identifier in observed_identifiers}
     explicit_keys = tuple(identifier.casefold() for identifier in explicit_identifiers)
     explicit_key_set = set(explicit_keys)
-
-    # The model supplies global reading order. Typed and handwritten arrays each
-    # preserve their own order, but cannot represent how those two modes interleave.
-    # Validate order only within each source array and trust the structured list
-    # for the otherwise-unrecoverable cross-mode order.
-    order_mismatch = False
-    for source in (typed_identifiers, handwritten_identifiers):
-        positions = [
-            explicit_keys.index(identifier.casefold())
-            for identifier in source
-            if identifier.casefold() in explicit_key_set
-        ]
-        if positions != sorted(positions):
-            order_mismatch = True
-
-    missing_from_raw = any(key not in observed_keys for key in explicit_keys)
-    unexpected_raw = any(
-        identifier.casefold() not in explicit_key_set
-        for identifier in observed_identifiers
+    order_mismatch = any(
+        positions != sorted(positions)
+        for source in (typed_identifiers, handwritten_identifiers)
+        if (
+            positions := [
+                explicit_keys.index(identifier.casefold())
+                for identifier in source
+                if identifier.casefold() in explicit_key_set
+            ]
+        )
     )
-    mismatch = (
-        missing_from_raw
-        or unexpected_raw
+    return (
+        observed_keys != explicit_key_set
         or order_mismatch
         or malformed_typed
         or malformed_handwritten
     )
-    if mismatch:
+
+
+def record_identifiers(
+    transcription: BoxTranscription,
+) -> tuple[tuple[str, ...], bool, bool]:
+    """Return corroborated identifiers, ambiguity evidence, and mismatch state."""
+
+    if not transcription.record_identifiers:
+        unexpected, malformed = identifier_evidence_details(
+            (*transcription.typed_lines, *transcription.handwritten_lines)
+        )
+        ambiguous = bool(unexpected) or malformed
+        return (), ambiguous, ambiguous
+
+    identifiers, invalid = _structured_identifiers(transcription.record_identifiers)
+    if (
+        invalid
+        or not identifiers
+        or _raw_identifier_mismatch(transcription, identifiers)
+    ):
         return (), True, True
-    return tuple(explicit_identifiers), False, False
+    return identifiers, False, False
 
 
 def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
-    raw_unit = transcription.label.unit_number.strip() if transcription.label else ""
+    raw_unit = transcription.unit_number.strip()
     if not raw_unit:
         return "", MISSING_UNIT_FLAG, False
     normalized = normalise_unit_claim(raw_unit)
@@ -153,23 +168,17 @@ def image_reference(
         ) from None
 
 
-def map_catalogue_record(
+def _record_flags(
     transcription: BoxTranscription,
-    image_file_path: str | Path,
-    *,
-    catalogue_path: str | Path | None = None,
-    additional_flags: Iterable[str] = (),
-) -> dict[str, str | int]:
-    """Convert one transcription to the client import and review columns."""
-
-    identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(
-        transcription
-    )
-    identifier = identifiers[0] if identifiers else ""
-    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-
+    identifiers: tuple[str, ...],
+    ambiguous_identifier: bool,
+    identifier_mismatch: bool,
+    unit_flag: str | None,
+    unit_mismatch: bool,
+    additional_flags: Iterable[str],
+) -> list[str]:
     flags: list[str] = []
-    if not identifier:
+    if not identifiers:
         flags.append(
             AMBIGUOUS_IDENTIFIER_FLAG
             if ambiguous_identifier
@@ -182,34 +191,57 @@ def map_catalogue_record(
     if transcription.needs_review or identifier_mismatch or unit_mismatch:
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
+    return flags
 
+
+def _description(transcription: BoxTranscription) -> str:
+    values = (
+        *non_empty_lines(transcription.handwritten_lines),
+        *non_empty_lines(transcription.auxiliary_annotations),
+    )
+    visible = (
+        line
+        for line in values
+        if not identity_only_line(
+            line,
+            transcription.record_identifiers,
+            transcription.unit_number,
+        )
+    )
+    return escape_spreadsheet_formula("; ".join(visible))
+
+
+def map_catalogue_record(
+    transcription: BoxTranscription,
+    image_file_path: str | Path,
+    *,
+    catalogue_path: str | Path | None = None,
+    additional_flags: Iterable[str] = (),
+) -> dict[str, str | int]:
+    """Convert one transcription to the client import and review columns."""
+
+    identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(
+        transcription
+    )
+    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
+    identifier = identifiers[0] if identifiers else ""
+    flags = _record_flags(
+        transcription,
+        identifiers,
+        ambiguous_identifier,
+        identifier_mismatch,
+        unit_flag,
+        unit_mismatch,
+        additional_flags,
+    )
     title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
-    structured_identifiers = (
-        transcription.label.record_identifiers if transcription.label else ()
-    )
-    structured_unit = transcription.label.unit_number if transcription.label else ""
-    handwritten_description = tuple(
-        line
-        for line in non_empty_lines(transcription.handwritten_lines)
-        if not identity_only_line(line, structured_identifiers, structured_unit)
-    )
-    auxiliary_description = tuple(
-        line
-        for line in non_empty_lines(transcription.auxiliary_annotations)
-        if not identity_only_line(line, structured_identifiers, structured_unit)
-    )
-    description_lines = (
-        *handwritten_description,
-        *auxiliary_description,
-    )
-    description = escape_spreadsheet_formula("; ".join(description_lines))
     image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
         "Node ID": "",
         "Node Type": "Unit",
         "Node Title": title,
-        "Description": description,
+        "Description": _description(transcription),
         "Date Range": "",
         "Confidence Score": transcription.confidence,
         "Flags": "; ".join(flags),

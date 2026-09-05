@@ -174,8 +174,10 @@ def candidate_confidence(
     return round(clamp(confidence), 3)
 
 
-def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
-    """Isolated OpenCV logic that can be replaced from the reference project."""
+def detection_evidence(
+    detection_image: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return source edges and the joined rectangle mask used for contours."""
 
     height, width = detection_image.shape[:2]
     gray = cv2.cvtColor(detection_image, cv2.COLOR_BGR2GRAY)
@@ -201,6 +203,14 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
     vertical = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, vertical_kernel)
     joined = cv2.bitwise_or(horizontal, vertical)
     joined = cv2.dilate(joined, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return edges, joined
+
+
+def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
+    """Isolated OpenCV logic that can be replaced from the reference project."""
+
+    height, width = detection_image.shape[:2]
+    edges, joined = detection_evidence(detection_image)
 
     horizontal_lines, vertical_lines = line_segments(edges)
     contours, _ = cv2.findContours(joined, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)

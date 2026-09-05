@@ -14,7 +14,6 @@ OUTPUT_COLUMNS = [
 DUPLICATE_FLAG = "Potential Duplicate"
 
 LOW_CONFIDENCE_FLAG = "Low confidence"
-LOW_CONFIDENCE_THRESHOLD = 80
 
 MISSING_IDENTIFIER_FLAG = "Missing identifier"
 AMBIGUOUS_IDENTIFIER_FLAG = "Ambiguous identifier"
@@ -35,5 +34,3 @@ NMS_IOU_THRESHOLD = 0.45
 PADDING_FRACTION = 0.05
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
-
-SUPPORTED_OUTPUT_EXTENSIONS = {".csv", ".xlsx"}

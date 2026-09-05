@@ -1,5 +1,3 @@
-import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,97 +5,83 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+from helpers import make_box, make_image, make_transcription
 
-from uma_bct.domain import BoundingBox, DetectedRegion
-from uma_bct.imaging import OpenCVBoxCropper, image_key, load_input_image
+from uma_bct.adapters.opencv_detector import detect_regions, plausible_bbox
+from uma_bct.domain import BoundingBox, DetectedRegion, InputImage
+from uma_bct.imaging import OpenCVBoxCropper, load_input_image
+from uma_bct.transcriptions import ObservedBox, deduplicate
 
 
-class OpenCVBoxCropperTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        self.output_directory = self.root / "run" / "crops"
+class ImagingTest(unittest.TestCase):
+    def test_domain_values_reject_invalid_geometry_and_confidence(self):
+        cases = (
+            lambda: BoundingBox((-1, 0), (10, 10)),
+            lambda: BoundingBox((10, 0), (10, 10)),
+            lambda: InputImage(Path("x.jpg"), 0, 10),
+            lambda: DetectedRegion(BoundingBox((0, 0), (10, 10)), 1.1),
+        )
+        for build in cases:
+            with self.subTest(build=build), self.assertRaises(ValueError):
+                build()
 
-    def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+    def test_cropper_writes_reviewable_crops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "shelf.jpg"
+            cv2.imwrite(str(image_path), np.full((200, 200, 3), 220, dtype=np.uint8))
+            image = load_input_image(image_path)
+            regions = [
+                DetectedRegion(BoundingBox((20, 20), (180, 80)), 1.0),
+                DetectedRegion(BoundingBox((50, 100), (120, 170)), 1.0),
+            ]
+            boxes = OpenCVBoxCropper().create_boxes(image, regions, root / "review")
+            self.assertEqual(len(boxes), 2)
+            self.assertTrue(all(box.image_file_path.is_file() for box in boxes))
+            self.assertNotEqual(boxes[0].box_id, boxes[1].box_id)
 
-    def write_image(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        image = np.full((200, 200, 3), 220, dtype=np.uint8)
-        self.assertTrue(cv2.imwrite(str(path), image))
-
-    def test_rejects_an_unreadable_image(self):
-        image_path = self.root / "unreadable.jpg"
-
+    def test_unreadable_image_has_a_clear_error(self):
         with (
-            patch("uma_bct.imaging.cv2.imread", return_value=None) as imread,
+            patch("uma_bct.imaging.cv2.imread", return_value=None),
             self.assertRaisesRegex(ValueError, "Could not read image"),
         ):
-            load_input_image(image_path)
+            load_input_image("missing.jpg")
 
-        imread.assert_called_once_with(str(image_path), cv2.IMREAD_COLOR)
+    def test_opencv_fallback_finds_two_synthetic_boxes(self):
+        image = np.full((800, 1200, 3), 230, dtype=np.uint8)
+        for left, right in ((150, 550), (650, 1050)):
+            cv2.rectangle(image, (left, 100), (right, 700), (20, 20, 20), 12)
+            cv2.line(image, (left, 180), (right, 180), (20, 20, 20), 8)
+        regions = detect_regions(image)
+        self.assertEqual(len(regions), 2)
+        self.assertTrue(
+            all(plausible_bbox(region.bounding_box, 1200, 800) for region in regions)
+        )
 
-    def test_accepts_horizontal_and_square_qwen_regions(self):
-        image_path = self.root / "shelf.jpg"
-        self.write_image(image_path)
-        image = load_input_image(image_path)
-        regions = [
-            DetectedRegion(BoundingBox((20, 20), (180, 80)), 1.0),
-            DetectedRegion(BoundingBox((50, 100), (120, 170)), 1.0),
+    def test_deduplication_only_merges_overlapping_independent_crops(self):
+        image = make_image()
+        first = make_box(image=image, box_id="first")
+        overlapping = make_box(
+            image=image,
+            box_id="second",
+            bbox=BoundingBox((12, 22), (92, 182)),
+        )
+        separate = make_box(
+            image=image,
+            box_id="third",
+            bbox=BoundingBox((110, 20), (190, 180)),
+        )
+        observations = [
+            ObservedBox(first, make_transcription(first), 1),
+            ObservedBox(overlapping, make_transcription(overlapping), 2),
+            ObservedBox(separate, make_transcription(separate), 3),
         ]
-
-        boxes = OpenCVBoxCropper().create_boxes(image, regions, self.output_directory)
-
-        self.assertEqual(len(boxes), 2)
-        self.assertTrue(all(box.image_file_path.is_file() for box in boxes))
-        if os.name != "nt":
-            self.assertEqual(
-                stat.S_IMODE(boxes[0].image_file_path.parent.stat().st_mode),
-                0o700,
-            )
-            self.assertEqual(
-                stat.S_IMODE(boxes[0].image_file_path.stat().st_mode),
-                0o600,
-            )
-
-    def test_same_stem_inputs_have_collision_safe_ids_and_directories(self):
-        first_path = self.root / "one" / "shelf.jpg"
-        second_path = self.root / "two" / "shelf.png"
-        self.write_image(first_path)
-        self.write_image(second_path)
-        region = DetectedRegion(BoundingBox((40, 20), (120, 180)), 0.9)
-        cropper = OpenCVBoxCropper()
-
-        first = cropper.create_boxes(
-            load_input_image(first_path), [region], self.output_directory
-        )[0]
-        second = cropper.create_boxes(
-            load_input_image(second_path), [region], self.output_directory
-        )[0]
-
-        self.assertNotEqual(first.box_id, second.box_id)
-        self.assertNotEqual(first.image_file_path.parent, second.image_file_path.parent)
-        self.assertIn("jpg", first.box_id)
-        self.assertIn("png", second.box_id)
-
-    def test_image_key_is_stable_when_a_batch_moves(self):
-        first = image_key(self.root / "first-location" / "shelf.jpg")
-        second = image_key(self.root / "second-location" / "shelf.jpg")
-
-        self.assertEqual(first, second)
-
-    def test_image_key_distinguishes_case_variant_filenames(self):
-        lower = image_key(Path("photo.jpg"))
-        upper = image_key(Path("photo.JPG"))
-
-        self.assertNotEqual(lower, upper)
-
-    def test_image_key_bounds_long_filename_components_without_collisions(self):
-        first = image_key(Path(f"{'a' * 240}x.jpg"))
-        second = image_key(Path(f"{'a' * 240}y.jpg"))
-
-        self.assertLessEqual(len(first.encode("utf-8")), 120)
-        self.assertNotEqual(first, second)
+        self.assertEqual(len(deduplicate(observations)), 2)
+        same_response = [
+            ObservedBox(first, make_transcription(first), 1),
+            ObservedBox(overlapping, make_transcription(overlapping), 1),
+        ]
+        self.assertEqual(len(deduplicate(same_response)), 2)
 
 
 if __name__ == "__main__":

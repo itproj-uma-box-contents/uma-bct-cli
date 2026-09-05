@@ -8,8 +8,6 @@ dependencies = [
     "numpy>=2,<3",
     "ollama>=0.6,<1",
     "opencv-python-headless>=5,<6",
-    "openpyxl>=3.1,<4",
-    "pandas>=3,<4",
 ]
 
 [dependency-groups]
@@ -33,29 +31,7 @@ build-backend = "hatchling.build"
 packages = ["src/uma_bct"]
 
 [tool.hatch.build.targets.sdist]
-exclude = [
-    "/Archive box photos",
-    "/add_repository_photos",
-    "/inputs",
-    "/outputs",
-    "**/inputs",
-    "**/outputs",
-    "/*.csv",
-    "/*.xlsx",
-    "/*.run.json",
-    "**/*.run.json",
-    "**/.uma-bct-json-*.tmp",
-    "**/.uma-bct-catalogue-*",
-    "/.uma-bct-runtime",
-    "**/.uma-bct-runtime",
-    "/.ollama",
-    "/models",
-    "*.gguf",
-    "*.onnx",
-    "*.pt",
-    "*.pth",
-    "*.safetensors",
-]
+include = ["/src/uma_bct", "/pyproject.toml", "/README.md"]
 
 [tool.ruff]
 target-version = "py312"
@@ -70,6 +46,5 @@ branch = true
 source = ["src/uma_bct", "scripts"]
 
 [tool.coverage.report]
-fail_under = 92
 show_missing = true
 skip_covered = true

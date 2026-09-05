@@ -75,8 +75,3 @@ If the launcher stops, read the short message in its window, correct the stated
 problem, and run the same launcher again. Common first-run causes are no internet
 connection, insufficient free disk space, or the operating system declining an
 Ollama installation prompt.
-
-## For developers
-
-Source setup, command-line options, architecture, privacy controls, Docker, and
-release instructions are in [DEVELOPMENT.md](DEVELOPMENT.md).

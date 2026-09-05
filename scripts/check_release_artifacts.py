@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a release artifact contains private/runtime-only UMA BCT data."""
+"""Reject private images, outputs, or model files in release archives."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from pathlib import Path, PurePosixPath
 
 ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".zip")
 PRIVATE_DIRECTORIES = {
-    ".uma-bct-runtime",
     ".ollama",
-    "add_repository_photos",
+    ".uma-bct-runtime",
     "archive box photos",
     "archive_box_photos",
+    "add_repository_photos",
     "input",
     "inputs",
     "model",
@@ -25,7 +25,7 @@ PRIVATE_DIRECTORIES = {
     "output",
     "outputs",
 }
-PRIVATE_FILE_SUFFIXES = {
+PRIVATE_SUFFIXES = {
     ".avif",
     ".bmp",
     ".csv",
@@ -46,121 +46,90 @@ PRIVATE_FILE_SUFFIXES = {
     ".xls",
     ".xlsx",
 }
-PRIVATE_RUNTIME_PREFIXES = (
-    ".uma-bct-json-",
-    ".uma-bct-catalogue-",
-)
 
 
 def artifact_paths(arguments: Iterable[str]) -> list[Path]:
-    artifacts: list[Path] = []
+    paths: list[Path] = []
     for argument in arguments:
         candidate = Path(argument)
         if candidate.is_dir():
-            artifacts.extend(
+            paths.extend(
                 path
                 for path in sorted(candidate.iterdir())
                 if path.is_file() and path.name.endswith(ARCHIVE_SUFFIXES)
             )
         else:
-            artifacts.append(candidate)
-    return artifacts
+            paths.append(candidate)
+    return paths
 
 
-def member_names(artifact: Path) -> Iterable[str]:
-    if artifact.name.endswith((".whl", ".zip")):
-        with zipfile.ZipFile(artifact) as archive:
+def archive_members(path: Path) -> Iterable[tuple[str, bool]]:
+    if path.name.endswith((".whl", ".zip")):
+        with zipfile.ZipFile(path) as archive:
             for member in archive.infolist():
-                unix_mode = (member.external_attr >> 16) & 0xFFFF
-                file_type = stat.S_IFMT(unix_mode)
-                if member.create_system == 3 and file_type not in {
+                mode = (member.external_attr >> 16) & 0xFFFF
+                regular = member.create_system != 3 or stat.S_IFMT(mode) in {
                     0,
                     stat.S_IFREG,
                     stat.S_IFDIR,
-                }:
-                    yield f"{member.filename} -> <zip link or special entry>"
-                else:
-                    yield member.filename
+                }
+                yield member.filename, regular
         return
-    if artifact.name.endswith(".tar.gz"):
-        with tarfile.open(artifact, mode="r:gz") as archive:
+    if path.name.endswith(".tar.gz"):
+        with tarfile.open(path, "r:gz") as archive:
             for member in archive.getmembers():
-                if member.issym() or member.islnk():
-                    yield f"{member.name} -> {member.linkname}"
-                elif not member.isfile() and not member.isdir():
-                    yield f"{member.name} -> <tar special entry>"
-                else:
-                    yield member.name
+                yield member.name, member.isfile() or member.isdir()
         return
-    raise ValueError(f"unsupported release artifact: {artifact}")
+    raise ValueError(f"Unsupported release artifact: {path}")
 
 
-def unsafe_reason(member_name: str) -> str | None:
-    normalized = member_name.replace("\\", "/")
+def unsafe_reason(name: str, regular: bool = True) -> str | None:
+    normalized = name.replace("\\", "/")
     path = PurePosixPath(normalized)
     if path.is_absolute() or ".." in path.parts:
         return "unsafe archive path"
-
-    folded_parts = tuple(part.casefold() for part in path.parts)
-    private = PRIVATE_DIRECTORIES.intersection(folded_parts)
-    if private:
-        return f"private/runtime directory {sorted(private)[0]!r}"
-
-    folded_name = path.name.casefold()
-    if folded_name.endswith(".run.json") or ".run.json." in folded_name:
-        return "generated run manifest"
-    if folded_name.startswith(PRIVATE_RUNTIME_PREFIXES):
-        return "generated private runtime file"
-
-    private_suffix = next(
-        (
-            f".{part}"
-            for part in folded_name.split(".")[1:]
-            if f".{part}" in PRIVATE_FILE_SUFFIXES
-        ),
-        None,
-    )
-    if private_suffix is not None:
-        return f"private image, catalogue, or model file ({private_suffix})"
-    if " -> " in member_name:
+    if not regular:
         return "archive link or special entry"
+    parts = {part.casefold() for part in path.parts}
+    if private := parts.intersection(PRIVATE_DIRECTORIES):
+        return f"private directory {sorted(private)[0]!r}"
+    folded = path.name.casefold()
+    if folded.endswith(".run.json") or ".run.json." in folded:
+        return "generated run manifest"
+    if folded.startswith((".uma-bct-json-", ".uma-bct-catalogue-")):
+        return "generated temporary output"
+    for suffix in PRIVATE_SUFFIXES:
+        if folded.endswith(suffix) or f"{suffix}." in folded:
+            return f"private file type {suffix}"
     return None
 
 
-def inspect_artifact(artifact: Path) -> list[str]:
-    if not artifact.is_file():
-        return [f"{artifact}: artifact does not exist"]
+def inspect_artifact(path: Path) -> list[str]:
+    if not path.is_file():
+        return [f"{path}: artifact does not exist"]
     try:
-        findings = []
-        for member_name in member_names(artifact):
-            if reason := unsafe_reason(member_name):
-                findings.append(f"{artifact}: {member_name!r}: {reason}")
-        return findings
+        return [
+            f"{path}: {name!r}: {reason}"
+            for name, regular in archive_members(path)
+            if (reason := unsafe_reason(name, regular))
+        ]
     except (OSError, tarfile.TarError, zipfile.BadZipFile, ValueError) as error:
-        return [f"{artifact}: cannot inspect artifact: {error}"]
+        return [f"{path}: cannot inspect artifact: {error}"]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Reject private images, outputs, and model files in releases."
-    )
-    parser.add_argument("paths", nargs="+", help="Wheel/sdist files or directories")
-    arguments = parser.parse_args(argv)
-
-    artifacts = artifact_paths(arguments.paths)
-    if not artifacts:
-        print("No supported release artifact found.", file=sys.stderr)
-        return 1
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="+")
+    artifacts = artifact_paths(parser.parse_args(argv).paths)
     findings = [
         finding for artifact in artifacts for finding in inspect_artifact(artifact)
     ]
+    if not artifacts:
+        findings.append("No supported release artifact found.")
     if findings:
         print("Release artifact privacy check failed:", file=sys.stderr)
-        for finding in findings:
-            print(f"- {finding}", file=sys.stderr)
+        print("\n".join(f"- {finding}" for finding in findings), file=sys.stderr)
         return 1
-
     print(f"Release artifact privacy check passed for {len(artifacts)} artifact(s).")
     return 0
 

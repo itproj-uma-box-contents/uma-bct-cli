@@ -1,10 +1,9 @@
-"""Detector- and transcriber-independent data exchanged by the pipeline."""
+"""Small detector- and transcriber-independent pipeline values."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -80,61 +79,31 @@ class Box:
 
 
 @dataclass(frozen=True)
-class Label:
-    """Printed label content identified on a box."""
-
-    box_id: str
-    unit_number: str
-    typed_lines: tuple[str, ...]
-    record_identifiers: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class BoxText:
-    """One transcribed line of printed or handwritten box text."""
-
-    position: int
-    text: str
-    text_type: Literal["typed", "handwritten"]
-    confidence: int
-
-
-@dataclass(frozen=True)
 class BoxTranscription:
-    """Validated text-model output for one generic box crop."""
+    """Validated text visible on one physical archive box."""
 
     box_id: str
     position: str
-    label: Label | None
-    text_lines: tuple[BoxText, ...]
     confidence: int
-    needs_review: bool = False
+    record_identifiers: tuple[str, ...] = ()
+    unit_number: str = ""
+    typed_lines: tuple[str, ...] = ()
+    handwritten_lines: tuple[str, ...] = ()
     auxiliary_annotations: tuple[str, ...] = ()
+    needs_review: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 100:
             raise ValueError("Transcription confidence must be between 0 and 100.")
 
-    @property
-    def typed_lines(self) -> tuple[str, ...]:
-        return tuple(line.text for line in self.text_lines if line.text_type == "typed")
-
-    @property
-    def handwritten_lines(self) -> tuple[str, ...]:
-        return tuple(
-            line.text for line in self.text_lines if line.text_type == "handwritten"
-        )
-
     def to_dict(self) -> dict[str, object]:
-        """Return the simple JSON shape used by the reference implementation."""
+        """Return the compact representation stored in a run manifest."""
 
         value: dict[str, object] = {
             "box_id": self.box_id,
             "position": self.position,
-            "record_identifiers": (
-                list(self.label.record_identifiers) if self.label else []
-            ),
-            "unit": self.label.unit_number if self.label else "",
+            "record_identifiers": list(self.record_identifiers),
+            "unit": self.unit_number,
             "typed": list(self.typed_lines),
             "handwritten": list(self.handwritten_lines),
             "auxiliary_annotations": list(self.auxiliary_annotations),
@@ -142,4 +111,26 @@ class BoxTranscription:
         }
         if self.needs_review:
             value["needs_review"] = True
+        return value
+
+
+@dataclass(frozen=True)
+class BoxResult:
+    """A physical box kept together with the transcription that describes it."""
+
+    box: Box
+    transcription: BoxTranscription
+
+    def __post_init__(self) -> None:
+        if self.box.box_id != self.transcription.box_id:
+            raise ValueError("Box and transcription IDs must match.")
+
+    def to_dict(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "box_id": self.box.box_id,
+            "bbox": list(self.box.bounding_box.as_xywh()),
+            "image": str(self.box.image_file_path),
+            "detector_confidence": self.box.detector_confidence,
+        }
+        value.update(self.transcription.to_dict())
         return value

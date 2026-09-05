@@ -1,280 +1,207 @@
-"""Combine multi-box transcription responses without detector coupling."""
+"""Combine overlapping crop responses without merging physical boxes."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
-from .domain import Box, BoxText, BoxTranscription, Label
+from .domain import Box, BoxTranscription
 from .identity import CONTEXTUAL_UNIT, normalise_unit_claim
 from .imaging import iou
 
 TYPED_SIMILARITY_THRESHOLD = 0.92
-TYPED_OVERLAP_THRESHOLD = 0.70
-SPATIAL_ONLY_OVERLAP_THRESHOLD = 0.70
+OVERLAP_THRESHOLD = 0.70
 
 
 @dataclass(frozen=True)
 class ObservedBox:
-    """One generic transcription tied to the crop that produced it."""
-
     box: Box
     transcription: BoxTranscription
     crop_index: int
 
 
-def with_box_id(transcription: BoxTranscription, box_id: str) -> BoxTranscription:
-    label = (
-        replace(transcription.label, box_id=box_id)
-        if transcription.label is not None
-        else None
-    )
-    return replace(transcription, box_id=box_id, label=label)
-
-
 def observations_from_response(
     box: Box, transcriptions: Sequence[BoxTranscription], crop_index: int
 ) -> list[ObservedBox]:
-    """Give every record from one crop a stable, exportable identity."""
+    """Give every record from one model response a distinct stable ID."""
 
     observations: list[ObservedBox] = []
-    multiple_records = len(transcriptions) > 1
     for response_index, transcription in enumerate(transcriptions, start=1):
         box_id = (
             f"{box.box_id}:result-{response_index:03d}"
-            if multiple_records
+            if len(transcriptions) > 1
             else box.box_id
         )
         observations.append(
             ObservedBox(
-                box=replace(box, box_id=box_id),
-                transcription=with_box_id(transcription, box_id),
-                crop_index=crop_index,
+                replace(box, box_id=box_id),
+                replace(transcription, box_id=box_id),
+                crop_index,
             )
         )
     return observations
 
 
-def normalise_text(value: str) -> str:
+def _normalise(value: str) -> str:
     return " ".join(re.findall(r"\w+", value.casefold()))
 
 
-def normalise_lines(lines: Sequence[str]) -> str:
-    return normalise_text("\n".join(lines))
+def _normalise_lines(lines: Sequence[str]) -> str:
+    return _normalise("\n".join(lines))
 
 
-def unit_value(item: ObservedBox) -> str:
-    return item.transcription.label.unit_number if item.transcription.label else ""
-
-
-def unit_evidence(item: ObservedBox) -> set[str]:
+def _unit_evidence(item: ObservedBox) -> set[str]:
     evidence: set[str] = set()
-    stated_unit = unit_value(item).strip().casefold()
-    if stated_unit:
-        evidence.add(normalise_unit_claim(stated_unit) or stated_unit)
+    if item.transcription.unit_number.strip():
+        value = item.transcription.unit_number
+        evidence.add(normalise_unit_claim(value) or value.casefold())
     for line in (
         *item.transcription.typed_lines,
         *item.transcription.handwritten_lines,
     ):
-        for match in CONTEXTUAL_UNIT.finditer(line):
-            evidence.add(match.group(1).zfill(4))
+        evidence.update(
+            match.group(1).zfill(4) for match in CONTEXTUAL_UNIT.finditer(line)
+        )
         if normalized := normalise_unit_claim(line):
             evidence.add(normalized)
     return evidence
 
 
-def unit_conflict(first: ObservedBox, second: ObservedBox) -> bool:
-    first_units = unit_evidence(first)
-    second_units = unit_evidence(second)
+def _unit_conflict(first: ObservedBox, second: ObservedBox) -> bool:
+    first_units = _unit_evidence(first)
+    second_units = _unit_evidence(second)
     return bool(first_units and second_units and first_units.isdisjoint(second_units))
 
 
 def is_duplicate(first: ObservedBox, second: ObservedBox) -> bool:
-    """Return whether overlapping crop observations describe one physical box.
+    """Return whether two independently-created crops describe the same box."""
 
-    Separate records from one model response are always preserved.  A matching
-    unit number is useful evidence only when two independently-created crops
-    strongly overlap; units can legitimately repeat on separate physical boxes.
-    """
-
-    if first.crop_index == second.crop_index:
+    if first.crop_index == second.crop_index or _unit_conflict(first, second):
         return False
-
-    if unit_conflict(first, second):
-        return False
-
     overlap = iou(first.box.bounding_box, second.box.bounding_box)
-    if overlap <= 0.0:
+    if overlap < OVERLAP_THRESHOLD:
         return False
 
-    first_units = unit_evidence(first)
-    second_units = unit_evidence(second)
-    if (
-        first_units
-        and second_units
-        and not first_units.isdisjoint(second_units)
-        and overlap >= SPATIAL_ONLY_OVERLAP_THRESHOLD
-    ):
+    first_units = _unit_evidence(first)
+    second_units = _unit_evidence(second)
+    if first_units and second_units and not first_units.isdisjoint(second_units):
         return True
 
-    first_typed = normalise_lines(first.transcription.typed_lines)
-    second_typed = normalise_lines(second.transcription.typed_lines)
+    first_typed = _normalise_lines(first.transcription.typed_lines)
+    second_typed = _normalise_lines(second.transcription.typed_lines)
     if first_typed and second_typed:
-        similarity = SequenceMatcher(None, first_typed, second_typed).ratio()
-        if (
-            similarity >= TYPED_SIMILARITY_THRESHOLD
-            and overlap >= TYPED_OVERLAP_THRESHOLD
-        ):
-            return True
-
-    first_position = normalise_text(first.transcription.position)
-    second_position = normalise_text(second.transcription.position)
-    same_position = bool(first_position and first_position == second_position)
-    return same_position and overlap >= SPATIAL_ONLY_OVERLAP_THRESHOLD
+        return (
+            SequenceMatcher(None, first_typed, second_typed).ratio()
+            >= TYPED_SIMILARITY_THRESHOLD
+        )
+    return bool(
+        _normalise(first.transcription.position)
+        and _normalise(first.transcription.position)
+        == _normalise(second.transcription.position)
+    )
 
 
-def record_signature(item: ObservedBox) -> tuple[str, str, str, str, str, str]:
+def _detail(lines: Sequence[str]) -> tuple[int, int]:
+    non_empty = tuple(line for line in lines if line.strip())
+    return sum(len("".join(line.split())) for line in non_empty), len(non_empty)
+
+
+def _best(
+    group: Sequence[ObservedBox],
+    value: Callable[[BoxTranscription], Sequence[str]],
+) -> ObservedBox:
+    return max(
+        group,
+        key=lambda item: (
+            _detail(value(item.transcription)),
+            item.transcription.confidence,
+            -item.crop_index,
+        ),
+    )
+
+
+def _signature(item: ObservedBox) -> tuple[object, ...]:
+    transcription = item.transcription
     return (
-        normalise_text(item.transcription.position),
-        normalise_text(unit_value(item)),
-        normalise_lines(item.transcription.typed_lines),
-        normalise_lines(item.transcription.handwritten_lines),
-        normalise_lines(
-            item.transcription.label.record_identifiers
-            if item.transcription.label
-            else ()
-        ),
-        normalise_lines(item.transcription.auxiliary_annotations),
+        _normalise(transcription.position),
+        _normalise(transcription.unit_number),
+        _normalise_lines(transcription.record_identifiers),
+        _normalise_lines(transcription.typed_lines),
+        _normalise_lines(transcription.handwritten_lines),
+        _normalise_lines(transcription.auxiliary_annotations),
     )
 
 
-def line_detail(lines: Sequence[str]) -> tuple[int, int]:
-    non_empty = [line for line in lines if line.strip()]
-    characters = sum(len("".join(line.split())) for line in non_empty)
-    return characters, len(non_empty)
+def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
+    """Keep the most detailed value for each field and flag disagreements."""
 
-
-def model_tie_breaker(item: ObservedBox) -> tuple[int, int]:
-    return item.transcription.confidence, -item.crop_index
-
-
-def merge_group(group: list[ObservedBox]) -> ObservedBox:
-    """Merge duplicate observations using the reference field-selection rules."""
-
-    positions = [item for item in group if item.transcription.position.strip()]
-    units = [item for item in group if unit_value(item).strip()]
-
-    position_source = max(positions or group, key=model_tie_breaker)
+    representative = _best(group, lambda value: value.typed_lines)
+    typed = representative.transcription.typed_lines
+    handwritten_source = _best(group, lambda value: value.handwritten_lines)
+    identifier_source = _best(group, lambda value: value.record_identifiers)
+    auxiliary_source = _best(group, lambda value: value.auxiliary_annotations)
     unit_source = max(
-        units or group,
-        key=lambda item: (
-            bool(re.fullmatch(r"\d{4}", unit_value(item).strip())),
-            *model_tie_breaker(item),
-        ),
-    )
-    typed_source = max(
         group,
         key=lambda item: (
-            line_detail(item.transcription.typed_lines),
-            *model_tie_breaker(item),
+            bool(re.fullmatch(r"\d{4}", item.transcription.unit_number.strip())),
+            bool(item.transcription.unit_number.strip()),
+            item.transcription.confidence,
+            -item.crop_index,
         ),
     )
-    handwritten_source = max(
+    position_source = max(
         group,
         key=lambda item: (
-            line_detail(item.transcription.handwritten_lines),
-            *model_tie_breaker(item),
+            bool(item.transcription.position.strip()),
+            item.transcription.confidence,
+            -item.crop_index,
         ),
     )
-    identifier_source = max(
-        group,
-        key=lambda item: (
-            line_detail(
-                item.transcription.label.record_identifiers
-                if item.transcription.label
-                else ()
-            ),
-            *model_tie_breaker(item),
-        ),
+    selected = (
+        representative,
+        handwritten_source,
+        identifier_source,
+        auxiliary_source,
+        unit_source,
+        position_source,
     )
-    auxiliary_source = max(
-        group,
-        key=lambda item: (
-            line_detail(item.transcription.auxiliary_annotations),
-            *model_tie_breaker(item),
-        ),
-    )
-
-    confidence = min(
-        source.transcription.confidence
-        for source in (
-            unit_source,
-            typed_source,
-            handwritten_source,
-            identifier_source,
-            auxiliary_source,
-        )
-    )
-    unit = unit_value(unit_source)
-    typed = typed_source.transcription.typed_lines
-    handwritten = handwritten_source.transcription.handwritten_lines
-    record_identifiers = (
-        identifier_source.transcription.label.record_identifiers
-        if identifier_source.transcription.label
-        else ()
-    )
-    auxiliary_annotations = auxiliary_source.transcription.auxiliary_annotations
-    representative = typed_source
-    label = (
-        Label(
-            box_id=representative.box.box_id,
-            unit_number=unit,
-            typed_lines=tuple(typed),
-            record_identifiers=tuple(record_identifiers),
-        )
-        if unit or typed or record_identifiers
-        else None
-    )
-    lines = tuple(
-        BoxText(position, text, "typed", confidence)
-        for position, text in enumerate(typed, start=1)
-    ) + tuple(
-        BoxText(position, text, "handwritten", confidence)
-        for position, text in enumerate(handwritten, start=1)
-    )
-    merged = BoxTranscription(
+    transcription = BoxTranscription(
         box_id=representative.box.box_id,
         position=position_source.transcription.position,
-        label=label,
-        text_lines=lines,
-        confidence=confidence,
+        confidence=min(item.transcription.confidence for item in selected),
+        record_identifiers=identifier_source.transcription.record_identifiers,
+        unit_number=unit_source.transcription.unit_number,
+        typed_lines=typed,
+        handwritten_lines=handwritten_source.transcription.handwritten_lines,
+        auxiliary_annotations=auxiliary_source.transcription.auxiliary_annotations,
         needs_review=(
             any(item.transcription.needs_review for item in group)
-            or len({record_signature(item) for item in group}) > 1
+            or len({_signature(item) for item in group}) > 1
         ),
-        auxiliary_annotations=tuple(auxiliary_annotations),
     )
-    return ObservedBox(representative.box, merged, representative.crop_index)
+    return ObservedBox(representative.box, transcription, representative.crop_index)
 
 
 def deduplicate(observations: Sequence[ObservedBox]) -> list[ObservedBox]:
-    """Group and merge observations using the old transcriber behaviour."""
-
     groups: list[list[ObservedBox]] = []
     for observation in observations:
-        matching_group: list[ObservedBox] | None = None
-        for group in groups:
-            if any(member.crop_index == observation.crop_index for member in group):
-                continue
-            if any(unit_conflict(observation, member) for member in group):
-                continue
-            if any(is_duplicate(observation, member) for member in group):
-                matching_group = group
-                break
-        if matching_group is None:
+        group = next(
+            (
+                candidates
+                for candidates in groups
+                if all(
+                    member.crop_index != observation.crop_index
+                    and not _unit_conflict(observation, member)
+                    for member in candidates
+                )
+                and any(is_duplicate(observation, member) for member in candidates)
+            ),
+            None,
+        )
+        if group is None:
             groups.append([observation])
         else:
-            matching_group.append(observation)
+            group.append(observation)
     return [merge_group(group) for group in groups]

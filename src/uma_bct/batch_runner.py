@@ -1,31 +1,23 @@
-"""Batch orchestration and recovery-aware result reporting."""
+"""Batch orchestration and compact result reporting."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .adapters.ollama_client import timeout_from_environment
+from .bootstrap import build_pipeline
+from .export import export_catalogue
 from .pipeline import ImageResult, warning_text
-
-
-@dataclass(frozen=True)
-class BatchOperations:
-    """Injected operations that keep CLI compatibility shims patchable."""
-
-    build_pipeline: Callable[..., Any]
-    export_catalogue: Callable[..., Any]
-    timeout_from_environment: Callable[[], float]
-    run_directory: Callable[[Path], Path]
-    failed_manifest_path: Callable[[Path], Path]
-    backup_existing_catalogue: Callable[[Path], Path | None]
-    restore_catalogue: Callable[[Path, Path | None], None]
-    write_json_atomic: Callable[[Path, dict[str, Any]], None]
+from .run_artifacts import (
+    backup_existing_results,
+    failed_manifest_path,
+    run_directory,
+    write_json_atomic,
+)
 
 
 def configuration(
@@ -46,30 +38,6 @@ def configuration(
     }
 
 
-def public_summary(
-    detailed_summary: dict[str, Any], *, image_count: int, model_name: str
-) -> dict[str, Any]:
-    images = detailed_summary["images"]
-    complete_count = sum(item.get("status") == "complete" for item in images)
-    partial_count = sum(item.get("status") == "partial" for item in images)
-    return {
-        "schema_version": detailed_summary["schema_version"],
-        "status": detailed_summary["status"],
-        "elapsed_seconds": detailed_summary["elapsed_seconds"],
-        "images_total": image_count,
-        "images_processed": len(images),
-        "images_complete": complete_count,
-        "images_partial": partial_count,
-        "images_failed": image_count - complete_count - partial_count,
-        "catalogue_output": detailed_summary["catalogue_output"],
-        "catalogue_records": detailed_summary["catalogue_records"],
-        "failure_count": len(detailed_summary["failures"]),
-        "model": model_name,
-        "run_manifest": detailed_summary["run_manifest"],
-        "catalogue_backup": detailed_summary.get("catalogue_backup"),
-    }
-
-
 def _process_images(
     pipeline: Any,
     images: list[Path],
@@ -77,136 +45,127 @@ def _process_images(
 ) -> list[ImageResult]:
     results: list[ImageResult] = []
     for image_path in images:
-        displayed_path = ascii(str(image_path))
-        print(f"Processing {displayed_path}", file=sys.stderr)
+        print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
         try:
             result = pipeline.process(image_path)
-        except Exception as error:  # Continue after one failed image.
+        except Exception as error:
             message = warning_text(error)
             failures.append({"source_image": str(image_path), "error": message})
-            print(f"Failed {displayed_path}: {message}", file=sys.stderr)
+            print(f"Failed {ascii(str(image_path))}: {message}", file=sys.stderr)
             continue
         results.append(result)
         for warning in result.warnings:
-            message = warning_text(ValueError(warning))
-            print(f"Warning for {displayed_path}: {message}", file=sys.stderr)
+            print(
+                f"Warning for {ascii(str(image_path))}: {warning_text(ValueError(warning))}",
+                file=sys.stderr,
+            )
     return results
 
 
-def _write_recovery_manifest(
-    output_path: Path,
-    summary: dict[str, Any],
-    operations: BatchOperations,
-) -> None:
-    recovery_manifest_path = operations.failed_manifest_path(output_path)
-    summary["run_manifest"] = str(recovery_manifest_path)
+def _public_summary(
+    summary: dict[str, Any], *, image_count: int, model_name: str
+) -> dict[str, Any]:
+    images = summary["images"]
+    return {
+        "schema_version": summary["schema_version"],
+        "status": summary["status"],
+        "images_total": image_count,
+        "images_processed": len(images),
+        "images_complete": sum(item["status"] == "complete" for item in images),
+        "images_partial": sum(item["status"] == "partial" for item in images),
+        "images_failed": image_count
+        - sum(item["status"] in {"complete", "partial"} for item in images),
+        "catalogue_output": summary["catalogue_output"],
+        "catalogue_records": summary["catalogue_records"],
+        "failure_count": len(summary["failures"]),
+        "model": model_name,
+        "run_manifest": summary["run_manifest"],
+        "previous_results": summary["previous_results"],
+    }
+
+
+def _prepare_pipeline(
+    arguments: argparse.Namespace,
+    failures: list[dict[str, str]],
+) -> tuple[Any | None, Path | None, float | None, dict[str, str]]:
+    request_timeout = arguments.request_timeout
+    metadata = {"model": arguments.model}
     try:
-        operations.write_json_atomic(recovery_manifest_path, summary)
+        if request_timeout is None:
+            request_timeout = timeout_from_environment()
+        pipeline = build_pipeline(
+            detector_name=arguments.detector,
+            transcriber_name=arguments.transcriber,
+            model_name=arguments.model,
+            work_directory=arguments.path_to_box_images,
+            minimum_detector_confidence=arguments.min_detector_confidence,
+            request_timeout_seconds=request_timeout,
+        )
+        metadata.update(pipeline.model_metadata)
+        work_directory = run_directory(arguments.path_to_box_images)
+        pipeline.work_directory = work_directory
+        return pipeline, work_directory, request_timeout, metadata
     except Exception as error:
         message = warning_text(error)
-        summary["failures"].append({"stage": "recovery manifest", "error": message})
-        summary["run_manifest"] = None
-        print(f"Recovery manifest write failed: {message}", file=sys.stderr)
+        failures.append({"stage": "preflight", "error": message})
+        print(f"Preflight failed: {message}", file=sys.stderr)
+        return None, None, request_timeout, metadata
 
 
-def _handle_manifest_failure(
-    *,
-    error: Exception,
-    summary: dict[str, Any],
+def _export_results(
+    arguments: argparse.Namespace,
+    results: list[ImageResult],
     output_path: Path,
-    catalogue_output: str | None,
-    catalogue_backup: Path | None,
-    operations: BatchOperations,
-) -> None:
-    message = warning_text(error)
-    summary["failures"].append({"stage": "manifest", "error": message})
-    print(f"Manifest write failed: {message}", file=sys.stderr)
-
-    if catalogue_output is not None:
-        try:
-            operations.restore_catalogue(output_path, catalogue_backup)
-        except Exception as rollback_error:
-            rollback_message = warning_text(rollback_error)
-            summary["status"] = "partial"
-            summary["failures"].append(
-                {
-                    "stage": "catalogue rollback",
-                    "error": rollback_message,
-                    "backup": str(catalogue_backup) if catalogue_backup else "",
-                }
-            )
-            retained_backup = (
-                catalogue_backup
-                if catalogue_backup is not None and catalogue_backup.exists()
-                else None
-            )
-            summary["catalogue_backup"] = (
-                str(retained_backup) if retained_backup else None
-            )
-            print(f"Catalogue rollback failed: {rollback_message}", file=sys.stderr)
-            if retained_backup is not None:
-                print(
-                    f"Private catalogue backup retained for recovery: "
-                    f"{ascii(str(retained_backup))}",
-                    file=sys.stderr,
-                )
-        else:
-            summary["status"] = "failed"
-            summary["catalogue_output"] = None
-            summary["catalogue_records"] = 0
-    else:
-        summary["status"] = "failed"
-        if catalogue_backup is not None:
-            try:
-                catalogue_backup.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                cleanup_message = warning_text(cleanup_error)
-                summary["catalogue_backup"] = str(catalogue_backup)
-                summary["failures"].append(
-                    {
-                        "stage": "catalogue backup cleanup",
-                        "error": cleanup_message,
-                        "backup": str(catalogue_backup),
-                    }
-                )
-                print(
-                    f"Warning: could not remove catalogue backup "
-                    f"{ascii(str(catalogue_backup))}: {cleanup_message}",
-                    file=sys.stderr,
-                )
-
-    _write_recovery_manifest(output_path, summary, operations)
-
-
-def _remove_catalogue_backup(
-    *,
-    catalogue_backup: Path | None,
-    output_path: Path,
-    summary: dict[str, Any],
-    operations: BatchOperations,
-) -> None:
-    if catalogue_backup is None:
-        return
-    try:
-        catalogue_backup.unlink(missing_ok=True)
-    except OSError as error:
-        message = warning_text(error)
-        summary["catalogue_backup"] = str(catalogue_backup)
-        summary["failures"].append(
+    manifest_path: Path,
+    failures: list[dict[str, str]],
+) -> tuple[int, str | None, tuple[Path, ...]]:
+    if not sum(len(result.records) for result in results):
+        failures.append(
             {
-                "stage": "catalogue backup cleanup",
-                "error": message,
-                "backup": str(catalogue_backup),
+                "stage": "processing",
+                "error": "No usable catalogue records were produced.",
             }
         )
-        if summary["status"] == "complete":
-            summary["status"] = "partial"
-        print(
-            f"Warning: could not remove catalogue backup "
-            f"{ascii(str(catalogue_backup))}: {message}",
-            file=sys.stderr,
+        return 0, None, ()
+    previous: tuple[Path, ...] = ()
+    try:
+        previous = (
+            backup_existing_results((output_path, manifest_path))
+            if arguments.force
+            else ()
         )
-        _write_recovery_manifest(output_path, summary, operations)
+        records = export_catalogue(
+            results, output_path, minimum_confidence=arguments.min_confidence
+        )
+        return len(records), str(output_path), previous
+    except Exception as error:
+        message = warning_text(error)
+        failures.append({"stage": "export", "error": message})
+        print(f"Export failed: {message}", file=sys.stderr)
+        return 0, None, previous
+
+
+def _write_manifest(
+    manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]]
+) -> None:
+    try:
+        write_json_atomic(manifest, summary)
+    except Exception as error:
+        message = warning_text(error)
+        failures.append({"stage": "manifest", "error": message})
+        summary["status"] = "partial" if summary["catalogue_output"] else "failed"
+        summary["run_manifest"] = None
+        print(f"Manifest write failed: {message}", file=sys.stderr)
+
+
+def _emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
+    print(
+        json.dumps(
+            _public_summary(summary, image_count=image_count, model_name=model_name),
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 def run_batch(
@@ -216,131 +175,45 @@ def run_batch(
     normal_manifest_path: Path,
     *,
     preserve_existing_manifest_on_failure: bool,
-    operations: BatchOperations,
 ) -> int:
-    """Process one image batch and emit its single public JSON summary."""
+    """Process one batch, write safe outputs, and emit one JSON summary."""
 
-    started_at = datetime.now(UTC)
     failures: list[dict[str, str]] = []
-    work_directory: Path | None = None
-    model_metadata: dict[str, str] = {"model": arguments.model}
-    request_timeout_seconds: float | None = arguments.request_timeout
-
-    try:
-        if request_timeout_seconds is None:
-            request_timeout_seconds = operations.timeout_from_environment()
-        pipeline = operations.build_pipeline(
-            detector_name=arguments.detector,
-            transcriber_name=arguments.transcriber,
-            model_name=arguments.model,
-            work_directory=arguments.path_to_box_images,
-            minimum_detector_confidence=arguments.min_detector_confidence,
-            request_timeout_seconds=request_timeout_seconds,
-        )
-        model_metadata.update(getattr(pipeline, "model_metadata", {}))
-        # Invalid model setup should not leave behind an empty crop-run directory.
-        work_directory = operations.run_directory(arguments.path_to_box_images)
-        pipeline.work_directory = work_directory
-    except Exception as error:
-        failures.append({"stage": "preflight", "error": warning_text(error)})
-        pipeline = None
-
-    results = (
-        _process_images(pipeline, images, failures) if pipeline is not None else []
+    pipeline, work_directory, request_timeout, model_metadata = _prepare_pipeline(
+        arguments, failures
     )
-    incomplete_images = [
-        {
-            "source_image": str(result.input_image.file_path),
-            "status": getattr(result, "status", "complete"),
-            "warnings": list(result.warnings),
-        }
-        for result in results
-        if getattr(result, "status", "complete") != "complete"
-    ]
-
-    expected_records = sum(len(result.transcriptions) for result in results)
-    record_count = 0
-    catalogue_output: str | None = None
-    catalogue_backup: Path | None = None
-    if expected_records:
-        try:
-            catalogue_backup = operations.backup_existing_catalogue(output_path)
-            records = operations.export_catalogue(
-                results,
-                output_path,
-                minimum_confidence=arguments.min_confidence,
-            )
-            record_count = len(records)
-            catalogue_output = str(output_path)
-        except Exception as error:
-            message = warning_text(error)
-            failures.append({"stage": "export", "error": message})
-            print(f"Export failed: {message}", file=sys.stderr)
-    elif pipeline is not None:
-        failures.append(
-            {
-                "stage": "processing",
-                "error": "No usable catalogue records were produced.",
-            }
+    results = _process_images(pipeline, images, failures) if pipeline else []
+    if pipeline:
+        record_count, catalogue_output, previous_results = _export_results(
+            arguments, results, output_path, normal_manifest_path, failures
         )
+    else:
+        record_count, catalogue_output, previous_results = 0, None, ()
 
+    incomplete = any(result.status != "complete" for result in results)
     status = "complete"
-    if failures or incomplete_images:
+    if failures or incomplete:
         status = "partial" if record_count else "failed"
-    completed_at = datetime.now(UTC)
-    actual_manifest_path = normal_manifest_path
-    if preserve_existing_manifest_on_failure and record_count == 0:
-        actual_manifest_path = operations.failed_manifest_path(output_path)
+
+    manifest = (
+        failed_manifest_path(output_path)
+        if preserve_existing_manifest_on_failure and not record_count
+        else normal_manifest_path
+    )
     summary: dict[str, Any] = {
         "schema_version": 1,
         "status": status,
-        "started_at": started_at.isoformat(),
-        "completed_at": completed_at.isoformat(),
-        "elapsed_seconds": round((completed_at - started_at).total_seconds(), 3),
-        "configuration": configuration(
-            arguments,
-            work_directory,
-            request_timeout_seconds,
-        ),
+        "configuration": configuration(arguments, work_directory, request_timeout),
         "model": model_metadata,
         "images": [result.to_dict() for result in results],
-        "incomplete_images": incomplete_images,
         "failures": failures,
         "catalogue_output": catalogue_output,
         "catalogue_records": record_count,
-        "run_manifest": str(actual_manifest_path),
-        "catalogue_backup": None,
+        "run_manifest": str(manifest),
+        "previous_results": [str(path) for path in previous_results],
     }
-
-    try:
-        operations.write_json_atomic(actual_manifest_path, summary)
-    except Exception as error:
-        _handle_manifest_failure(
-            error=error,
-            summary=summary,
-            output_path=output_path,
-            catalogue_output=catalogue_output,
-            catalogue_backup=catalogue_backup,
-            operations=operations,
-        )
-    else:
-        _remove_catalogue_backup(
-            catalogue_backup=catalogue_backup,
-            output_path=output_path,
-            summary=summary,
-            operations=operations,
-        )
-
-    print(
-        json.dumps(
-            public_summary(
-                summary, image_count=len(images), model_name=arguments.model
-            ),
-            indent=2,
-            ensure_ascii=False,
-        )
-    )
+    _write_manifest(manifest, summary, failures)
+    _emit_summary(summary, len(images), arguments.model)
     if pipeline is None:
-        # Connectivity, version, model, and timeout failures are setup errors.
         return 2
     return 0 if summary["status"] == "complete" else 1

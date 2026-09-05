@@ -1,12 +1,12 @@
-# UMA BCT developer and operator guide
+# UMA BCT developer guide
 
-The client-facing release is `uma-bct-client.zip`. It contains the wheel and
-platform launchers, so client users do not install Python packages or run setup
-commands themselves.
+The supported client delivery is `uma-bct-client.zip`. It contains the wheel
+and platform launchers, so the client does not need to install Python packages
+manually.
 
-## Development environment
+## Development
 
-Use Python 3.12 and the locked dependencies:
+Use Python 3.12 and the locked environment:
 
 ```bash
 uv sync --locked --dev --python 3.12
@@ -24,97 +24,61 @@ uv run uma-bct setup
 uv run uma-bct
 ```
 
-The default paths are `inputs/`, `outputs/catalogue.csv`, and `outputs/crops/`.
-CSV is the default; pass an explicit `.xlsx` output for Excel. Existing aliases
-such as `--path-to-output` and `--work-dir` remain supported.
+The defaults are `inputs/`, `outputs/catalogue.csv`, and
+`outputs/crops/`. CSV is the only v0.1 catalogue format. Existing input,
+output, crop, detector, model, confidence, timeout, and force options remain
+available through `--help`.
 
-## Client launcher behavior
+## Client bundle
 
-The launchers create `inputs/`, `outputs/`, and an ignored
-`.uma-bct-runtime/` directory beside themselves. They then:
+The launchers create `inputs/`, `outputs/`, and a private
+`.uma-bct-runtime/` directory. On the first run they:
 
-1. Find the one supplied UMA BCT wheel.
-2. Load the exact, hash-pinned dependency closure exported from `uv.lock`.
-3. Install pinned uv 0.12.9 into `.uma-bct-runtime/` when it is absent or stale.
-4. Download and verify the pinned Ollama 0.30.8 platform artifact when Ollama
-   is absent or stale.
-5. Force `http://127.0.0.1:11434`, disable remote opt-ins, and start Ollama.
-6. Run `uma-bct setup` to validate folders, the server version, and the pinned
-   model, downloading the model only when it is absent.
-7. Ask the user to add supported photos after all online preparation finishes.
-8. Preserve timestamped copies of an existing catalogue and manifest.
-9. Run the batch offline through its atomic replacement path and open `outputs/`.
+1. Verify the supplied wheel and hash-pinned dependency file.
+2. Download and verify pinned uv and Ollama builds for the current platform.
+3. Install a managed Python 3.12 runtime and the UMA BCT wheel.
+4. force the numeric loopback Ollama endpoint and download the pinned model.
+5. Open `inputs/`, process the photos, and open `outputs/`.
 
-The uv archive and each Ollama platform artifact are version-pinned and checked
-against their published release SHA-256 values before extraction or execution.
-The Windows Ollama installer must also have a valid Ollama Inc. Authenticode
-signature. Linux `.tar.zst` extraction permits internal relative links while
-rejecting escaping links, special entries, and path traversal. See the official
-Ollama [macOS](https://docs.ollama.com/macos),
-[Linux](https://docs.ollama.com/linux), and
-[Windows](https://docs.ollama.com/windows) documentation. The first run is
-online and should be performed only from the verified client bundle.
+Downloads finish before the launcher asks the user to add private photographs.
+Later runs reuse the local runtime and can run offline. The Windows Ollama
+installer also requires a valid Ollama Inc. Authenticode signature.
 
-The native Linux launcher targets glibc-based x86-64 and arm64 distributions.
-Musl-based distributions require a different Ollama build and are not supported
-by this bundle.
+`client-constraints.txt` is generated from `uv.lock`; do not edit it by
+hand. It is required so every client launcher installs the same hash-verified
+dependency versions.
 
-`UMA_BCT_NO_OPEN=1` suppresses opening folders for headless smoke tests.
-
-## Catalogue behavior
-
-The first five columns are `Node ID`, `Node Type`, `Node Title`, `Description`,
-and `Date Range`. `Node Type` is `Unit`; Node ID and Date Range stay blank in
-version 0.1. Canonical titles use the first recognised record identifier and a
-four-digit unit number. Ambiguous values remain blank or review-flagged, and
-separate physical boxes remain separate rows.
-
-Progress and warnings go to stderr. Completed CLI commands emit one JSON result
-to stdout. Exit codes are `0` for complete, `1` for partial or recorded failure,
-and `2` for setup or usage failure.
-
-## Privacy and remote Ollama
-
-The supported client launcher always uses numeric loopback Ollama and removes
-the remote privacy opt-ins from its child environment. Images and catalogue
-data stay on the workstation. Loopback Ollama has no client authentication, so
-the supported boundary is a trusted single-user workstation.
-
-Direct CLI operators can opt into an approved managed endpoint only with HTTPS:
-
-```bash
-export UMA_BCT_ALLOW_REMOTE_OLLAMA=1
-export OLLAMA_HOST=https://approved-model-service.example.edu:11434
-uma-bct
-```
-
-Never commit, upload, package, place in a Docker context, or send to hosted CI:
-
-- `Archive box photos/` or `add_repository_photos/`
-- `inputs/`, `outputs/`, or `.uma-bct-runtime/`
-- model weights, Ollama state, reviewed expectations, or benchmark output
-
-## Architecture and recovery
+## Processing and privacy
 
 ```text
-preflight local files and Ollama
-  -> Qwen box localisation
-  -> OpenCV localisation fallback when needed
-  -> detector-neutral review crops
-  -> Qwen crop transcription
-  -> one full-image recovery attempt when required
-  -> consolidate observations without merging physical boxes
-  -> map and flag catalogue rows
-  -> atomically write catalogue and run manifest
+local file/model preflight
+  -> Qwen box detection
+  -> OpenCV detection fallback
+  -> review crops
+  -> Qwen transcription
+  -> one full-image recovery when localization or all crops fail
+  -> conservative catalogue mapping
+  -> atomic CSV and compact run manifest
 ```
 
-Each image has its own exception boundary. Detection and transcription attempts
-are recorded before consolidation. The protected Confluence diagram was not
-available for exact comparison, so this describes the implemented flow only.
+The manifest keeps the model identity, detector route, final box readings,
+warnings, and failures. It deliberately does not contain per-attempt timing or
+proposal telemetry.
+
+Only numeric loopback Ollama is allowed by default. The bundled Compose service
+opts into its exact `ollama` hostname. An approved managed endpoint requires
+`UMA_BCT_ALLOW_REMOTE_OLLAMA=1` and HTTPS because image pixels leave the
+workstation.
+
+Never commit, package, upload, or place in a Docker context:
+
+- `Archive box photos/`, `add_repository_photos/`, or `inputs/`
+- generated outputs and run manifests
+- Ollama state, model weights, or private regression expectations
 
 ## Optional Docker workflow
 
-Native Ollama remains the preferred technical path. For container-based teams:
+Native Ollama is preferred. The optional local container workflow is:
 
 ```bash
 mkdir -p inputs outputs
@@ -123,27 +87,25 @@ UMA_BCT_UID="$(id -u)" UMA_BCT_GID="$(id -g)" \
   docker compose run --rm app
 ```
 
-The Compose service keeps inputs read-only, writes only to `outputs/`, stores
-Ollama state in a named volume, and exposes no Ollama host port. Docker Desktop
-on macOS does not provide GPU acceleration to this Linux-container workflow.
+Inputs are mounted read-only, outputs are written as the host user, and Ollama
+is not exposed on a host port.
 
-## Build and release
-
-Build and inspect all client artifacts with:
+## Build the client deliverables
 
 ```bash
 uv export --quiet --locked --no-dev --group client-bootstrap \
-  --no-emit-project --no-header --format requirements-txt \
+  --no-emit-project --format requirements-txt \
   --output-file client-constraints.txt
 uv build --no-build-isolation
 uv run python scripts/build_client_bundle.py dist
 uv run python scripts/check_release_artifacts.py dist
 ```
 
-The bundle builder requires exactly one wheel and creates
-`dist/uma-bct-client.zip`. Release CI smoke-tests wheel and sdist entry points,
-checks the client bundle, verifies checksums, and publishes only the inspected
-artifacts.
+`build/` and `dist/` are generated, ignored directories. The three scripts
+build the client ZIP, reject private content in artifacts, and safely unpack
+the Linux Ollama archive. Publishing releases and container images is deferred.
 
-The private real-model gate remains local. It uses human-reviewed expectations
-stored beside ignored source photos and must never run on hosted CI.
+Before delivery, install the wheel and sdist outside the checkout and smoke-test
+`uma-bct --help`, `uma-bct --version`, and `python -m uma_bct`. The
+real-model photo gate remains local and is handled separately by the test
+engineer.

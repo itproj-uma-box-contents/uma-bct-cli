@@ -167,24 +167,6 @@ install_uv() {
     rm -f "$uv_archive"
 }
 
-preserve_existing_results() {
-    timestamp=$(date -u +%Y%m%dT%H%M%SZ)-$$
-    for name in catalogue.csv catalogue.run.json; do
-        source_path="$OUTPUTS/$name"
-        [ ! -L "$source_path" ] || fail "$source_path must not be a symbolic link."
-        if [ -f "$source_path" ]; then
-            case "$name" in
-                catalogue.csv) saved_name="catalogue.previous-$timestamp.csv" ;;
-                *) saved_name="catalogue.previous-$timestamp.run.json" ;;
-            esac
-            cp "$source_path" "$OUTPUTS/$saved_name"
-            printf 'Preserved the previous result as %s\n' "$OUTPUTS/$saved_name"
-        elif [ -e "$source_path" ]; then
-            fail "$source_path must be a regular file."
-        fi
-    done
-}
-
 case "$(uname -s)" in
     Darwin)
         macos_major=$(sw_vers -productVersion | cut -d. -f1)
@@ -313,7 +295,6 @@ fi
 has_input_images || fail "No supported photos were found in $INPUTS"
 
 printf 'Transcribing the photos...\n'
-preserve_existing_results
 set +e
 "$APP_CLI" --force
 status=$?

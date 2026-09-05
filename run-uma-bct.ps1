@@ -150,32 +150,6 @@ function Assert-NoReparseAncestor([string] $Path) {
     }
 }
 
-function Preserve-ExistingResults {
-    $Timestamp = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ")
-    $Results = @(
-        @{
-            Source = Join-Path $Outputs "catalogue.csv"
-            Saved = Join-Path $Outputs "catalogue.previous-$Timestamp.csv"
-        },
-        @{
-            Source = Join-Path $Outputs "catalogue.run.json"
-            Saved = Join-Path $Outputs "catalogue.previous-$Timestamp.run.json"
-        }
-    )
-    foreach ($Result in $Results) {
-        if (Test-Path -LiteralPath $Result.Source) {
-            $Item = Get-Item -LiteralPath $Result.Source -Force
-            if (-not $Item.PSIsContainer -and
-                ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-                Copy-Item -LiteralPath $Result.Source -Destination $Result.Saved
-                Write-Host "Preserved the previous result as $($Result.Saved)"
-            } else {
-                throw "$($Result.Source) must be a regular file and not a link."
-            }
-        }
-    }
-}
-
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
@@ -351,7 +325,6 @@ try {
         }
 
         Write-Host "Transcribing the photos..."
-        Preserve-ExistingResults
         & $AppCli --force
         $RunStatus = $LASTEXITCODE
     } finally {
