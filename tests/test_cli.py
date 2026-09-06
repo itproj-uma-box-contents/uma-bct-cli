@@ -121,6 +121,36 @@ class CliTest(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(batch.call_args.args[1], [inputs / "shelf.jpg"])
 
+    def test_cli_rejects_catalogue_inside_review_crop_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "shelf.jpg").write_bytes(b"x")
+            crops = root / "outputs/crops"
+            stderr = io.StringIO()
+            with (
+                contextlib.redirect_stderr(stderr),
+                patch("uma_bct.cli.run_batch") as batch,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "-i",
+                        str(inputs),
+                        "-o",
+                        str(crops / "catalogue.csv"),
+                        "--work-dir",
+                        str(crops),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn(
+                "catalogue output must not be inside the review-crop directory",
+                stderr.getvalue(),
+            )
+            batch.assert_not_called()
+
 
 class BatchRunnerTest(unittest.TestCase):
     def run_with(self, root, pipeline, images, *, force=False, preserve=False):

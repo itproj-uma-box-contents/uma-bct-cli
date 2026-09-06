@@ -246,8 +246,10 @@ def main(argv: list[str] | None = None) -> int:
         _validate_output_target(crop_root, directory=True, purpose="Review-crop root")
         output_absolute = Path(os.path.abspath(output_path))
         crop_absolute = Path(os.path.abspath(crop_root))
-        if crop_absolute == output_absolute or output_absolute in crop_absolute.parents:
-            raise ValueError("review crops must not be inside the catalogue file path")
+        if crop_absolute == output_absolute or crop_absolute in output_absolute.parents:
+            raise ValueError(
+                "catalogue output must not be inside the review-crop directory"
+            )
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))

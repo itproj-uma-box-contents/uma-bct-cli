@@ -96,11 +96,9 @@ def is_duplicate(first: ObservedBox, second: ObservedBox) -> bool:
             SequenceMatcher(None, first_typed, second_typed).ratio()
             >= TYPED_SIMILARITY_THRESHOLD
         )
-    return bool(
-        _normalise(first.transcription.position)
-        and _normalise(first.transcription.position)
-        == _normalise(second.transcription.position)
-    )
+    first_position = _normalise(first.transcription.position)
+    second_position = _normalise(second.transcription.position)
+    return bool(first_position and first_position == second_position)
 
 
 def _detail(lines: Sequence[str]) -> tuple[int, int]:
