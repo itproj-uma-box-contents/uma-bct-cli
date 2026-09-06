@@ -92,6 +92,12 @@ is not exposed on a host port.
 
 ## Build the client deliverables
 
+When you need to give the application to a client, create the client ZIP
+after building the project. Run the commands below from the repository root.
+The ZIP will be created in `dist/` as `uma-bct-client.zip`. Send that ZIP to
+the client through the approved private file-sharing method; the client can
+then download it, unzip it, and run the launcher.
+
 ```bash
 uv export --quiet --locked --no-dev --group client-bootstrap \
   --no-emit-project --format requirements-txt \
