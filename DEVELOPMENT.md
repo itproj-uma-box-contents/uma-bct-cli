@@ -4,9 +4,43 @@ The supported client delivery is `uma-bct-client.zip`. It contains the wheel
 and platform launchers, so the client does not need to install Python packages
 manually.
 
+## Developer prerequisites
+
+Install `uv`, then open a new terminal so the executable is available on your
+`PATH`.
+
+On macOS with Homebrew:
+
+```bash
+brew install uv
+```
+
+On macOS or Linux without Homebrew:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+On Windows with WinGet, run in PowerShell:
+
+```powershell
+winget install --id=astral-sh.uv -e
+```
+
+Confirm the installation before continuing:
+
+```bash
+uv --version
+```
+
+If this still reports `command not found`, close and reopen the terminal, then
+try again. `uv` installs and selects Python 3.12 when the commands below are
+run, so a separate Python installation is normally unnecessary.
+
 ## Development
 
-Use Python 3.12 and the locked environment:
+From the repository root (the directory containing `pyproject.toml`), create
+the locked Python 3.12 environment and run the model-free checks:
 
 ```bash
 uv sync --locked --dev --python 3.12
@@ -92,13 +126,13 @@ is not exposed on a host port.
 
 ## Build the client deliverables
 
-When you need to give the application to a client, create the client ZIP
-after building the project. Run the commands below from the repository root.
-The ZIP will be created in `dist/` as `uma-bct-client.zip`. Send that ZIP to
-the client through the approved private file-sharing method; the client can
-then download it, unzip it, and run the launcher.
+When you need to give the application to a client, run this complete sequence
+from the repository root. The first command prepares the locked build
+environment, so these commands also work from a fresh checkout after `uv` has
+been installed.
 
 ```bash
+uv sync --locked --dev --python 3.12
 uv export --quiet --locked --no-dev --group client-bootstrap \
   --no-emit-project --format requirements-txt \
   --output-file client-constraints.txt
@@ -106,6 +140,12 @@ uv build --no-build-isolation
 uv run python scripts/build_client_bundle.py dist
 uv run python scripts/check_release_artifacts.py dist
 ```
+
+The final check must report that the release artifact privacy check passed.
+The finished file is `dist/uma-bct-client.zip`. Send only that ZIP to the
+client through the approved private file-sharing method; the client can then
+download it, unzip it, and run the launcher. Do not send the wheel, source
+archive, repository, private photographs, or generated catalogue outputs.
 
 `build/` and `dist/` are generated, ignored directories. The three scripts
 build the client ZIP, reject private content in artifacts, and safely unpack
