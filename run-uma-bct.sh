@@ -18,6 +18,7 @@ BUNDLED_UV_RELEASE_URL="https://releases.astral.sh/github/uv/releases/download/$
 OLLAMA_VERSION="0.30.8"
 MINIMUM_OLLAMA_VERSION="$OLLAMA_VERSION"
 OLLAMA_RELEASE_URL="https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION"
+MINIMUM_GLIBC_VERSION="2.28"
 
 fail() {
     printf '\nUMA BCT could not continue: %s\n' "$1" >&2
@@ -102,6 +103,52 @@ ollama_version_is_supported() {
     '
 }
 
+require_supported_glibc() {
+    glibc_version=""
+    if command -v getconf >/dev/null 2>&1; then
+        glibc_version=$(
+            { getconf GNU_LIBC_VERSION 2>/dev/null || true; } |
+                awk '$1 == "glibc" { print $2; exit }'
+        )
+    fi
+
+    if [ -z "$glibc_version" ]; then
+        command -v ldd >/dev/null 2>&1 || \
+            fail "UMA BCT requires glibc $MINIMUM_GLIBC_VERSION or newer; no supported glibc installation was detected."
+        libc_details=$({ ldd --version 2>&1 || true; })
+        case "$libc_details" in
+            *[Mm][Uu][Ss][Ll]*)
+                fail "UMA BCT requires glibc $MINIMUM_GLIBC_VERSION or newer; musl Linux is not supported."
+                ;;
+        esac
+        glibc_version=$(
+            printf '%s\n' "$libc_details" |
+                awk '
+                    tolower($0) ~ /(glibc|gnu libc)/ &&
+                    match($0, /[0-9]+\.[0-9]+/) {
+                        print substr($0, RSTART, RLENGTH)
+                        exit
+                    }
+                '
+        )
+    fi
+
+    [ -n "$glibc_version" ] || \
+        fail "UMA BCT requires glibc $MINIMUM_GLIBC_VERSION or newer; no supported glibc installation was detected."
+    if ! awk -v current="$glibc_version" -v minimum="$MINIMUM_GLIBC_VERSION" '
+        BEGIN {
+            split(current, found, ".")
+            split(minimum, required, ".")
+            if ((found[1] + 0) > (required[1] + 0)) exit 0
+            if ((found[1] + 0) < (required[1] + 0)) exit 1
+            exit !((found[2] + 0) >= (required[2] + 0))
+        }
+    '
+    then
+        fail "UMA BCT requires glibc $MINIMUM_GLIBC_VERSION or newer; found glibc $glibc_version."
+    fi
+}
+
 install_ollama() {
     printf 'Installing the verified local Ollama service...\n'
     case "$(uname -s)-$(uname -m)" in
@@ -173,11 +220,7 @@ case "$(uname -s)" in
         [ "$macos_major" -ge 14 ] || fail "UMA BCT requires macOS 14 or newer."
         ;;
     Linux)
-        if command -v ldd >/dev/null 2>&1 &&
-            ldd --version 2>&1 | grep -qi musl
-        then
-            fail "UMA BCT requires a glibc-based Linux distribution."
-        fi
+        require_supported_glibc
         ;;
     *) fail "This launcher supports macOS and Linux. Use Run UMA BCT.cmd on Windows." ;;
 esac

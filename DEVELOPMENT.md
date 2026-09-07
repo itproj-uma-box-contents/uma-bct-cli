@@ -50,6 +50,13 @@ uv run coverage run -m unittest discover -s tests -v
 uv run coverage report
 ```
 
+Model-free CI runs the full unit suite and all three CLI entry paths on the
+supported architecture matrix: Windows x86-64, macOS arm64 and Intel, and Linux
+x86-64 and arm64. Runner labels are pinned to explicit GitHub-hosted images.
+Docker smoke tests run natively on both Linux architectures. Linux client hosts
+must provide glibc 2.28 or newer; musl is not supported. macOS client hosts must
+run macOS 14 or newer.
+
 Run the source CLI with:
 
 ```bash

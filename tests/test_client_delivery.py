@@ -62,6 +62,38 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertLess(windows.index("& $AppCli setup"), windows.index("Read-Host"))
         self.assertIn("Get-AuthenticodeSignature", windows)
 
+    def test_posix_launcher_preflights_glibc_before_runtime_preparation(self):
+        posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
+        self.assertIn('MINIMUM_GLIBC_VERSION="2.28"', posix)
+        self.assertIn("getconf GNU_LIBC_VERSION", posix)
+        self.assertIn("musl Linux is not supported", posix)
+        self.assertLess(
+            posix.index("require_supported_glibc\n"),
+            posix.index('mkdir -p "$INPUTS"'),
+        )
+
+    def test_ci_pins_and_exercises_the_supported_platform_matrix(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for runner in (
+            "windows-2025",
+            "macos-15",
+            "macos-15-intel",
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+        ):
+            with self.subTest(runner=runner):
+                self.assertIn(f"os: {runner}", workflow)
+        self.assertNotIn("runs-on: ubuntu-latest", workflow)
+        self.assertNotIn("os: macos-latest", workflow)
+        self.assertNotIn("os: windows-latest", workflow)
+        for command in (
+            "uv run uma-bct --help",
+            "uv run python -m uma_bct --help",
+            "uv run python main.py --help",
+        ):
+            self.assertEqual(workflow.count(command), 1)
+        self.assertEqual(workflow.count("name: Docker smoke (${{ matrix.name }})"), 1)
+
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(

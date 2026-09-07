@@ -31,9 +31,11 @@ downloaded and can work offline. For another batch, replace the photos in
 same place after the first run.
 
 Supported computers are Windows 10 22H2 or newer on x86-64, macOS 14 or newer
-on Intel or Apple silicon, and glibc-based Linux on x86-64 or arm64. Allow at
-least 16 GB of memory and enough free disk space for the large model. Use a
-trusted, single-user workstation rather than a shared computer account.
+on Intel or Apple silicon, and Linux with glibc 2.28 or newer on x86-64 or
+arm64. Windows ARM, musl-based Linux, and older operating-system releases are
+not supported. Allow at least 16 GB of memory and enough free disk space for the
+large model. Use a trusted, single-user workstation rather than a shared
+computer account.
 
 ## Photos
 
