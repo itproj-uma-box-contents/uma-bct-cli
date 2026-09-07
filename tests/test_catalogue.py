@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helpers import make_box, make_result, make_transcription
+from helpers import make_box, make_image, make_result, make_transcription
 
 from uma_bct.catalogue import map_catalogue_record
 from uma_bct.constants import OUTPUT_COLUMNS
@@ -48,7 +48,7 @@ class CatalogueRulesTest(unittest.TestCase):
         )
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "1990.0001 Unit 0030")
-        self.assertIn("Multiple identifiers", record["Flags"])
+        self.assertIn("Multiple identifiers", record["Review Notes"])
 
     def test_blanks_missing_or_uncorroborated_identity(self):
         box = make_box()
@@ -80,7 +80,7 @@ class CatalogueRulesTest(unittest.TestCase):
             with self.subTest(flag=flag):
                 record = map_catalogue_record(transcription, box.image_file_path)
                 self.assertEqual(record["Node Title"], "")
-                self.assertIn(flag, record["Flags"])
+                self.assertIn(flag, record["Review Notes"])
 
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
@@ -91,7 +91,7 @@ class CatalogueRulesTest(unittest.TestCase):
         )
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "")
-        self.assertIn("Transcription mismatch", record["Flags"])
+        self.assertIn("Transcription mismatch", record["Review Notes"])
 
     def test_requires_one_unambiguous_unit(self):
         box = make_box()
@@ -112,7 +112,7 @@ class CatalogueRulesTest(unittest.TestCase):
         )
         rejected = map_catalogue_record(conflicting, box.image_file_path)
         self.assertEqual(rejected["Node Title"], "")
-        self.assertIn("Invalid unit", rejected["Flags"])
+        self.assertIn("Invalid unit", rejected["Review Notes"])
 
     def test_description_excludes_identity_and_escapes_formulas(self):
         box = make_box()
@@ -136,39 +136,90 @@ class CatalogueRulesTest(unittest.TestCase):
             ]
         )
         self.assertEqual(len(records), 2)
-        self.assertIn("Potential Duplicate", records[0]["Flags"])
-        self.assertIn("Potential Duplicate", records[1]["Flags"])
-        self.assertIn("Low confidence", records[0]["Flags"])
+        self.assertIn("Potential Duplicate", records[0]["Review Notes"])
+        self.assertIn("Potential Duplicate", records[1]["Review Notes"])
+        self.assertIn("Low confidence", records[0]["Review Notes"])
 
 
 class CsvExportTest(unittest.TestCase):
-    def test_writes_exact_headers_sorted_records_and_relative_images(self):
+    def test_writes_exact_headers_in_physical_order_with_relative_crop_images(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "outputs" / "catalogue.csv"
-            first = make_box(box_id="shelf:001", crop_path=root / "outputs/crops/a.png")
-            incomplete = make_box(
-                box_id="shelf:002", crop_path=root / "outputs/crops/b.png"
+            shelf_b = make_image(root / "inputs/shelf-b.jpg")
+            shelf_a = make_image(root / "inputs/shelf-a.jpg")
+            first_image = make_box(
+                image=shelf_b,
+                box_id="shelf-b:001",
+                crop_path=root / "outputs/crops/b-001.png",
             )
-            result = make_result(
-                BoxResult(first, make_transcription(first)),
+            first_image_second_crop = make_box(
+                image=shelf_b,
+                box_id="shelf-b:002",
+                crop_path=root / "outputs/crops/b-002.png",
+            )
+            second_image = make_box(
+                image=shelf_a,
+                box_id="shelf-a:001",
+                crop_path=root / "outputs/crops/a-001.png",
+            )
+            first_result = make_result(
                 BoxResult(
-                    incomplete,
+                    first_image,
                     make_transcription(
-                        incomplete, identifiers=(), typed=("Unit 2",), unit="2"
+                        first_image,
+                        identifiers=("2000.0002",),
+                        typed=("2000.0002", "Unit 2"),
+                        unit="2",
+                    ),
+                ),
+                BoxResult(
+                    first_image_second_crop,
+                    make_transcription(
+                        first_image_second_crop,
+                        identifiers=(),
+                        typed=("Unit 3",),
+                        unit="3",
                     ),
                 ),
             )
-            export_catalogue([result], output)
+            second_result = make_result(
+                BoxResult(
+                    second_image,
+                    make_transcription(
+                        second_image,
+                        identifiers=("1990.0001",),
+                        typed=("1990.0001", "Unit 1"),
+                        unit="1",
+                    ),
+                )
+            )
+            export_catalogue([first_result, second_result], output)
 
             with output.open(newline="", encoding="utf-8") as source:
                 rows = list(csv.DictReader(source))
                 self.assertEqual(source.seek(0), 0)
                 self.assertEqual(next(csv.reader(source)), OUTPUT_COLUMNS)
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[0]["Node Title"], "1960.0009 Unit 0004")
-            self.assertEqual(rows[0]["Image"], "crops/a.png")
+            self.assertEqual(
+                OUTPUT_COLUMNS,
+                [
+                    "Node ID",
+                    "Node Type",
+                    "Node Title",
+                    "Description",
+                    "Date Range",
+                    "Transcription Confidence (0-100)",
+                    "Review Notes",
+                    "Crop Image",
+                ],
+            )
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]["Node Title"], "2000.0002 Unit 0002")
+            self.assertEqual(rows[0]["Crop Image"], "crops/b-001.png")
             self.assertEqual(rows[1]["Node Title"], "")
+            self.assertEqual(rows[1]["Crop Image"], "crops/b-002.png")
+            self.assertEqual(rows[2]["Node Title"], "1990.0001 Unit 0001")
+            self.assertEqual(rows[2]["Crop Image"], "crops/a-001.png")
 
     def test_atomic_failure_preserves_existing_csv(self):
         with tempfile.TemporaryDirectory() as directory:

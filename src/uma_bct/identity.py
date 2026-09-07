@@ -149,18 +149,6 @@ def collect_unit_evidence(
     return UnitEvidence(frozenset(candidates), ambiguous or len(candidates) > 1)
 
 
-def unit_claim_is_corroborated(
-    value: str,
-    typed_lines: Iterable[str],
-    handwritten_lines: Iterable[str],
-) -> bool:
-    normalized = normalise_unit_claim(value)
-    evidence = collect_unit_evidence(typed_lines, handwritten_lines)
-    return bool(
-        normalized and not evidence.ambiguous and evidence.candidates == {normalized}
-    )
-
-
 def identity_only_line(
     line: str,
     structured_identifiers: Iterable[str],

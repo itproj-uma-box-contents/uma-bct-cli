@@ -6,9 +6,9 @@ OUTPUT_COLUMNS = [
     "Node Title",
     "Description",
     "Date Range",
-    "Confidence Score",
-    "Flags",
-    "Image",
+    "Transcription Confidence (0-100)",
+    "Review Notes",
+    "Crop Image",
 ]
 
 DUPLICATE_FLAG = "Potential Duplicate"
@@ -31,6 +31,7 @@ MIN_ASPECT_RATIO = 0.30
 MAX_ASPECT_RATIO = 1.35
 CONTAINMENT_THRESHOLD = 0.90
 NMS_IOU_THRESHOLD = 0.45
-PADDING_FRACTION = 0.05
+PADDING_FRACTION = 0.08
+MINIMUM_IMAGE_PADDING_FRACTION = 0.005
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}

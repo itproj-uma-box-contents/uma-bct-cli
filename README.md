@@ -64,11 +64,13 @@ where each row came from. Before a later run replaces the current catalogue and
 manifest, the launcher preserves timestamped copies beside them. Timestamped
 crop folders are also kept.
 
-Before importing the catalogue:
+Before importing the catalogue, work through the rows in their original photo
+and left-to-right/top-to-bottom crop order:
 
-- Compare each row with its `Image` review evidence.
-- Check every non-empty `Flags` value and any low confidence score. All
-  transcription still requires human review.
+- Compare each row with its `Crop Image` review evidence.
+- Check every non-empty `Review Notes` value and the
+  `Transcription Confidence (0-100)`. Empty review notes mean only that the tool
+  raised no automated warning; every transcription still requires human review.
 - Keep separate rows for separate physical boxes, even when their titles match.
 
 If the launcher stops, read the short message in its window, correct the stated

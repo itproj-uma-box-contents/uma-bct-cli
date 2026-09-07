@@ -25,20 +25,42 @@ class ImagingTest(unittest.TestCase):
             with self.subTest(build=build), self.assertRaises(ValueError):
                 build()
 
-    def test_cropper_writes_reviewable_crops(self):
+    def test_cropper_applies_eight_percent_padding_and_saves_padded_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             image_path = root / "shelf.jpg"
-            cv2.imwrite(str(image_path), np.full((200, 200, 3), 220, dtype=np.uint8))
+            cv2.imwrite(str(image_path), np.full((1000, 1000, 3), 220, dtype=np.uint8))
+            image = load_input_image(image_path)
+            regions = [DetectedRegion(BoundingBox((100, 100), (300, 500)), 1.0)]
+            boxes = OpenCVBoxCropper().create_boxes(image, regions, root / "review")
+            self.assertEqual(boxes[0].bounding_box, BoundingBox((84, 68), (316, 532)))
+            saved = cv2.imread(str(boxes[0].image_file_path))
+            self.assertEqual(saved.shape[:2], (464, 232))
+
+    def test_cropper_uses_image_relative_minimum_padding_and_clamps_borders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "shelf.jpg"
+            cv2.imwrite(str(image_path), np.full((1000, 2000, 3), 220, dtype=np.uint8))
             image = load_input_image(image_path)
             regions = [
-                DetectedRegion(BoundingBox((20, 20), (180, 80)), 1.0),
-                DetectedRegion(BoundingBox((50, 100), (120, 170)), 1.0),
+                DetectedRegion(BoundingBox((100, 100), (120, 130)), 1.0),
+                DetectedRegion(BoundingBox((0, 800), (100, 1000)), 1.0),
             ]
             boxes = OpenCVBoxCropper().create_boxes(image, regions, root / "review")
-            self.assertEqual(len(boxes), 2)
-            self.assertTrue(all(box.image_file_path.is_file() for box in boxes))
-            self.assertNotEqual(boxes[0].box_id, boxes[1].box_id)
+            self.assertEqual(
+                [box.bounding_box for box in boxes],
+                [
+                    BoundingBox((95, 95), (125, 135)),
+                    BoundingBox((0, 784), (108, 1000)),
+                ],
+            )
+            self.assertEqual(
+                [cv2.imread(str(box.image_file_path)).shape[:2] for box in boxes],
+                [(40, 30), (216, 108)],
+            )
+            self.assertEqual(len({box.box_id for box in boxes}), 2)
+            self.assertEqual(len({box.image_file_path for box in boxes}), 2)
 
     def test_unreadable_image_has_a_clear_error(self):
         with (

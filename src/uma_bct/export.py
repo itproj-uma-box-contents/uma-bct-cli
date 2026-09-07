@@ -25,7 +25,7 @@ def catalogue_records(
     minimum_confidence: int = 80,
     catalogue_path: str | Path | None = None,
 ) -> list[dict[str, str | int]]:
-    """Map results, add batch flags, and sort complete titles first."""
+    """Map results and add batch flags without changing physical-box order."""
 
     if not 0 <= minimum_confidence <= 100:
         raise ValueError("Low-confidence threshold must be between 0 and 100.")
@@ -53,20 +53,14 @@ def catalogue_records(
     )
     for record in records:
         title = str(record["Node Title"]).strip()
-        flags = str(record["Flags"])
+        flags = str(record["Review Notes"])
         if title and title_counts[title.casefold()] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
-        if int(record["Confidence Score"]) < minimum_confidence:
+        if int(record["Transcription Confidence (0-100)"]) < minimum_confidence:
             flags = append_flag(flags, LOW_CONFIDENCE_FLAG)
-        record["Flags"] = flags
+        record["Review Notes"] = flags
 
-    return sorted(
-        records,
-        key=lambda record: (
-            not bool(str(record["Node Title"]).strip()),
-            str(record["Node Title"]).casefold(),
-        ),
-    )
+    return records
 
 
 def export_catalogue(

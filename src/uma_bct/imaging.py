@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +13,7 @@ import numpy as np
 
 from .constants import (
     CONTAINMENT_THRESHOLD,
+    MINIMUM_IMAGE_PADDING_FRACTION,
     NMS_IOU_THRESHOLD,
     PADDING_FRACTION,
 )
@@ -188,11 +190,14 @@ class OpenCVBoxCropper:
         crop_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         crop_directory.chmod(0o700)
         boxes: list[Box] = []
+        minimum_padding = math.ceil(
+            min(image.width, image.height) * MINIMUM_IMAGE_PADDING_FRACTION
+        )
 
         for index, region in enumerate(ordered, start=1):
             box = region.bounding_box
-            padding_x = round(box.width * PADDING_FRACTION)
-            padding_y = round(box.height * PADDING_FRACTION)
+            padding_x = max(round(box.width * PADDING_FRACTION), minimum_padding)
+            padding_y = max(round(box.height * PADDING_FRACTION), minimum_padding)
             x1 = max(0, box.x - padding_x)
             y1 = max(0, box.y - padding_y)
             x2 = min(image.width, box.bottom_right[0] + padding_x)

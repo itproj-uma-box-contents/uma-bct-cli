@@ -163,7 +163,7 @@ def image_reference(
         # Windows cannot represent a relative path across drive letters.
         raise ValueError(
             "The catalogue and review-crop directory must be on the same drive "
-            "so Image values remain relative. Choose --path-to-box-images on "
+            "so Crop Image values remain relative. Choose --path-to-box-images on "
             "the catalogue drive."
         ) from None
 
@@ -243,8 +243,8 @@ def map_catalogue_record(
         "Node Title": title,
         "Description": _description(transcription),
         "Date Range": "",
-        "Confidence Score": transcription.confidence,
-        "Flags": "; ".join(flags),
-        "Image": image,
+        "Transcription Confidence (0-100)": transcription.confidence,
+        "Review Notes": "; ".join(flags),
+        "Crop Image": image,
     }
     return {column: record[column] for column in OUTPUT_COLUMNS}
