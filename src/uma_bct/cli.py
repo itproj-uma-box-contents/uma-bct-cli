@@ -26,7 +26,7 @@ from .setup_command import run_setup
 
 class SafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
-        super().error(warning_text(ValueError(message)))
+        super().error(warning_text(message))
 
 
 def package_version() -> str:
@@ -112,14 +112,17 @@ def _add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "-c",
-        "--min-confidence",
+        "--min-transcription-confidence",
+        dest="min_transcription_confidence",
         type=bounded_percentage,
         default=80,
         metavar="INTEGER",
         help="review threshold from 0 to 100 (default: %(default)s)",
     )
     parser.add_argument(
+        "--min-confidence",
         "--min-detector-confidence",
+        dest="min_detector_confidence",
         type=bounded_float,
         default=0.60,
         metavar="FLOAT",

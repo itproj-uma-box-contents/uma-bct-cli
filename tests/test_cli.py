@@ -44,7 +44,7 @@ def arguments(root: Path, *, force=False):
         detector="qwen",
         transcriber="qwen",
         model="qwen-test",
-        min_confidence=80,
+        min_transcription_confidence=80,
         min_detector_confidence=0.6,
         request_timeout=10.0,
         path_to_inputs=root / "inputs",
@@ -60,8 +60,21 @@ class CliTest(unittest.TestCase):
         aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
+        self.assertEqual(defaults.min_detector_confidence, 0.6)
+        self.assertEqual(defaults.min_transcription_confidence, 80)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
+
+    def test_confidence_options_keep_their_distinct_meanings(self):
+        legacy_detector = parse_args(["--min-confidence", "0.7"])
+        explicit_detector = parse_args(["--min-detector-confidence", "0.8"])
+        short_transcription = parse_args(["-c", "70"])
+        explicit_transcription = parse_args(["--min-transcription-confidence", "75"])
+
+        self.assertEqual(legacy_detector.min_detector_confidence, 0.7)
+        self.assertEqual(explicit_detector.min_detector_confidence, 0.8)
+        self.assertEqual(short_transcription.min_transcription_confidence, 70)
+        self.assertEqual(explicit_transcription.min_transcription_confidence, 75)
 
     def test_discovers_supported_images_in_stable_order(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -187,6 +200,12 @@ class BatchRunnerTest(unittest.TestCase):
             )
             self.assertNotIn("started_at", manifest)
             self.assertNotIn("attempts", str(manifest))
+            self.assertEqual(
+                manifest["configuration"]["minimum_transcription_confidence"], 80
+            )
+            self.assertEqual(
+                manifest["configuration"]["minimum_detector_confidence"], 0.6
+            )
             self.assertIn("Processing", progress)
 
     def test_continues_after_one_image_failure(self):

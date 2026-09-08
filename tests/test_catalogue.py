@@ -140,6 +140,15 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertIn("Potential Duplicate", records[1]["Review Notes"])
         self.assertIn("Low confidence", records[0]["Review Notes"])
 
+    def test_low_confidence_threshold_is_strict(self):
+        box = make_box()
+        result = make_result(BoxResult(box, make_transcription(box, confidence=70)))
+        below_threshold = catalogue_records([result], minimum_confidence=71)
+        at_threshold = catalogue_records([result], minimum_confidence=70)
+
+        self.assertIn("Low confidence", below_threshold[0]["Review Notes"])
+        self.assertNotIn("Low confidence", at_threshold[0]["Review Notes"])
+
 
 class CsvExportTest(unittest.TestCase):
     def test_writes_exact_headers_in_physical_order_with_relative_crop_images(self):

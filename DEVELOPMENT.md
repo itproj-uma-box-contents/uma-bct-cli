@@ -68,7 +68,10 @@ uv run uma-bct
 The defaults are `inputs/`, `outputs/catalogue.csv`, and
 `outputs/crops/`. CSV is the only v0.1 catalogue format. Existing input,
 output, crop, detector, model, confidence, timeout, and force options remain
-available through `--help`.
+available through `--help`. The legacy `--min-confidence` option and its
+explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
+1. The transcription review threshold uses `-c` or
+`--min-transcription-confidence` and accepts an integer from 0 to 100.
 
 ## Client bundle
 

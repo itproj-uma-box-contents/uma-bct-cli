@@ -29,7 +29,7 @@ def configuration(
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
         "model": arguments.model,
-        "minimum_transcription_confidence": arguments.min_confidence,
+        "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
@@ -56,7 +56,7 @@ def _process_images(
         results.append(result)
         for warning in result.warnings:
             print(
-                f"Warning for {ascii(str(image_path))}: {warning_text(ValueError(warning))}",
+                f"Warning for {ascii(str(image_path))}: {warning_text(warning)}",
                 file=sys.stderr,
             )
     return results
@@ -135,7 +135,9 @@ def _export_results(
             else ()
         )
         records = export_catalogue(
-            results, output_path, minimum_confidence=arguments.min_confidence
+            results,
+            output_path,
+            minimum_confidence=arguments.min_transcription_confidence,
         )
         return len(records), str(output_path), previous
     except Exception as error:
