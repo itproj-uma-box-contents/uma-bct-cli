@@ -1,7 +1,7 @@
 # UMA Box Contents Transcription
 
-This tool turns archive-box photos into a catalogue on your computer. Photos
-stay local and are not uploaded to a website.
+This tool turns archive-box photos into a catalogue on your computer. The
+supplied launcher workflow keeps photos local and does not upload them.
 
 ## Run the tool
 
@@ -36,6 +36,11 @@ arm64. Windows ARM, musl-based Linux, and older operating-system releases are
 not supported. Allow at least 16 GB of memory and enough free disk space for the
 large model. Use a trusted, single-user workstation rather than a shared
 computer account.
+
+The supplied launchers always connect to Ollama on numeric loopback. A developer
+may use an approved managed endpoint only by setting `OLLAMA_HOST` to an HTTPS
+URL and explicitly opting in with `UMA_BCT_ALLOW_REMOTE_OLLAMA=1`. In that mode,
+image pixels leave the workstation; do not enable it without written approval.
 
 ## Photos
 
