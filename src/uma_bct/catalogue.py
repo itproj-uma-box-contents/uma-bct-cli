@@ -168,32 +168,6 @@ def image_reference(
         ) from None
 
 
-def _record_flags(
-    transcription: BoxTranscription,
-    identifiers: tuple[str, ...],
-    ambiguous_identifier: bool,
-    identifier_mismatch: bool,
-    unit_flag: str | None,
-    unit_mismatch: bool,
-    additional_flags: Iterable[str],
-) -> list[str]:
-    flags: list[str] = []
-    if not identifiers:
-        flags.append(
-            AMBIGUOUS_IDENTIFIER_FLAG
-            if ambiguous_identifier
-            else MISSING_IDENTIFIER_FLAG
-        )
-    elif len(identifiers) > 1:
-        flags.append(MULTIPLE_IDENTIFIERS_FLAG)
-    if unit_flag:
-        flags.append(unit_flag)
-    if transcription.needs_review or identifier_mismatch or unit_mismatch:
-        flags.append(TRANSCRIPTION_MISMATCH_FLAG)
-    flags.extend(flag for flag in additional_flags if flag not in flags)
-    return flags
-
-
 def _description(transcription: BoxTranscription) -> str:
     values = (
         *non_empty_lines(transcription.handwritten_lines),
@@ -225,15 +199,21 @@ def map_catalogue_record(
     )
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
     identifier = identifiers[0] if identifiers else ""
-    flags = _record_flags(
-        transcription,
-        identifiers,
-        ambiguous_identifier,
-        identifier_mismatch,
-        unit_flag,
-        unit_mismatch,
-        additional_flags,
-    )
+    flags: list[str] = []
+    if not identifiers:
+        flags.append(
+            AMBIGUOUS_IDENTIFIER_FLAG
+            if ambiguous_identifier
+            else MISSING_IDENTIFIER_FLAG
+        )
+    elif len(identifiers) > 1:
+        flags.append(MULTIPLE_IDENTIFIERS_FLAG)
+    if unit_flag:
+        flags.append(unit_flag)
+    if transcription.needs_review or identifier_mismatch or unit_mismatch:
+        flags.append(TRANSCRIPTION_MISMATCH_FLAG)
+    flags.extend(flag for flag in additional_flags if flag not in flags)
+
     title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
     image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 

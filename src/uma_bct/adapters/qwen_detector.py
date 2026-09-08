@@ -92,13 +92,6 @@ def validate_grounding_proposals(
     return boxes, tuple(dropped)
 
 
-def validate_grounding_result(value: Any) -> list[tuple[float, float, float, float]]:
-    """Return valid normalized boxes for callers that do not need warnings."""
-
-    boxes, _dropped = validate_grounding_proposals(value)
-    return boxes
-
-
 @contextmanager
 def sanitized_detection_image(image: InputImage):
     """Yield an EXIF-free PNG so even opted-in remote inference omits metadata."""

@@ -21,13 +21,14 @@ from .transcriptions import ObservedBox, deduplicate, observations_from_response
 ImageStatus = Literal["complete", "partial", "failed"]
 
 
-def warning_text(error: Exception) -> str:
+def warning_text(value: Exception | str) -> str:
     """Return bounded, single-line text safe for stderr and JSON."""
 
     printable = "".join(
-        character if character.isprintable() else " " for character in str(error)
+        character if character.isprintable() else " " for character in str(value)
     )
-    message = " ".join(printable.split()) or error.__class__.__name__
+    fallback = value.__class__.__name__ if isinstance(value, Exception) else "Warning"
+    message = " ".join(printable.split()) or fallback
     return message if len(message) <= 240 else f"{message[:237]}..."
 
 
@@ -106,7 +107,7 @@ class BoxTranscriptionPipeline:
             return [], f"detection failed: {warning_text(error)}", False
 
         dropped_warnings = tuple(
-            warning_text(ValueError(value))
+            warning_text(value)
             for value in getattr(detector, "dropped_proposal_warnings", ())
         )
         warnings.extend(dropped_warnings)

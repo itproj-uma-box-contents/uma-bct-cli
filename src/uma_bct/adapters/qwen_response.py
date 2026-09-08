@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-_REQUIRED = object()
-
 
 def response_boxes(
     value: Any,
@@ -50,11 +48,10 @@ def bounded_string_list(
     field: str,
     maximum_items: int,
     maximum_characters: int,
-    default: object = _REQUIRED,
 ) -> list[str]:
-    """Validate a bounded string array, optionally accepting an omitted field."""
+    """Validate a required bounded string array."""
 
-    value = item.get(field) if default is _REQUIRED else item.get(field, default)
+    value = item.get(field)
     if not isinstance(value, list) or not all(isinstance(line, str) for line in value):
         raise ValueError(f"box {box_number}.{field} must be an array of strings")
     if len(value) > maximum_items:
