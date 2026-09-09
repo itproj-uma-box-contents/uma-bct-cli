@@ -12,7 +12,7 @@ process a whole photo when box localization fails.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -56,4 +56,11 @@ class FullImageTextTranscriber(Protocol):
 class VisionModelClient(Protocol):
     """Minimal structured vision-model transport used by Qwen adapters."""
 
-    def query(self, image_path: Path, prompt: str, schema: dict[str, Any]) -> Any: ...
+    def query(
+        self,
+        image_path: Path,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        validator: Callable[[Any], object] | None = None,
+    ) -> Any: ...

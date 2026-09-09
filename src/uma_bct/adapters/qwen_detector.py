@@ -35,7 +35,8 @@ GROUNDING_QUESTION = """Locate every cardboard archive box whose front face is f
 substantially visible. Return one tight bounding box per physical box as bbox_2d
 [x1, y1, x2, y2], using coordinates normalized from 0 to 1000. Exclude thin box
 fragments, shelf parts, and labels or signs as separate boxes. Do not transcribe
-any text. Return only the requested JSON."""
+any text. Return exactly one JSON object containing one top-level "boxes" array;
+never return separate JSON objects. Return only the requested JSON."""
 
 GROUNDING_SCHEMA = {
     "type": "object",
@@ -128,7 +129,12 @@ class QwenBoxDetector:
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         self.dropped_proposal_warnings = ()
         with sanitized_detection_image(image) as image_path:
-            result = self.client.query(image_path, GROUNDING_QUESTION, GROUNDING_SCHEMA)
+            result = self.client.query(
+                image_path,
+                GROUNDING_QUESTION,
+                GROUNDING_SCHEMA,
+                validator=validate_grounding_proposals,
+            )
         normalized_boxes, dropped = validate_grounding_proposals(result)
         regions: list[DetectedRegion] = []
         conversion_warnings: list[str] = []

@@ -58,6 +58,8 @@ RULES = """Rules:
   An empty transcription may score highly only when no relevant text is visible.
 - Base confidence on transcription, not position, crop boundaries, or detection.
 - Work left to right and top row first. Never merge two physical boxes.
+- Return exactly one JSON object containing one top-level "boxes" array; never
+  return separate JSON objects.
 - Return only the requested JSON."""
 
 QUESTION = f"""This photo shows several cardboard archive boxes on a shelf.
@@ -242,7 +244,12 @@ class QwenTextTranscriber:
 
     def _request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         records = validate_transcription_result(
-            self.client.query(box.image_file_path, prompt, SCHEMA)
+            self.client.query(
+                box.image_file_path,
+                prompt,
+                SCHEMA,
+                validator=validate_transcription_result,
+            )
         )
         return [_to_domain(box, record) for record in records]
 

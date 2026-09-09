@@ -1,11 +1,15 @@
 import contextlib
 import io
+import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from helpers import make_box, make_image, make_transcription
 
+from uma_bct.adapters.ollama_client import OllamaVisionModel
+from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 from uma_bct.domain import BoundingBox, Box, DetectedRegion
 from uma_bct.pipeline import BoxTranscriptionPipeline
 
@@ -69,6 +73,20 @@ class CropOnlyTranscriber:
         raise RuntimeError("unreadable")
 
 
+def qwen_record(unit="4", **changes):
+    value = {
+        "position": "middle-left",
+        "record_identifiers": ["1960.0009"],
+        "unit": unit,
+        "typed": ["1960.0009", f"Unit {unit}"],
+        "handwritten": [],
+        "auxiliary_annotations": [],
+        "transcription_confidence": 95,
+    }
+    value.update(changes)
+    return value
+
+
 class PipelineTest(unittest.TestCase):
     def setUp(self):
         self.image = make_image()
@@ -100,6 +118,27 @@ class PipelineTest(unittest.TestCase):
             contextlib.redirect_stderr(io.StringIO()),
         ):
             return pipeline.process(self.image.file_path)
+
+    def process_qwen_responses(self, *responses):
+        clients = [
+            SimpleNamespace(
+                chat=Mock(
+                    return_value=iter(
+                        [{"message": {"content": response, "thinking": ""}}]
+                    )
+                ),
+                close=Mock(),
+            )
+            for response in responses
+        ]
+        transcriber = QwenTextTranscriber(OllamaVisionModel(model="qwen-test"))
+        with patch.object(
+            OllamaVisionModel, "_client", side_effect=clients
+        ) as client_factory:
+            result = self.process(
+                self.pipeline(FakeDetector("qwen", [self.region]), transcriber)
+            )
+        return result, client_factory.call_count
 
     def test_processes_a_normal_qwen_crop(self):
         result = self.process(
@@ -146,6 +185,72 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(result.actual_detector, "full-image")
         self.assertEqual(result.status, "complete")
         self.assertEqual(transcriber.full_calls, 1)
+
+    def test_equivalent_bare_crop_response_does_not_trigger_full_image_retry(self):
+        expected = qwen_record(
+            handwritten=["Café 📦; retain verbatim"],
+            auxiliary_annotations=["Fragile [contents]"],
+        )
+        result, request_count = self.process_qwen_responses(
+            json.dumps(expected, ensure_ascii=False)
+        )
+
+        self.assertEqual(request_count, 1)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "qwen")
+        self.assertEqual(result.fallback_path, ("qwen",))
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0].transcription.unit_number, "4")
+        self.assertEqual(
+            result.records[0].transcription.handwritten_lines,
+            ("Café 📦; retain verbatim",),
+        )
+
+    def test_adjacent_full_image_records_remain_separate_and_ordered(self):
+        invalid_crop = json.dumps({"boxes": [qwen_record(typed="not an array")]})
+        first = qwen_record("1", position="left")
+        second = qwen_record("2", position="right")
+        adjacent_full_image = f"{json.dumps(first)}\n{json.dumps(second)}"
+
+        result, request_count = self.process_qwen_responses(
+            invalid_crop, adjacent_full_image
+        )
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("qwen", "full-image"))
+        self.assertEqual(
+            [item.transcription.unit_number for item in result.records], ["1", "2"]
+        )
+        self.assertNotEqual(result.records[0].box.box_id, result.records[1].box.box_id)
+
+    def test_invalid_crop_response_still_uses_full_image_recovery(self):
+        invalid_crop = json.dumps(
+            {"boxes": [qwen_record(transcription_confidence=True)]}
+        )
+        recovered = qwen_record("7", position="centre")
+
+        result, request_count = self.process_qwen_responses(
+            invalid_crop, json.dumps({"boxes": [recovered]})
+        )
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.records[0].transcription.unit_number, "7")
+
+    def test_failed_full_image_recovery_does_not_invent_catalogue_rows(self):
+        invalid_crop = json.dumps({"boxes": [qwen_record(typed=None)]})
+        invalid_full_image = json.dumps({"boxes": [qwen_record(unit=None)]})
+
+        result, request_count = self.process_qwen_responses(
+            invalid_crop, invalid_full_image
+        )
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.records, ())
 
     def test_partial_crop_failure_keeps_successful_rows(self):
         second = DetectedRegion(BoundingBox((100, 20), (180, 180)), 0.9)

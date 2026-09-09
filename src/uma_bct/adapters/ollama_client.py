@@ -21,6 +21,7 @@ import math
 import os
 import re
 import sys
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -38,7 +39,9 @@ TIMEOUT_ENVIRONMENT_VARIABLE = "UMA_BCT_OLLAMA_TIMEOUT_SECONDS"
 REMOTE_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_REMOTE_OLLAMA"
 CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_CONTAINER_OLLAMA"
 MAX_MODEL_RESPONSE_CHARACTERS = 4 * 1024 * 1024
+MAX_MODEL_RESPONSE_ERROR_CHARACTERS = 512
 ANSI_CONTROL_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+JSON_CONTAINER_CHARACTERS = frozenset("{}[]")
 
 
 def environment_flag(name: str) -> bool:
@@ -66,18 +69,93 @@ def safe_progress_text(value: Any) -> str:
 
 
 def json_from_text(raw: str) -> Any:
-    raw = raw.strip()
-    if not raw:
+    """Decode one structured value or a sequence of complete record objects."""
+
+    if len(raw) > MAX_MODEL_RESPONSE_CHARACTERS:
+        raise ValueError("The model response exceeded the 4 MiB safety limit.")
+    text = raw.strip()
+    if not text:
         raise ValueError("The model returned no text.")
+
+    starts = tuple(
+        position for character in ("{", "[") if (position := text.find(character)) >= 0
+    )
+    if not starts:
+        raise ValueError("The model response did not contain a JSON object or array.")
+    start = min(starts)
+    prefix = text[:start]
+    if any(character in JSON_CONTAINER_CHARACTERS for character in prefix):
+        raise ValueError("The model response contained ambiguous JSON fragments.")
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end < start:
+        json.loads(prefix)
+    except (json.JSONDecodeError, RecursionError):
+        pass
+    else:
+        raise ValueError("The model response contained an unrelated JSON value.")
+
+    decoder = json.JSONDecoder()
+    try:
+        first, end = decoder.raw_decode(text, start)
+    except (json.JSONDecodeError, RecursionError) as error:
+        if isinstance(error, json.JSONDecodeError):
+            location = f" at line {error.lineno}, column {error.colno}"
+        else:
+            location = ""
+        raise ValueError(
+            f"The model response contained invalid or incomplete JSON{location}."
+        ) from None
+    if not isinstance(first, (dict, list)):
+        raise ValueError("The model response must contain an object or array.")
+
+    values = [first]
+    cursor = end
+    while True:
+        separator_start = cursor
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            break
+
+        if text[cursor] == ",":
+            cursor += 1
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if cursor >= len(text) or text[cursor] != "{":
+                raise ValueError(
+                    "The model response used an illegal JSON record separator."
+                )
+        elif text[cursor] == "{":
+            if cursor == separator_start:
+                raise ValueError(
+                    "The model response used an illegal JSON record separator."
+                )
+        else:
+            suffix = text[cursor:]
+            if any(character in JSON_CONTAINER_CHARACTERS for character in suffix):
+                raise ValueError(
+                    "The model response contained ambiguous JSON fragments."
+                )
+            try:
+                json.loads(suffix)
+            except (json.JSONDecodeError, RecursionError):
+                break
+            raise ValueError("The model response contained an unrelated JSON value.")
+
+        try:
+            value, cursor = decoder.raw_decode(text, cursor)
+        except (json.JSONDecodeError, RecursionError) as error:
+            if isinstance(error, json.JSONDecodeError):
+                location = f" at line {error.lineno}, column {error.colno}"
+            else:
+                location = ""
             raise ValueError(
-                "The model response did not contain a JSON object."
+                f"The model response contained invalid or incomplete JSON{location}."
             ) from None
-        return json.loads(raw[start : end + 1])
+        if not isinstance(value, dict):
+            raise ValueError("Adjacent JSON values must be complete record objects.")
+        values.append(value)
+
+    return first if len(values) == 1 else values
 
 
 def collect_stream_text(stream: Any) -> tuple[str, str]:
@@ -97,17 +175,45 @@ def collect_stream_text(stream: Any) -> tuple[str, str]:
     return "".join(content).strip(), "".join(thinking).strip()
 
 
-def parse_model_response(content: str, thinking: str) -> Any:
+def bounded_response_error(value: str) -> str:
+    """Keep channel diagnostics short and free of response payload text."""
+
+    printable = "".join(
+        character if character.isprintable() else " " for character in value
+    )
+    message = " ".join(printable.split()) or "response interpretation failed"
+    if len(message) <= MAX_MODEL_RESPONSE_ERROR_CHARACTERS:
+        return message
+    return f"{message[: MAX_MODEL_RESPONSE_ERROR_CHARACTERS - 3]}..."
+
+
+def parse_model_response(
+    content: str,
+    thinking: str,
+    *,
+    validator: Callable[[Any], object] | None = None,
+) -> Any:
     errors: list[str] = []
     for source, raw in (("content", content), ("thinking", thinking)):
         if not raw.strip():
             continue
         try:
-            return json_from_text(raw)
+            value = json_from_text(raw)
         except ValueError as error:
-            errors.append(f"{source}: {error}")
+            errors.append(f"{source}: {bounded_response_error(str(error))}")
+            continue
+        if validator is not None:
+            try:
+                validator(value)
+            except (TypeError, ValueError) as error:
+                errors.append(
+                    f"{source}: parsed JSON failed semantic validation "
+                    f"({error.__class__.__name__})"
+                )
+                continue
+        return value
     if errors:
-        raise ValueError("; ".join(errors))
+        raise ValueError(bounded_response_error("; ".join(errors)))
     raise ValueError("The model returned neither content nor thinking text.")
 
 
@@ -133,11 +239,15 @@ def normalize_ollama_host(value: str) -> str:
     parsed = urlsplit(configured)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("OLLAMA_HOST must be an HTTP(S) URL with a hostname.")
-    if parsed.username or parsed.password:
+    if parsed.username is not None or parsed.password is not None:
         raise ValueError("OLLAMA_HOST must not contain credentials.")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("OLLAMA_HOST must not contain a path, query, or fragment.")
-    port = parsed.port or 11434
+    port = parsed.port
+    if port == 0:
+        raise ValueError("OLLAMA_HOST must not use port 0.")
+    if port is None:
+        port = 11434
     hostname = parsed.hostname.casefold()
     normalized_hostname = "127.0.0.1" if hostname == "localhost" else hostname
     try:
@@ -263,7 +373,14 @@ class OllamaVisionModel:
             host, available = self._inventory()
         return self._metadata(host, available)
 
-    def query(self, image_path: Path, prompt: str, schema: dict[str, Any]) -> Any:
+    def query(
+        self,
+        image_path: Path,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        validator: Callable[[Any], object] | None = None,
+    ) -> Any:
         try:
             with closing(self._client()) as client:
                 stream = client.chat(
@@ -288,4 +405,4 @@ class OllamaVisionModel:
             raise RuntimeError(
                 f"Local Ollama request failed for model '{self.model}': {error}"
             ) from error
-        return parse_model_response(content, thinking)
+        return parse_model_response(content, thinking, validator=validator)

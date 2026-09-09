@@ -5,6 +5,31 @@ from __future__ import annotations
 from typing import Any
 
 
+def normalize_boxes_envelope(value: Any) -> dict[str, Any]:
+    """Wrap complete record forms in the canonical top-level envelope.
+
+    A canonical object is returned by identity. Bare records and top-level
+    record arrays are structurally equivalent to that object, while arrays
+    containing envelope objects are ambiguous and must not be flattened.
+    Record values are never copied, coerced, or repaired here; the adapter's
+    existing semantic validator remains authoritative.
+    """
+
+    if isinstance(value, dict):
+        if "boxes" in value:
+            return value
+        return {"boxes": [value]}
+    if isinstance(value, list):
+        if any(isinstance(item, dict) and "boxes" in item for item in value):
+            raise TypeError(
+                "the response must not contain nested or mixed boxes envelopes"
+            )
+        return {"boxes": value}
+    raise TypeError(
+        "the response must be an object, a record array, or adjacent records"
+    )
+
+
 def response_boxes(
     value: Any,
     *,
@@ -13,9 +38,10 @@ def response_boxes(
 ) -> list[Any]:
     """Return the top-level boxes array after common shape and size checks."""
 
-    if not isinstance(value, dict) or not isinstance(value.get("boxes"), list):
+    normalized = normalize_boxes_envelope(value)
+    if not isinstance(normalized.get("boxes"), list):
         raise TypeError("the response must be an object containing a boxes array")
-    boxes = value["boxes"]
+    boxes = normalized["boxes"]
     if len(boxes) > maximum:
         raise ValueError(f"{limit_subject} must contain at most {maximum} boxes")
     return boxes
