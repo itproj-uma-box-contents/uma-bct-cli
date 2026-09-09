@@ -1,4 +1,18 @@
-"""Qwen transcription of detector-independent archive-box crops."""
+"""Qwen transcription of detector-independent archive-box crops.
+
+``QUESTION``/``RULES`` encode the actual data-entry policy in the prompt
+itself: identifiers must be copied character-by-character rather than
+guessed, printed and handwritten text must stay in separate fields, and
+confidence must reflect transcription accuracy rather than crop quality.
+``UNCERTAINTY`` is a second, code-side check on top of the model's own
+confidence score -- it flags a transcription for review when any field is
+empty or contains hedging language ("possibly", "illegible", a literal "?")
+or CJK characters, which in this all-English archive context are a strong
+signal of a misrecognition rather than genuine content. ``transcribe`` and
+``transcribe_full_image`` share the same validation and prompt fields
+(``FIELDS``/``RULES``); only the framing question differs between a single
+crop and a whole photo.
+"""
 
 from __future__ import annotations
 

@@ -73,6 +73,24 @@ explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
 1. The transcription review threshold uses `-c` or
 `--min-transcription-confidence` and accepts an integer from 0 to 100.
 
+## API documentation
+
+`pdoc` builds a browsable API doc site from the package's docstrings. To
+browse it locally with live-reload while editing docstrings:
+
+```bash
+uv run pdoc uma_bct
+```
+
+To write a static site instead (output is generated and ignored, like
+`dist/`):
+
+```bash
+uv run pdoc uma_bct -o dist/api-docs
+```
+
+Open `dist/api-docs/uma_bct.html` in a browser to view it.
+
 ## Client bundle
 
 The launchers create `inputs/`, `outputs/`, and a private

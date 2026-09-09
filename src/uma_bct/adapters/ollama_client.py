@@ -1,4 +1,18 @@
-"""Structured requests to a privacy-safe Ollama endpoint."""
+"""Structured requests to a privacy-safe Ollama endpoint.
+
+``normalize_ollama_host`` is the privacy boundary for the whole application:
+by default it only accepts a numeric loopback address, and a remote or
+Docker-hostname endpoint requires an explicit environment-variable opt-in
+(``UMA_BCT_ALLOW_REMOTE_OLLAMA`` / ``UMA_BCT_ALLOW_CONTAINER_OLLAMA``) plus
+HTTPS for anything not loopback -- this is what keeps archive photos on the
+local workstation by default. ``query`` streams the model's response instead
+of waiting for one payload, both to print progress dots and to enforce a
+4 MiB response cap mid-stream (``collect_stream_text``) before an
+unbounded or misbehaving model response is ever fully buffered.
+``parse_model_response`` tries both the ``content`` and ``thinking`` stream
+channels for JSON, since some model configurations put the structured
+response in one or the other.
+"""
 
 from __future__ import annotations
 

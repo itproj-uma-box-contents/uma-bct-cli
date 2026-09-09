@@ -1,4 +1,17 @@
-"""Command-line entry point for archive-box transcription."""
+"""Command-line entry point for archive-box transcription.
+
+Most of this module's complexity is defensive path validation rather than
+argument parsing: ``discover_images``, ``_validate_output_target``, and the
+checks in ``main`` all call ``path_safety.redirected_path_kind`` to reject
+symlinks and directory junctions before touching a path, since this tool
+handles private archive photographs and a redirected input/output path could
+otherwise be used to read or write outside the intended directories. ``main``
+also rejects a review-crop root that is the same as, or a parent of, the
+catalogue output path, so a run could never accidentally treat generated
+crops as catalogue input on a later run. ``SafeArgumentParser`` exists only
+to route argparse's own error messages through ``warning_text``, keeping
+error output single-line and stderr-safe.
+"""
 
 from __future__ import annotations
 

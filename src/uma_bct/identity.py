@@ -1,4 +1,17 @@
-"""Conservative, readable evidence checks for box identifiers and units."""
+"""Conservative, readable evidence checks for box identifiers and units.
+
+The model returns identifiers and unit numbers as free text, and this module
+is the sole source of truth for whether that text should be trusted. Every
+public function returns evidence rather than a boolean judgment call: the
+``RECORD_IDENTIFIER*`` regexes distinguish accepted identifier formats
+(current ``UMA-xx(E)-########`` and ``YYYY.NNNN``, plus the legacy ``NN/NNN``
+form) from a separate set of ``MALFORMED_*`` patterns that catch near-misses
+-- their only job is to flag a line as untrustworthy, not to correct it. Unit
+numbers are resolved the same way: ``collect_unit_evidence`` gathers every
+contextual and bare-handwritten unit-like token across a box's lines and
+reports ``ambiguous=True`` the moment two different values are found, so
+``catalogue.normalise_unit`` can refuse to pick one.
+"""
 
 from __future__ import annotations
 

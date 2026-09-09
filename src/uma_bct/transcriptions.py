@@ -1,4 +1,17 @@
-"""Combine overlapping crop responses without merging physical boxes."""
+"""Combine overlapping crop responses without merging physical boxes.
+
+Detectors intentionally over-propose padded crops, so the same physical box
+can be photographed (and transcribed) more than once. ``deduplicate`` groups
+``ObservedBox`` results using ``is_duplicate``, which requires both geometric
+overlap (crop bounding-box IoU) and content agreement (matching unit
+evidence, near-identical typed text, or a shared position hint) -- and
+refuses to merge across crops with conflicting unit numbers even when they
+overlap. ``merge_group`` then keeps, per field independently, whichever
+observation has the most detail (longest non-empty text, then confidence)
+rather than the first or "best overall" observation, and forces
+``needs_review`` whenever the merged observations actually disagreed with
+each other.
+"""
 
 from __future__ import annotations
 

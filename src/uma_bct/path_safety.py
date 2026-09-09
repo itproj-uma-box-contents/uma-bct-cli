@@ -1,4 +1,12 @@
-"""Basic rejection of paths that redirect private input or output."""
+"""Basic rejection of paths that redirect private input or output.
+
+``redirected_path_kind`` is used everywhere a path supplied via CLI
+arguments is first touched (``cli.py``, ``setup_command.py``). A symlink or,
+on Windows, a directory junction/reparse point could silently redirect reads
+or writes outside an input/output directory the user believes is private;
+this module gives every caller one place to detect that redirection and
+refuse it before any I/O happens.
+"""
 
 from __future__ import annotations
 
