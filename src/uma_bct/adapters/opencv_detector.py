@@ -1,4 +1,19 @@
-"""Geometry-based archive-box detection implemented with OpenCV."""
+"""Geometry-based archive-box detection implemented with OpenCV.
+
+This is the offline, model-free fallback detector: it finds box-like
+rectangles purely from edges and lines, with no vision model involved.
+Detection runs on a downscaled copy (``DETECTION_MAX_DIMENSION``) for speed,
+and ``detect_regions`` maps candidate boxes back to full-resolution source
+coordinates by scaling each axis independently against the *actual* resized
+dimensions (which are rounded independently per axis) rather than a single
+nominal scale factor, to match a known-good reference implementation exactly.
+``candidate_confidence`` is a hand-tuned weighted score (area, aspect ratio,
+size, rectangularity, polygon-approximation shape, and Hough-line edge
+support) rather than a learned model; ``line_support`` in particular checks
+whether each of the four candidate sides has a nearby straight line, which
+disambiguates a real box edge from an accidental rectangle formed by shadows
+or shelf clutter.
+"""
 
 from __future__ import annotations
 

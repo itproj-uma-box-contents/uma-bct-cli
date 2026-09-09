@@ -1,4 +1,14 @@
-"""Run directories, manifests, and recoverable previous outputs."""
+"""Run directories, manifests, and recoverable previous outputs.
+
+Every run gets its own timestamped, owner-only (``0o700``) directory
+(``run_directory``) so review crops from different runs never collide or get
+silently overwritten. ``backup_existing_results`` is what makes ``--force``
+safe: before a catalogue or manifest is replaced, both are copied aside under
+a ``previous-<run-id>`` name first, so a forced re-run can never destroy the
+only copy of a previous result. ``write_json_atomic`` uses the same
+write-to-temp-file-then-replace pattern as ``export.export_catalogue``, so a
+manifest is likewise never left half-written.
+"""
 
 from __future__ import annotations
 

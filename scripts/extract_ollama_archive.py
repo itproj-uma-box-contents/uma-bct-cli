@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Safely extract a verified Ollama .tar.zst archive."""
+"""Safely extract a verified Ollama .tar.zst archive.
+
+The archive is streamed member-by-member (``mode="r|"``) rather than loaded
+into memory, since the Ollama runtime archive is large. Every member path is
+checked for a ``..`` traversal component or an absolute path before
+extraction (``extract_archive``), and ``filter="data"`` additionally strips
+ownership/permission metadata that would otherwise carry over from the
+archive -- together this prevents a compromised or corrupted archive from
+writing outside ``destination``. Only files, directories, and safe internal
+links are accepted; symlinks/hardlinks pointing outside the archive are
+rejected the same way as any other unsupported entry.
+"""
 
 from __future__ import annotations
 

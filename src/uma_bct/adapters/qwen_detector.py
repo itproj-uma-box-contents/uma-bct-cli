@@ -1,4 +1,17 @@
-"""Qwen box localization translated into detector-neutral pixel regions."""
+"""Qwen box localization translated into detector-neutral pixel regions.
+
+Qwen is asked only to locate boxes, never to read them, and it reports
+coordinates normalized to a fixed 0-1000 grid regardless of the source
+image's actual resolution -- ``detect`` converts each ``bbox_2d`` back to
+pixel coordinates by scaling against ``image.width``/``image.height`` before
+handing regions to the rest of the pipeline, so nothing downstream needs to
+know about the model's coordinate convention. ``sanitized_detection_image``
+writes a fresh, EXIF-free PNG before every request so that even an opted-in
+remote endpoint never receives embedded metadata (GPS, camera serials,
+timestamps) from the original photo. Individual malformed proposals are
+dropped and recorded in ``dropped_proposal_warnings`` rather than failing the
+whole detection call; only a response with zero usable boxes raises.
+"""
 
 from __future__ import annotations
 

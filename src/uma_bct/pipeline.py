@@ -1,4 +1,17 @@
-"""Detector/transcriber-independent processing for one shelf image."""
+"""Detector/transcriber-independent processing for one shelf image.
+
+Processing one image runs through three stages, each with its own fallback:
+localization (primary detector, then a secondary detector, then a full-image
+review copy as a last resort), transcription (per-crop, or whole-image for
+the full-image path), and deduplication (independent observations from
+overlapping crops are merged by ``transcriptions.deduplicate``). A result's
+``status`` is derived rather than tracked explicitly: "failed" means no box
+survived deduplication, "partial" means at least one crop was unresolved or
+localization had to fall back, and "complete" means every stage succeeded
+cleanly. Warnings accumulate throughout and are attached to the result
+instead of being raised, so one bad crop never aborts an otherwise
+successful image.
+"""
 
 from __future__ import annotations
 

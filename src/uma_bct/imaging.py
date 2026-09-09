@@ -1,4 +1,17 @@
-"""Shared OpenCV loading, region validation, and full-resolution cropping."""
+"""Shared OpenCV loading, region validation, and full-resolution cropping.
+
+Crops and full-image review copies are always cut from the original,
+full-resolution image (``read_image``), never from a resized detection copy,
+so downstream transcription always sees maximum detail regardless of what
+scale a detector worked at internally. ``image_key`` derives a filesystem-
+and collision-safe directory name for one source image from its filename
+alone (not its full path), so batch IDs stay stable if a batch is moved to
+another workstation. ``suppress_overlaps`` performs detector-agnostic
+non-max suppression using both containment and IoU thresholds, and
+``sort_in_rows`` buckets regions into shelf rows by vertical center before
+sorting each row left-to-right, so multi-row shelves are processed in
+natural reading order regardless of a detector's own output order.
+"""
 
 from __future__ import annotations
 

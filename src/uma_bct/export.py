@@ -1,4 +1,15 @@
-"""Build and atomically write the client CSV catalogue."""
+"""Build and atomically write the client CSV catalogue.
+
+``catalogue_records`` runs in two passes because some flags depend on the
+full batch rather than one box: duplicate-title detection compares every
+record's title against every other record's, and the low-confidence flag
+needs the per-record confidence already computed by
+``catalogue.map_catalogue_record`` in the first pass. ``export_catalogue``
+writes to a temporary file in the same directory as the destination,
+``fsync``s it, and only then ``replace()``s the destination, so a crash or
+interruption during export can never leave a half-written or corrupt
+catalogue CSV behind.
+"""
 
 from __future__ import annotations
 

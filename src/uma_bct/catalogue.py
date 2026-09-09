@@ -1,4 +1,15 @@
-"""Map validated box transcriptions into the client catalogue schema."""
+"""Map validated box transcriptions into the client catalogue schema.
+
+This module turns one ``BoxTranscription`` into a single catalogue row, and
+encodes the conservative "don't guess" review policy: an identifier or unit
+number is only accepted when the structured field the model returned agrees
+with what is actually visible in the transcribed lines (see
+``_raw_identifier_mismatch`` and ``normalise_unit``); any disagreement clears
+the field and adds a review flag rather than picking one value. ``_description``
+further filters out lines that are pure restatements of the identifier/unit
+already captured in structured fields, so reviewers see only the additional
+detail a box's front face carries.
+"""
 
 from __future__ import annotations
 

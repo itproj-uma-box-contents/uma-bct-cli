@@ -1,4 +1,17 @@
-"""Batch orchestration and compact result reporting."""
+"""Batch orchestration and compact result reporting.
+
+``run_batch`` runs the whole CLI batch as a sequence of stages that each fail
+independently rather than aborting the run: preflight (model/pipeline
+setup), per-image processing, catalogue export, and manifest write each
+record their own failures into a shared ``failures`` list instead of
+raising, so one failed image or a failed export still allows every other
+stage to report as much as it could complete. The overall ``status`` in the
+emitted summary is therefore derived at the end from whether any failures or
+incomplete images occurred, not tracked as the run progresses.
+``_public_summary`` intentionally re-shapes the full internal summary into a
+smaller public one (counts instead of full per-image detail) for the
+console; the full detail is only ever written to the run manifest file.
+"""
 
 from __future__ import annotations
 

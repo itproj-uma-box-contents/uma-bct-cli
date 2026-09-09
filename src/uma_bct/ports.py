@@ -1,4 +1,14 @@
-"""Small interfaces that make detection and transcription interchangeable."""
+"""Small interfaces that make detection and transcription interchangeable.
+
+These ``Protocol`` classes are the seam between ``pipeline.py`` (which only
+depends on these interfaces) and the concrete adapters in ``adapters/``
+(which implement them for Qwen and OpenCV). ``bootstrap.py`` is the only
+place that wires a concrete adapter to a name; nothing else needs to import
+from ``adapters`` directly. ``FullImageTextTranscriber`` is a separate,
+optional protocol (checked with ``runtime_checkable``/``isinstance``) rather
+than part of ``TextTranscriber``, since only some transcribers can usefully
+process a whole photo when box localization fails.
+"""
 
 from __future__ import annotations
 

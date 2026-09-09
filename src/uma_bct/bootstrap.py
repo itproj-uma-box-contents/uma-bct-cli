@@ -1,4 +1,16 @@
-"""Composition root: the only module that selects concrete components."""
+"""Composition root: the only module that selects concrete components.
+
+``DETECTORS`` and ``TRANSCRIBERS`` are name -> factory lookup tables so the
+CLI can select adapters by string (``--detector``, ``--transcriber``) without
+any other module needing to know concrete adapter classes exist.
+``build_pipeline`` resolves those names, builds one shared
+``OllamaVisionModel`` client, runs a preflight check (confirms the model is
+installed before any image work starts), and wires everything into a
+``BoxTranscriptionPipeline``. Choosing the "qwen" detector implicitly
+attaches OpenCV as ``fallback_detector``, so a failed or low-confidence Qwen
+localization can still be recovered geometrically without the caller asking
+for it.
+"""
 
 from __future__ import annotations
 
