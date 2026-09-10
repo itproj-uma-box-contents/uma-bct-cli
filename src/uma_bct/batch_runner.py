@@ -24,6 +24,7 @@ from typing import Any
 from .adapters.ollama_client import timeout_from_environment
 from .bootstrap import build_pipeline
 from .export import export_catalogue
+from .path_safety import validate_path_hierarchy
 from .pipeline import ImageResult, warning_text
 from .run_artifacts import (
     backup_existing_results,
@@ -142,6 +143,11 @@ def _export_results(
         return 0, None, ()
     previous: tuple[Path, ...] = ()
     try:
+        if not arguments.force:
+            for path in (output_path, manifest_path):
+                validate_path_hierarchy(path, "Output")
+                if path.exists():
+                    raise FileExistsError(f"Output already exists: {path}")
         previous = (
             backup_existing_results((output_path, manifest_path))
             if arguments.force
@@ -151,6 +157,7 @@ def _export_results(
             results,
             output_path,
             minimum_confidence=arguments.min_transcription_confidence,
+            replace_existing=arguments.force,
         )
         return len(records), str(output_path), previous
     except Exception as error:
@@ -161,10 +168,14 @@ def _export_results(
 
 
 def _write_manifest(
-    manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]]
+    manifest: Path,
+    summary: dict[str, Any],
+    failures: list[dict[str, str]],
+    *,
+    replace_existing: bool,
 ) -> None:
     try:
-        write_json_atomic(manifest, summary)
+        write_json_atomic(manifest, summary, replace_existing=replace_existing)
     except Exception as error:
         message = warning_text(error)
         failures.append({"stage": "manifest", "error": message})
@@ -227,7 +238,12 @@ def run_batch(
         "run_manifest": str(manifest),
         "previous_results": [str(path) for path in previous_results],
     }
-    _write_manifest(manifest, summary, failures)
+    _write_manifest(
+        manifest,
+        summary,
+        failures,
+        replace_existing=arguments.force,
+    )
     _emit_summary(summary, len(images), arguments.model)
     if pipeline is None:
         return 2

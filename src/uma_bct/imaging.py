@@ -31,6 +31,7 @@ from .constants import (
     PADDING_FRACTION,
 )
 from .domain import BoundingBox, Box, DetectedRegion, InputImage
+from .path_safety import validate_path_hierarchy
 
 
 def read_image(path: Path) -> np.ndarray:
@@ -164,11 +165,15 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 
     source_key = image_key(image.file_path)
     image_directory = output_directory / source_key
+    validate_path_hierarchy(image_directory, "Full-image review directory")
     image_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    validate_path_hierarchy(image_directory, "Full-image review directory")
     image_directory.chmod(0o700)
     image_path = image_directory / "full_image.png"
+    validate_path_hierarchy(image_path, "Full-image review copy")
     if not cv2.imwrite(str(image_path), read_image(image.file_path)):
         raise OSError(f"Could not write full-image review copy: {image_path}")
+    validate_path_hierarchy(image_path, "Full-image review copy")
     image_path.chmod(0o600)
     bounding_box = BoundingBox((0, 0), (image.width, image.height))
     return Box(
@@ -200,7 +205,9 @@ class OpenCVBoxCropper:
         ordered = sort_in_rows(suppress_overlaps(valid_regions))
         source_key = image_key(image.file_path)
         crop_directory = output_directory / source_key
+        validate_path_hierarchy(crop_directory, "Review-crop directory")
         crop_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        validate_path_hierarchy(crop_directory, "Review-crop directory")
         crop_directory.chmod(0o700)
         boxes: list[Box] = []
         minimum_padding = math.ceil(
@@ -218,8 +225,10 @@ class OpenCVBoxCropper:
             padded = BoundingBox((x1, y1), (x2, y2))
             crop_path = crop_directory / f"box_{index:03d}.png"
             crop = original[y1:y2, x1:x2].copy()
+            validate_path_hierarchy(crop_path, "Review crop")
             if not cv2.imwrite(str(crop_path), crop):
                 raise OSError(f"Could not write box crop: {crop_path}")
+            validate_path_hierarchy(crop_path, "Review crop")
             crop_path.chmod(0o600)
             boxes.append(
                 Box(

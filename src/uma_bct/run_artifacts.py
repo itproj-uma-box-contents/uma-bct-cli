@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .path_safety import validate_path_hierarchy
+
 
 def _run_id() -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -28,8 +30,10 @@ def _run_id() -> str:
 
 
 def run_directory(root: Path) -> Path:
+    validate_path_hierarchy(root, "Review-crop root")
     destination = root / f"run-{_run_id()}"
     destination.mkdir(mode=0o700, parents=True)
+    validate_path_hierarchy(destination, "Review-crop run directory")
     return destination
 
 
@@ -54,16 +58,27 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
     run_id = _run_id()
     backups: list[Path] = []
     for path in paths:
+        validate_path_hierarchy(path, "Existing result")
         if not path.exists():
             continue
         backup = previous_result_path(path, run_id)
+        validate_path_hierarchy(backup, "Previous result")
         shutil.copy2(path, backup)
         backups.append(backup)
     return tuple(backups)
 
 
-def write_json_atomic(destination: Path, value: dict[str, Any]) -> None:
+def write_json_atomic(
+    destination: Path,
+    value: dict[str, Any],
+    *,
+    replace_existing: bool = True,
+) -> None:
+    validate_path_hierarchy(destination, "Run manifest")
+    if destination.exists() and not replace_existing:
+        raise FileExistsError(f"Run manifest already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    validate_path_hierarchy(destination, "Run manifest")
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -79,6 +94,9 @@ def write_json_atomic(destination: Path, value: dict[str, Any]) -> None:
             temporary_file.write("\n")
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
+        validate_path_hierarchy(destination, "Run manifest")
+        if destination.exists() and not replace_existing:
+            raise FileExistsError(f"Run manifest already exists: {destination}")
         temporary_path.replace(destination)
     except Exception:
         if temporary_path is not None:

@@ -2,14 +2,12 @@
 """Safely extract a verified Ollama .tar.zst archive.
 
 The archive is streamed member-by-member (``mode="r|"``) rather than loaded
-into memory, since the Ollama runtime archive is large. Every member path is
-checked for a ``..`` traversal component or an absolute path before
-extraction (``extract_archive``), and ``filter="data"`` additionally strips
-ownership/permission metadata that would otherwise carry over from the
-archive -- together this prevents a compromised or corrupted archive from
-writing outside ``destination``. Only files, directories, and safe internal
-links are accepted; symlinks/hardlinks pointing outside the archive are
-rejected the same way as any other unsupported entry.
+into memory, since the Ollama runtime archive is large. Every member path and
+link target is checked for an absolute path or archive-root escape before
+extraction (``extract_archive``), and ``filter="data"`` independently resolves
+targets against the destination while stripping inherited ownership and
+permission metadata. Only files, directories, and safe internal links are
+accepted.
 """
 
 from __future__ import annotations
@@ -17,6 +15,26 @@ from __future__ import annotations
 import argparse
 import tarfile
 from pathlib import Path, PurePosixPath
+
+
+def _validate_link_target(member: tarfile.TarInfo) -> None:
+    """Reject links whose normalized archive-relative target escapes the root."""
+
+    target_text = member.linkname.replace("\\", "/")
+    target = PurePosixPath(target_text)
+    if not target_text or target.is_absolute():
+        raise ValueError(f"Unsafe archive link target for {member.name!r}")
+
+    parts = list(PurePosixPath(member.name).parent.parts) if member.issym() else []
+    for part in target.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                raise ValueError(f"Unsafe archive link target for {member.name!r}")
+            parts.pop()
+        else:
+            parts.append(part)
 
 
 def extract_archive(source: Path, destination: Path) -> None:
@@ -40,6 +58,8 @@ def extract_archive(source: Path, destination: Path) -> None:
                         or member.islnk()
                     ):
                         raise ValueError(f"Unsupported archive entry: {member.name}")
+                    if member.issym() or member.islnk():
+                        _validate_link_target(member)
                     archive.extract(member, destination, filter="data")
 
 

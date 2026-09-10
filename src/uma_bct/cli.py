@@ -31,7 +31,7 @@ from .adapters.ollama_client import (
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
-from .path_safety import redirected_path_kind
+from .path_safety import redirected_path_kind, validate_path_hierarchy
 from .pipeline import warning_text
 from .run_artifacts import manifest_path
 from .setup_command import run_setup
@@ -223,6 +223,8 @@ def discover_images(path: Path) -> list[Path]:
 
 
 def _validate_output_target(path: Path, *, directory: bool, purpose: str) -> None:
+    validate_path_hierarchy(path, purpose)
+
     try:
         metadata = path.lstat()
     except FileNotFoundError:

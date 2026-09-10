@@ -153,7 +153,7 @@ class CatalogueRulesTest(unittest.TestCase):
 class CsvExportTest(unittest.TestCase):
     def test_writes_exact_headers_in_physical_order_with_relative_crop_images(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             output = root / "outputs" / "catalogue.csv"
             shelf_b = make_image(root / "inputs/shelf-b.jpg")
             shelf_a = make_image(root / "inputs/shelf-a.jpg")
@@ -232,7 +232,7 @@ class CsvExportTest(unittest.TestCase):
 
     def test_atomic_failure_preserves_existing_csv(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "catalogue.csv"
+            output = Path(directory).resolve() / "catalogue.csv"
             output.write_text("old\n", encoding="utf-8")
             box = make_box(crop_path=output.parent / "crops/box.png")
             result = make_result(BoxResult(box, make_transcription(box)))
@@ -246,6 +246,17 @@ class CsvExportTest(unittest.TestCase):
                 export_catalogue([result], output)
             self.assertEqual(output.read_text(encoding="utf-8"), "old\n")
             self.assertEqual(tuple(output.parent.glob(".uma-bct-catalogue-*")), ())
+
+    def test_does_not_replace_an_output_that_appeared_during_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.csv"
+            output.write_text("other process\n", encoding="utf-8")
+            box = make_box(crop_path=output.parent / "crops/box.png")
+            result = make_result(BoxResult(box, make_transcription(box)))
+
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                export_catalogue([result], output, replace_existing=False)
+            self.assertEqual(output.read_text(encoding="utf-8"), "other process\n")
 
     def test_csv_is_the_only_output_format(self):
         with self.assertRaisesRegex(ValueError, "must end in .csv"):

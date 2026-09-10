@@ -27,6 +27,7 @@ from .constants import (
     LOW_CONFIDENCE_FLAG,
     OUTPUT_COLUMNS,
 )
+from .path_safety import validate_path_hierarchy
 from .pipeline import ImageResult
 
 
@@ -79,6 +80,7 @@ def export_catalogue(
     output_path: str | Path,
     *,
     minimum_confidence: int = 80,
+    replace_existing: bool = True,
 ) -> list[dict[str, str | int]]:
     """Atomically write a UTF-8 CSV and return its catalogue records."""
 
@@ -91,7 +93,11 @@ def export_catalogue(
         minimum_confidence=minimum_confidence,
         catalogue_path=destination,
     )
+    validate_path_hierarchy(destination, "Catalogue output")
+    if destination.exists() and not replace_existing:
+        raise FileExistsError(f"Catalogue output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    validate_path_hierarchy(destination, "Catalogue output")
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -109,6 +115,9 @@ def export_catalogue(
             writer.writerows(records)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
+        validate_path_hierarchy(destination, "Catalogue output")
+        if destination.exists() and not replace_existing:
+            raise FileExistsError(f"Catalogue output already exists: {destination}")
         temporary_path.replace(destination)
     except Exception:
         if temporary_path is not None:

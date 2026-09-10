@@ -10,6 +10,7 @@ from helpers import make_box, make_image, make_transcription
 from uma_bct.adapters.opencv_detector import detect_regions, plausible_bbox
 from uma_bct.domain import BoundingBox, DetectedRegion, InputImage
 from uma_bct.imaging import OpenCVBoxCropper, load_input_image
+from uma_bct.path_safety import validate_path_hierarchy
 from uma_bct.transcriptions import ObservedBox, deduplicate
 
 
@@ -27,7 +28,7 @@ class ImagingTest(unittest.TestCase):
 
     def test_cropper_applies_eight_percent_padding_and_saves_padded_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             image_path = root / "shelf.jpg"
             cv2.imwrite(str(image_path), np.full((1000, 1000, 3), 220, dtype=np.uint8))
             image = load_input_image(image_path)
@@ -39,7 +40,7 @@ class ImagingTest(unittest.TestCase):
 
     def test_cropper_uses_image_relative_minimum_padding_and_clamps_borders(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             image_path = root / "shelf.jpg"
             cv2.imwrite(str(image_path), np.full((1000, 2000, 3), 220, dtype=np.uint8))
             image = load_input_image(image_path)
@@ -61,6 +62,27 @@ class ImagingTest(unittest.TestCase):
             )
             self.assertEqual(len({box.box_id for box in boxes}), 2)
             self.assertEqual(len({box.image_file_path for box in boxes}), 2)
+
+    def test_cropper_rechecks_a_parent_swapped_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            image_path = root / "shelf.jpg"
+            cv2.imwrite(str(image_path), np.full((100, 100, 3), 220, dtype=np.uint8))
+            image = load_input_image(image_path)
+            regions = [DetectedRegion(BoundingBox((10, 10), (90, 90)), 1.0)]
+            review = root / "review"
+            review.mkdir()
+            validate_path_hierarchy(review, "Review-crop root")
+
+            original = root / "review-original"
+            outside = root / "outside"
+            outside.mkdir()
+            review.rename(original)
+            review.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "parent must not be a symbolic"):
+                OpenCVBoxCropper().create_boxes(image, regions, review)
+            self.assertEqual(tuple(outside.iterdir()), ())
 
     def test_unreadable_image_has_a_clear_error(self):
         with (

@@ -10,8 +10,10 @@ from unittest.mock import patch
 from helpers import make_box, make_image, make_result, make_transcription
 
 from uma_bct.batch_runner import run_batch
-from uma_bct.cli import discover_images, main, parse_args
+from uma_bct.cli import _validate_output_target, discover_images, main, parse_args
 from uma_bct.domain import BoxResult
+from uma_bct.path_safety import redirected_path_component
+from uma_bct.run_artifacts import write_json_atomic
 
 
 class FakeBatchPipeline:
@@ -100,6 +102,130 @@ class CliTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symbolic link"):
                 discover_images(linked)
 
+    def test_rejects_a_redirected_parent_of_a_new_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "shelf.jpg").write_bytes(b"x")
+            outside = root / "outside"
+            nested = outside / "nested"
+            nested.mkdir(parents=True)
+            redirected = root / "outputs"
+            try:
+                redirected.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(str(error))
+
+            stderr = io.StringIO()
+            with (
+                contextlib.redirect_stderr(stderr),
+                patch("uma_bct.cli.run_batch") as batch,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "-i",
+                        str(inputs),
+                        "-o",
+                        str(redirected / "nested/catalogue.csv"),
+                        "--work-dir",
+                        str(root / "review-crops"),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("parent must not be a symbolic link", stderr.getvalue())
+            self.assertFalse((nested / "catalogue.csv").exists())
+            self.assertFalse((nested / "catalogue.run.json").exists())
+            batch.assert_not_called()
+
+    def test_rejects_a_redirected_parent_of_a_new_crop_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "shelf.jpg").write_bytes(b"x")
+            outside = root / "outside"
+            nested = outside / "nested"
+            nested.mkdir(parents=True)
+            redirected = root / "review"
+            try:
+                redirected.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(str(error))
+
+            stderr = io.StringIO()
+            with (
+                contextlib.redirect_stderr(stderr),
+                patch("uma_bct.cli.run_batch") as batch,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "-i",
+                        str(inputs),
+                        "-o",
+                        str(root / "outputs/catalogue.csv"),
+                        "--work-dir",
+                        str(redirected / "nested/crops"),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("parent must not be a symbolic link", stderr.getvalue())
+            self.assertFalse((nested / "crops").exists())
+            batch.assert_not_called()
+
+    def test_manifest_writer_rechecks_a_parent_swapped_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outputs = root / "outputs"
+            outputs.mkdir()
+            manifest = outputs / "catalogue.run.json"
+            _validate_output_target(manifest, directory=False, purpose="Run manifest")
+
+            original = root / "outputs-original"
+            outside = root / "outside"
+            outside.mkdir()
+            outputs.rename(original)
+            outputs.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "parent must not be a symbolic"):
+                write_json_atomic(manifest, {"status": "failed"})
+            self.assertFalse((outside / "catalogue.run.json").exists())
+
+    def test_manifest_writer_does_not_replace_a_new_unexpected_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory).resolve() / "catalogue.run.json"
+            manifest.write_text('{"owner": "other process"}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                write_json_atomic(
+                    manifest,
+                    {"status": "failed"},
+                    replace_existing=False,
+                )
+            self.assertEqual(
+                manifest.read_text(encoding="utf-8"),
+                '{"owner": "other process"}\n',
+            )
+
+    def test_parent_reparse_detection_is_not_platform_dependent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            parent = root / "outputs"
+            parent.mkdir()
+            target = parent / "catalogue.csv"
+
+            def fake_kind(path, _metadata):
+                return "reparse point" if path == parent else None
+
+            with patch(
+                "uma_bct.path_safety.redirected_path_kind", side_effect=fake_kind
+            ):
+                self.assertEqual(
+                    redirected_path_component(target), (parent, "reparse point")
+                )
+
     def test_routes_setup_without_starting_a_batch(self):
         with patch("uma_bct.cli.run_setup", return_value=0) as setup:
             self.assertEqual(main(["setup"]), 0)
@@ -115,7 +241,7 @@ class CliTest(unittest.TestCase):
 
     def test_cli_routes_a_valid_batch(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             inputs = root / "inputs"
             inputs.mkdir()
             (inputs / "shelf.jpg").write_bytes(b"x")
@@ -136,7 +262,7 @@ class CliTest(unittest.TestCase):
 
     def test_cli_rejects_catalogue_inside_review_crop_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             inputs = root / "inputs"
             inputs.mkdir()
             (inputs / "shelf.jpg").write_bytes(b"x")
@@ -186,7 +312,7 @@ class BatchRunnerTest(unittest.TestCase):
 
     def test_writes_csv_manifest_and_clean_json_summary(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             image = root / "inputs/shelf.jpg"
             status, summary, progress = self.run_with(
                 root, FakeBatchPipeline(), [image]
@@ -210,7 +336,7 @@ class BatchRunnerTest(unittest.TestCase):
 
     def test_continues_after_one_image_failure(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             images = [root / "good.jpg", root / "bad.jpg"]
             status, summary, _progress = self.run_with(
                 root, FakeBatchPipeline(failing_name="bad.jpg"), images
@@ -222,7 +348,7 @@ class BatchRunnerTest(unittest.TestCase):
 
     def test_empty_forced_run_preserves_previous_results(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             outputs = root / "outputs"
             outputs.mkdir()
             catalogue = outputs / "catalogue.csv"
@@ -243,7 +369,7 @@ class BatchRunnerTest(unittest.TestCase):
 
     def test_forced_success_keeps_timestamped_previous_results(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             outputs = root / "outputs"
             outputs.mkdir()
             catalogue = outputs / "catalogue.csv"
