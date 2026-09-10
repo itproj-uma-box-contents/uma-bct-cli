@@ -3,21 +3,55 @@ name = "uma-bct-cli"
 version = "0.1.0"
 description = "Offline archive-box detection and transcription CLI"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-    "numpy",
-    "ollama",
-    "opencv-python",
-    "openpyxl",
-    "pandas",
+    "numpy>=2,<3",
+    "ollama>=0.6,<1",
+    "opencv-python-headless>=5,<6",
+]
+
+[dependency-groups]
+client-bootstrap = [
+    "zstandard==0.25.0",
+]
+dev = [
+    "coverage[toml]>=7.10,<8",
+    "hatchling==1.27.0",
+    "pdoc>=15,<16",
+    "ruff>=0.12,<1",
 ]
 
 [project.scripts]
-uma-bct = "src.cli:main"
+uma-bct = "uma_bct.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/uma_bct"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/uma_bct", "/pyproject.toml", "/README.md"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 125
+extend-exclude = ["Archive box photos", "add_repository_photos"]
+
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.coverage.run]
+branch = true
+source = ["src/uma_bct", "scripts"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

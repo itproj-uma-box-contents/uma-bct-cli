@@ -14,6 +14,7 @@ htmlcov/
 .mypy_cache/
 .pyre/
 .ruff_cache/
+.uma-bct-runtime/
 
 build/
 dist/
@@ -21,6 +22,27 @@ dist/
 
 .ipynb_checkpoints/
 
-.csv
-AGENTS.md
-outputs/
+# Private source photographs must remain local.
+/Archive box photos/
+/add_repository_photos/
+/inputs/
+**/inputs/
+
+# Generated catalogues and review artefacts at the repository root.
+/*.csv
+/*.xlsx
+*.run.json
+*.uma-bct.lock
+.uma-bct-json-*.tmp
+.uma-bct-catalogue-*
+/outputs/
+**/outputs/
+
+# Local model storage and weights.
+/.ollama/
+/models/
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.safetensors

@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.9"
+
+jobs:
+  checks:
+    name: Tests and package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked --dev --python 3.12
+      - name: Check generated client dependencies
+        shell: bash
+        run: |
+          uv export --quiet --locked --no-dev --group client-bootstrap --no-emit-project --no-header --format requirements-txt --output-file "$RUNNER_TEMP/client-constraints.txt"
+          tail -n +3 client-constraints.txt > "$RUNNER_TEMP/committed-constraints.txt"
+          diff -u "$RUNNER_TEMP/committed-constraints.txt" "$RUNNER_TEMP/client-constraints.txt"
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - name: Run compact model-free suite
+        run: |
+          uv run coverage run -m unittest discover -s tests -v
+          uv run coverage report
+      - name: Build and inspect deliverables
+        run: |
+          uv build --no-build-isolation
+          uv run python scripts/build_client_bundle.py dist
+          uv run python scripts/check_release_artifacts.py dist
+      - name: Smoke-test wheel and source distribution
+        shell: bash
+        run: |
+          root="$PWD"
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            smoke="$(mktemp -d)"
+            uv venv --python 3.12 "$smoke/.venv"
+            uv pip install --python "$smoke/.venv/bin/python" "$root/$artifact"
+            (
+              cd "$smoke"
+              "$smoke/.venv/bin/uma-bct" --help
+              "$smoke/.venv/bin/uma-bct" --version
+              "$smoke/.venv/bin/python" -m uma_bct --help
+            )
+          done
+
+  platform:
+    name: Platform tests (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2025
+          - name: macOS arm64
+            os: macos-15
+          - name: macOS Intel
+            os: macos-15-intel
+          - name: Linux x64
+            os: ubuntu-24.04
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked --dev --python 3.12
+      - run: uv run python -m unittest discover -s tests -v
+      - name: Exercise all supported entry paths
+        run: |
+          uv run uma-bct --help
+          uv run python -m uma_bct --help
+          uv run python main.py --help
+
+  docker:
+    name: Docker smoke (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    needs: checks
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - run: docker compose config --quiet
+      - run: docker build --target production -t uma-bct-cli:ci .
+      - run: docker run --rm uma-bct-cli:ci --help

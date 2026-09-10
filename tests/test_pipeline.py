@@ -1,172 +1,249 @@
-import tempfile
+import contextlib
+import io
+import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-import cv2
-import numpy as np
+from helpers import make_box, make_image, make_transcription
 
-from src.domain import (
-    BoundingBox,
-    Box,
-    BoxText,
-    BoxTranscription,
-    DetectedRegion,
-    InputImage,
-    Label,
-)
-from src.imaging import OpenCVBoxCropper
-from src.pipeline import BoxTranscriptionPipeline
+from uma_bct.adapters.ollama_client import OllamaVisionModel
+from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
+from uma_bct.domain import BoundingBox, Box, DetectedRegion
+from uma_bct.pipeline import BoxTranscriptionPipeline
 
 
 class FakeDetector:
-    name = "fake-detector"
+    def __init__(self, name, outcome, warnings=()):
+        self.name = name
+        self.outcome = outcome
+        self.dropped_proposal_warnings = warnings
 
-    def __init__(self, confidence: float = 0.9) -> None:
-        self.confidence = confidence
+    def detect(self, image):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
 
-    def detect(self, image: InputImage) -> list[DetectedRegion]:
+
+class FakeCropper:
+    def create_boxes(self, image, regions, directory):
         return [
-            DetectedRegion(
-                BoundingBox((40, 20), (120, 180)),
-                self.confidence,
+            Box(
+                f"shelf:{index:03d}", image, region.bounding_box, Path(f"crop-{index}.png"), "middle-left", region.confidence
             )
+            for index, region in enumerate(regions, start=1)
         ]
 
 
-class FakeTranscriber:
-    name = "fake-transcriber"
+class ScriptedTranscriber:
+    name = "qwen"
 
-    def __init__(self) -> None:
-        self.seen_boxes: list[Box] = []
+    def __init__(self, outcomes, full=()):
+        self.outcomes = list(outcomes)
+        self.full = full
+        self.full_calls = 0
 
-    def transcribe(self, box: Box) -> list[BoxTranscription]:
-        self.seen_boxes.append(box)
-        confidence = 91
-        return [
-            BoxTranscription(
-                box_id=box.box_id,
-                position=box.position,
-                label=Label(box.box_id, "0001", ("Unit 0001",)),
-                text_lines=(
-                    BoxText(1, "Unit 0001", "typed", confidence),
-                    BoxText(1, "Correspondence", "handwritten", confidence),
-                ),
-                confidence=confidence,
-            )
+    def transcribe(self, box):
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome == "record":
+            return [make_transcription(box)]
+        return outcome
+
+    def transcribe_full_image(self, box):
+        self.full_calls += 1
+        if isinstance(self.full, Exception):
+            raise self.full
+        if self.full == "record":
+            return [make_transcription(box)]
+        return self.full
+
+
+class CropOnlyTranscriber:
+    name = "qwen"
+
+    def transcribe(self, box):
+        raise RuntimeError("unreadable")
+
+
+def qwen_record(unit="4", **changes):
+    value = {
+        "position": "middle-left",
+        "record_identifiers": ["1960.0009"],
+        "unit": unit,
+        "typed": ["1960.0009", f"Unit {unit}"],
+        "handwritten": [],
+        "auxiliary_annotations": [],
+        "transcription_confidence": 95,
+    }
+    value.update(changes)
+    return value
+
+
+class PipelineTest(unittest.TestCase):
+    def setUp(self):
+        self.image = make_image()
+        self.region = DetectedRegion(BoundingBox((10, 20), (90, 180)), 0.9)
+        self.full_box = make_box(
+            image=self.image, box_id="shelf:full", bbox=BoundingBox((0, 0), (200, 300)), crop_path=Path("full.png")
+        )
+
+    def pipeline(self, detector, transcriber, fallback=None):
+        return BoxTranscriptionPipeline(
+            detector=detector,
+            fallback_detector=fallback,
+            cropper=FakeCropper(),
+            transcriber=transcriber,
+            work_directory=Path("crops"),
+            model_metadata={"model": "qwen-test"},
+        )
+
+    def process(self, pipeline):
+        with (
+            patch("uma_bct.pipeline.load_input_image", return_value=self.image),
+            patch("uma_bct.pipeline.create_full_image_box", return_value=self.full_box),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            return pipeline.process(self.image.file_path)
+
+    def process_qwen_responses(self, *responses):
+        clients = [
+            SimpleNamespace(chat=Mock(return_value=iter([{"message": {"content": response, "thinking": ""}}])), close=Mock())
+            for response in responses
         ]
+        transcriber = QwenTextTranscriber(OllamaVisionModel(model="qwen-test"))
+        with patch.object(OllamaVisionModel, "client", side_effect=clients) as client_factory:
+            result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), transcriber))
+        return result, client_factory.call_count
 
+    def test_processes_a_normal_qwen_crop(self):
+        result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber(["record"])))
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.fallback_path, ("qwen",))
 
-class MultiRecordTranscriber(FakeTranscriber):
-    def transcribe(self, box: Box) -> list[BoxTranscription]:
-        first = super().transcribe(box)[0]
-        second = BoxTranscription(
-            box_id=box.box_id,
-            position="middle-right",
-            label=Label(box.box_id, "0002", ("Unit 0002",)),
-            text_lines=(BoxText(1, "Unit 0002", "typed", 89),),
-            confidence=89,
+    def test_falls_back_from_qwen_to_opencv(self):
+        result = self.process(
+            self.pipeline(
+                FakeDetector("qwen", RuntimeError("no boxes")),
+                ScriptedTranscriber(["record"]),
+                FakeDetector("opencv", [self.region]),
+            )
         )
-        return [first, second]
+        self.assertEqual(result.actual_detector, "opencv")
+        self.assertEqual(result.fallback_path, ("qwen", "opencv"))
+        self.assertEqual(result.status, "complete")
 
+    def test_uses_full_image_when_both_detectors_are_empty(self):
+        transcriber = ScriptedTranscriber([], full="record")
+        result = self.process(self.pipeline(FakeDetector("qwen", []), transcriber, FakeDetector("opencv", [])))
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("qwen", "opencv", "full-image"))
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(transcriber.full_calls, 1)
 
-class FallbackTranscriber(FakeTranscriber):
-    def transcribe(self, box: Box) -> list[BoxTranscription]:
-        self.seen_boxes.append(box)
-        raise RuntimeError("crop inference failed")
+    def test_retries_full_image_when_every_crop_fails(self):
+        transcriber = ScriptedTranscriber([RuntimeError("bad crop")], full="record")
+        result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), transcriber))
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(transcriber.full_calls, 1)
 
-    def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
-        return FakeTranscriber.transcribe(self, box)
+    def test_equivalent_bare_crop_response_does_not_trigger_full_image_retry(self):
+        expected = qwen_record(handwritten=["Café 📦; retain verbatim"], auxiliary_annotations=["Fragile [contents]"])
+        result, request_count = self.process_qwen_responses(json.dumps(expected, ensure_ascii=False))
 
+        self.assertEqual(request_count, 1)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "qwen")
+        self.assertEqual(result.fallback_path, ("qwen",))
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0].transcription.unit_number, "4")
+        self.assertEqual(result.records[0].transcription.handwritten_lines, ("Café 📦; retain verbatim",))
 
-class BoxTranscriptionPipelineTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        self.image_path = self.root / "shelf.jpg"
-        image = np.full((200, 200, 3), 220, dtype=np.uint8)
-        self.assertTrue(cv2.imwrite(str(self.image_path), image))
+    def test_adjacent_full_image_records_remain_separate_and_ordered(self):
+        invalid_crop = json.dumps({"boxes": [qwen_record(typed="not an array")]})
+        first = qwen_record("1", position="left")
+        second = qwen_record("2", position="right")
+        adjacent_full_image = f"{json.dumps(first)}\n{json.dumps(second)}"
 
-    def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+        result, request_count = self.process_qwen_responses(invalid_crop, adjacent_full_image)
 
-    def test_links_independent_detector_and_transcriber_with_a_generic_box(self):
-        transcriber = FakeTranscriber()
-        pipeline = BoxTranscriptionPipeline(
-            detector=FakeDetector(),
-            cropper=OpenCVBoxCropper(),
-            transcriber=transcriber,
-            work_directory=self.root / "crops",
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.fallback_path, ("qwen", "full-image"))
+        self.assertEqual([item.transcription.unit_number for item in result.records], ["1", "2"])
+        self.assertNotEqual(result.records[0].box.box_id, result.records[1].box.box_id)
+
+    def test_invalid_crop_response_still_uses_full_image_recovery(self):
+        invalid_crop = json.dumps({"boxes": [qwen_record(transcription_confidence=True)]})
+        recovered = qwen_record("7", position="centre")
+
+        result, request_count = self.process_qwen_responses(invalid_crop, json.dumps({"boxes": [recovered]}))
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.records[0].transcription.unit_number, "7")
+
+    def test_truncated_primitive_tail_still_uses_full_image_recovery(self):
+        invalid_crop = json.dumps(qwen_record()) + " tru"
+        recovered = qwen_record("8", position="centre")
+
+        result, request_count = self.process_qwen_responses(invalid_crop, json.dumps({"boxes": [recovered]}))
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.records[0].transcription.unit_number, "8")
+
+    def test_failed_full_image_recovery_does_not_invent_catalogue_rows(self):
+        invalid_crop = json.dumps({"boxes": [qwen_record(typed=None)]})
+        invalid_full_image = json.dumps({"boxes": [qwen_record(unit=None)]})
+
+        result, request_count = self.process_qwen_responses(invalid_crop, invalid_full_image)
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.records, ())
+
+    def test_partial_crop_failure_keeps_successful_rows(self):
+        second = DetectedRegion(BoundingBox((100, 20), (180, 180)), 0.9)
+        result = self.process(
+            self.pipeline(
+                FakeDetector("qwen", [self.region, second]), ScriptedTranscriber([RuntimeError("bad crop"), "record"])
+            )
         )
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(result.records), 1)
 
-        result = pipeline.process(self.image_path)
+    def test_preserves_multiple_physical_boxes_from_one_response(self):
+        box = make_box(image=self.image)
+        response = [
+            make_transcription(box, unit="1", typed=("1960.0009", "Unit 1")),
+            make_transcription(box, unit="2", typed=("1960.0009", "Unit 2")),
+        ]
+        result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber([response])))
+        self.assertEqual(len(result.records), 2)
+        self.assertNotEqual(result.records[0].box.box_id, result.records[1].box.box_id)
 
-        self.assertEqual(result.detector, "fake-detector")
-        self.assertEqual(result.transcriber, "fake-transcriber")
-        self.assertEqual(len(result.boxes), 1)
-        self.assertEqual(len(transcriber.seen_boxes), 1)
-        self.assertTrue(result.boxes[0].image_file_path.is_file())
-        self.assertEqual(
-            result.boxes[0].bounding_box,
-            BoundingBox((36, 12), (124, 188)),
-        )
-        self.assertEqual(result.transcriptions[0].label.unit_number, "0001")
-        self.assertEqual(
-            result.to_dict()["boxes"][0]["handwritten"],
-            ["Correspondence"],
-        )
+    def test_crop_only_transcriber_fails_without_inventing_a_result(self):
+        result = self.process(self.pipeline(FakeDetector("opencv", [self.region]), CropOnlyTranscriber()))
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.records, ())
+        self.assertIn("unavailable", result.warnings[-1])
 
-    def test_filters_detector_regions_before_crop_and_transcription(self):
-        transcriber = FakeTranscriber()
-        pipeline = BoxTranscriptionPipeline(
-            detector=FakeDetector(confidence=0.5),
-            cropper=OpenCVBoxCropper(),
-            transcriber=transcriber,
-            work_directory=self.root / "crops",
-            minimum_detector_confidence=0.6,
-        )
-
-        result = pipeline.process(self.image_path)
-
-        self.assertEqual(result.boxes, ())
-        self.assertEqual(result.transcriptions, ())
-        self.assertEqual(transcriber.seen_boxes, [])
-
-    def test_preserves_every_model_record_returned_for_one_wide_crop(self):
-        pipeline = BoxTranscriptionPipeline(
-            detector=FakeDetector(),
-            cropper=OpenCVBoxCropper(),
-            transcriber=MultiRecordTranscriber(),
-            work_directory=self.root / "crops",
-        )
-
-        result = pipeline.process(self.image_path)
-
-        self.assertEqual(len(result.boxes), 2)
-        self.assertEqual(
-            [item.label.unit_number for item in result.transcriptions],
-            ["0001", "0002"],
-        )
-        self.assertNotEqual(result.boxes[0].box_id, result.boxes[1].box_id)
-        self.assertEqual(
-            result.boxes[0].image_file_path,
-            result.boxes[1].image_file_path,
-        )
-
-    def test_retries_full_image_when_every_crop_request_fails(self):
-        pipeline = BoxTranscriptionPipeline(
-            detector=FakeDetector(),
-            cropper=OpenCVBoxCropper(),
-            transcriber=FallbackTranscriber(),
-            work_directory=self.root / "crops",
-        )
-
-        result = pipeline.process(self.image_path)
-
-        self.assertEqual(len(result.transcriptions), 1)
-        self.assertEqual(result.boxes[0].image_file_path, self.image_path)
-        self.assertTrue(
-            any("retried the original full image" in item for item in result.warnings)
-        )
+    def test_manifest_shape_is_compact(self):
+        result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber(["record"])))
+        value = result.to_dict()
+        self.assertIn("boxes", value)
+        self.assertIn("fallback_path", value)
+        self.assertNotIn("attempts", value)
+        self.assertNotIn("duration_seconds", str(value))
+        self.assertNotIn("proposals", str(value))
 
 
 if __name__ == "__main__":

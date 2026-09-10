@@ -1,182 +1,86 @@
-# University of Melbourne Archives Box Contents Transcription CLI
+# UMA Box Contents Transcription
 
-This project detects individual archive boxes in shelf photographs, creates
-full-resolution crops, and transcribes printed labels and handwriting with a
-local vision model. Detection and transcription are independent components:
-choose either OpenCV or Qwen for detection while using Qwen for transcription.
+This tool turns archive-box photos into a catalogue on your computer. The
+supplied launcher workflow keeps photos local and does not upload them.
 
-```text
-OpenCV detector ─┐
-                 ├─> DetectedRegion[] ─> shared OpenCV cropper ─> Box[] ─> Qwen transcriber
-Qwen detector ───┘
-```
+## Run the tool
 
-The Qwen adapters use a shared local Ollama client, but do not know about each
-other. A new detector or transcriber only needs to implement the corresponding
-protocol in `src/ports.py` and be registered in `src/bootstrap.py`.
+1. Download and unzip the supplied `uma-bct-client.zip` file into a private
+   folder that is not synced to iCloud, OneDrive, Dropbox, or a network drive.
+2. Start UMA BCT:
 
-## Requirements
+   - **Windows:** double-click `Run UMA BCT.cmd`.
+   - **macOS or Linux:** open Terminal in the unzipped folder and run:
 
-- Python 3.12 or newer
-- [`uv`](https://docs.astral.sh/uv/) for Python dependency management
-- Ollama installed locally and running
-- A local vision model; the default is `qwen3-vl`
+     ```bash
+     sh run-uma-bct.sh
+     ```
 
-`uv sync` installs the Python dependencies declared in `pyproject.toml`:
+3. The launcher opens an `inputs` folder. Drag or copy the photos into that
+   folder, then return to the launcher and press Enter.
 
-- `numpy` for image arrays and detector geometry
-- `opencv-python` for OpenCV detection, image loading, and crop creation
-- `ollama` for calls to the locally running vision model
-- `pandas` for catalogue mapping, CSV/XLSX tables, and duplicate flagging
-- `openpyxl` for writing XLSX workbooks
+That is all the client needs to do. The launcher checks and prepares everything
+else, processes the photos, and opens the `outputs` folder when it finishes.
 
-Install the Python environment:
+The first run needs an internet connection and can take a while because it
+installs the private local runtime and downloads the large transcription model.
+The `inputs` folder opens after that preparation is complete. The operating
+system may ask for permission to install Ollama. Later runs reuse what was
+downloaded and can work offline. For another batch, replace the photos in
+`inputs` and start the same launcher again. Keep the unzipped folder in the
+same place after the first run.
 
-```bash
-uv sync
-```
+Supported computers are Windows 10 22H2 or newer on x86-64, macOS 14 or newer
+on Intel or Apple silicon, and Linux with glibc 2.28 or newer on x86-64 or
+arm64. Windows ARM, musl-based Linux, and older operating-system releases are
+not supported. Allow at least 16 GB of memory and enough free disk space for the
+large model. Use a trusted, single-user workstation rather than a shared
+computer account.
 
-Before the first offline run, install Ollama using its platform instructions and
-download the model while connected:
+The supplied launchers always connect to Ollama on numeric loopback. A developer
+may use an approved managed endpoint only by setting `OLLAMA_HOST` to an HTTPS
+URL and explicitly opting in with `UMA_BCT_ALLOW_REMOTE_OLLAMA=1`. In that mode,
+image pixels leave the workstation; do not enable it without written approval.
 
-```bash
-ollama pull qwen3-vl
-```
+## Photos
 
-Model weights are intentionally not downloaded by this application. Once the
-model is present, normal image processing is local and offline.
-
-### Reference-model compatibility
-
-The default model request matches `~/projects/opencv-qwen-test`:
-
-- Ollama model tag: `qwen3-vl`
-- Expected reference model: Qwen3-VL 8.8B, `Q4_K_M`
-- Thinking: disabled
-- Temperature: `0`
-- Context length: `16384`
-- Response mode: streamed structured JSON
-
-The OpenCV thresholds and crop geometry, Qwen detection prompt/schema, Qwen
-transcription prompt/schema, and these request settings are protected by
-regression tests in `tests/test_reference_compatibility.py`.
-
-## Running
-
-The input may be one image or a flat directory of images. Choose the detector
-independently from the Qwen text transcriber.
-
-### OpenCV detection + Qwen transcription (not yet fully reliable)
-
-Use this route to test the local OpenCV geometry detector while retaining Qwen
-for reading labels and handwriting:
-
-```bash
-uv run main.py \
-  -i /path/to/images \
-  -o outputs/opencv-catalogue.csv \
-  --work-dir outputs/opencv-crops \
-  --detector opencv \
-  --transcriber qwen
-```
-
-### Qwen detection + Qwen transcription
-
-Use Qwen for both shelf-level box detection and crop-level transcription:
-
-```bash
-uv run main.py \
-  -i /path/to/images \
-  -o outputs/qwen-catalogue.xlsx \
-  --work-dir outputs/qwen-crops \
-  --detector qwen \
-  --transcriber qwen
-```
-
-### One image instead of a directory
-
-```bash
-uv run main.py \
-  -i /path/to/shelf-001.jpg \
-  -o outputs/shelf-001.csv \
-  --detector opencv \
-  --transcriber qwen
-```
-
-### Windows Ollama server from WSL
-
-When the CLI runs in WSL but Ollama runs locally on Windows, use the Windows
-server's local API address (after configuring WSL networking so it is reachable):
-
-```bash
-OLLAMA_HOST=http://127.0.0.1:11434 uv run main.py \
-  -i "/mnt/c/Users/username/Pictures/shelf-001.jpg" \
-  -o outputs/windows-ollama-test.csv \
-  --detector opencv \
-  --transcriber qwen
-```
-
-Clean box crops are written to the selected `--work-dir` (or
-`outputs/crops/<source-name>/` by default). The catalogue is written as CSV or
-XLSX according to the `-o` filename, and a processing summary is printed as
-JSON. Duplicate `Title` values are flagged on every implicated row without
-deleting records. Date parsing and preprocessing are not included, so `Start
-Date` and `End Date` remain empty.
-
-## Useful future improvements
-
-The following features would make the tool more practical after the current
-MVP scaffold:
-
-- **Date extraction:** populate `Start Date` and `End Date` while preserving the
-  original annotation and flagging partial or uncertain dates.
-- **More complete batch resilience:** retain successful crop responses (already
-  supported) and add safe resumption after an interrupted batch.
-- **Richer progress reporting:** extend the current crop counter with
-  detected-box counts, timings, and a concise end-of-batch summary.
-- **Image review links:** make the `Image` column easy to open from the review
-  CSV/XLSX, including when the export is opened in Windows Excel.
-
-Useful options:
+Put one or more of these image types directly in `inputs`:
 
 ```text
---model MODEL             local Ollama model tag; default qwen3-vl
---work-dir DIRECTORY      crop output directory; default outputs/crops
---min-confidence FLOAT    detector threshold from 0 to 1; default 0.60
+.jpg  .jpeg  .png  .tif  .tiff  .webp
 ```
 
-The installed command is equivalent to `uv run main.py`:
+Do not put private archive photos in a cloud-synced folder. Adding a photo to
+`inputs` is a local file copy, not an internet upload.
 
-```bash
-uv run uma-bct -i /path/to/images -o outputs/catalogue.csv --detector opencv
+## Results
+
+The launcher opens `outputs` when processing finishes. Review these together:
+
+```text
+outputs/
+  catalogue.csv
+  catalogue.run.json
+  crops/
+    run-.../
+      ...review images...
 ```
 
-## Replacing an adapter
+`catalogue.csv` is the result to review. The run manifest and crop images show
+where each row came from. Before a later run replaces the current catalogue and
+manifest, the launcher preserves timestamped copies beside them. Timestamped
+crop folders are also kept.
 
-The adapters intentionally resemble the functions in
-`~/projects/opencv-qwen-test`:
+Before importing the catalogue, work through the rows in their original photo
+and left-to-right/top-to-bottom crop order:
 
-- OpenCV detection logic is isolated in
-  `src/adapters/opencv_detector.py`.
-- The Qwen grounding prompt and validator are in
-  `src/adapters/qwen_detector.py`.
-- The Qwen transcription prompt and validator are in
-  `src/adapters/qwen_transcriber.py`.
-- Local model transport is in `src/adapters/ollama_client.py`.
+- Compare each row with its `Crop Image` review evidence.
+- Check every non-empty `Review Notes` value and the
+  `Transcription Confidence (0-100)`. Empty review notes mean only that the tool
+  raised no automated warning; every transcription still requires human review.
+- Keep separate rows for separate physical boxes, even when their titles match.
 
-Keep the public `detect(InputImage) -> list[DetectedRegion]` or
-`transcribe(Box) -> list[BoxTranscription]` method intact, replace the adapter's
-model logic, and add the implementation to the appropriate registry in
-`bootstrap.py`. The list return is required because one wide detector crop may
-contain multiple physical boxes. The detector must return original-image pixel
-coordinates. The transcriber only receives clean `Box` crops and must not call a
-detector.
-
-## Testing
-
-The default tests use fake detectors and model clients; they do not require an
-Ollama service, model weights, or network connection:
-
-```bash
-uv run python -m unittest discover -s tests -v
-```
+If the launcher stops, read the short message in its window, correct the stated
+problem, and run the same launcher again. Common first-run causes are no internet
+connection, insufficient free disk space, or the operating system declining an
+Ollama installation prompt.
