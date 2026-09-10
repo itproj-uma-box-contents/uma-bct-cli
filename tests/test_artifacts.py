@@ -61,7 +61,14 @@ class ArtifactSafetyTest(unittest.TestCase):
             self.assertEqual((root / "extracted/bin/ollama-hardlink").read_bytes(), b"ollama")
 
     def test_release_scan_accepts_code_and_rejects_private_content(self):
-        for name in ("Archive box photos/shelf.jpg", "package/models/model.gguf", "outputs/catalogue.csv", "../escape.py"):
+        for name in (
+            "Archive box photos/shelf.jpg",
+            "package/models/model.gguf",
+            "outputs/catalogue.csv",
+            ".uma-bct.lock",
+            ".uma-bct-rollback-private.csv.tmp",
+            "../escape.py",
+        ):
             with self.subTest(name=name):
                 self.assertIsNotNone(unsafe_reason(name))
         self.assertIsNone(unsafe_reason("uma_bct/cli.py"))

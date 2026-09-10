@@ -13,14 +13,17 @@ import sys
 from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, OllamaVisionModel
-from .path_safety import redirected_path_kind
+from .path_safety import check_path, redirected_path_kind
+from .run_artifacts import CatalogueLock
 
 
 def ensure_directory(path: Path) -> int:
     try:
+        check_path(path, "Setup directory")
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        check_path(path, "Setup directory")
         metadata = path.lstat()
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise RuntimeError(f"Could not prepare directory {path}: {error}") from error
     if kind := redirected_path_kind(path, metadata):
         raise RuntimeError(f"Setup directory must not be a {kind}: {path}")
@@ -57,9 +60,12 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL) -> i
         "output_directory": str(outputs),
         "model": model_name,
     }
+    lock: CatalogueLock | None = None
     try:
         warn_about_permissions(inputs, ensure_directory(inputs))
         warn_about_permissions(outputs, ensure_directory(outputs))
+        lock = CatalogueLock(outputs / "catalogue.csv")
+        lock.acquire()
         OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
         message = safe_error(error)
@@ -67,5 +73,8 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL) -> i
         print(f"Setup failed: {message}", file=sys.stderr)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 2
+    finally:
+        if lock is not None:
+            lock.release()
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

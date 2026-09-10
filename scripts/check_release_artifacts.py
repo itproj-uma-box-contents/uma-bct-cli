@@ -92,9 +92,11 @@ def unsafe_reason(name: str, regular: bool = True) -> str | None:
     if private := parts.intersection(PRIVATE_DIRECTORIES):
         return f"private directory {sorted(private)[0]!r}"
     folded = path.name.casefold()
+    if folded.endswith(".uma-bct.lock"):
+        return "generated catalogue lock"
     if folded.endswith(".run.json") or ".run.json." in folded:
         return "generated run manifest"
-    if folded.startswith((".uma-bct-json-", ".uma-bct-catalogue-")):
+    if folded.startswith((".uma-bct-json-", ".uma-bct-catalogue-", ".uma-bct-rollback-")):
         return "generated temporary output"
     for suffix in PRIVATE_SUFFIXES:
         if folded.endswith(suffix) or f"{suffix}." in folded:

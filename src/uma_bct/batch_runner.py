@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,23 @@ from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import check_path
 from .pipeline import ImageResult, warning_text
-from .run_artifacts import backup_existing_results, failed_manifest_path, run_directory, write_json_atomic
+from .run_artifacts import (
+    CatalogueLock,
+    backup_existing_results,
+    failed_manifest_path,
+    rollback_catalogue,
+    run_directory,
+    write_json_atomic,
+)
+
+
+@dataclass(frozen=True)
+class ExportState:
+    record_count: int = 0
+    catalogue_output: str | None = None
+    previous_results: tuple[Path, ...] = ()
+    previous_catalogue: Path | None = None
+    wrote_catalogue: bool = False
 
 
 def configuration(
@@ -55,7 +72,7 @@ def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, s
 
 def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
     images = summary["images"]
-    return {
+    result = {
         "schema_version": summary["schema_version"],
         "status": summary["status"],
         "images_total": image_count,
@@ -70,6 +87,9 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
         "run_manifest": summary["run_manifest"],
         "previous_results": summary["previous_results"],
     }
+    if recovery_path := summary.get("recovery_path"):
+        result["recovery_path"] = recovery_path
+    return result
 
 
 def prepare_pipeline(
@@ -101,12 +121,13 @@ def prepare_pipeline(
 
 # fmt: off
 def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
-                   manifest_path: Path, failures: list[dict[str, str]]) -> tuple[int, str | None, tuple[Path, ...]]:
+                   manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
 # fmt: on
     if not sum(len(result.records) for result in results):
         failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
-        return 0, None, ()
+        return ExportState()
     previous: tuple[Path, ...] = ()
+    catalogue_existed = output_path.exists()
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
@@ -118,17 +139,18 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
         records = export_catalogue(
             results, output_path, minimum_confidence=arguments.min_transcription_confidence, replace_existing=arguments.force
         )
-        return len(records), str(output_path), previous
+        previous_catalogue = previous[0] if catalogue_existed else None
+        return ExportState(len(records), str(output_path), previous, previous_catalogue, True)
     except Exception as error:
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
         print(f"Export failed: {message}", file=sys.stderr)
-        return 0, None, previous
+        return ExportState(previous_results=previous)
 
 
 def write_manifest(
     manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]], *, replace_existing: bool
-) -> None:
+) -> bool:
     try:
         write_json_atomic(manifest, summary, replace_existing=replace_existing)
     except Exception as error:
@@ -137,10 +159,97 @@ def write_manifest(
         summary["status"] = "partial" if summary["catalogue_output"] else "failed"
         summary["run_manifest"] = None
         print(f"Manifest write failed: {message}", file=sys.stderr)
+        return False
+    return True
 
 
 def emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
     print(json.dumps(public_summary(summary, image_count=image_count, model_name=model_name), indent=2, ensure_ascii=False))
+
+
+def lock_failure_summary(arguments: argparse.Namespace, error: Exception) -> dict[str, Any]:
+    message = warning_text(error)
+    print(f"Lock failed: {message}", file=sys.stderr)
+    return {
+        "schema_version": 1,
+        "status": "failed",
+        "configuration": configuration(arguments, None, arguments.request_timeout),
+        "model": {"model": arguments.model},
+        "images": [],
+        "failures": [{"stage": "lock", "error": message}],
+        "catalogue_output": None,
+        "catalogue_records": 0,
+        "run_manifest": None,
+        "previous_results": [],
+    }
+
+
+def recover_manifest_failure(
+    output_path: Path,
+    summary: dict[str, Any],
+    export_state: ExportState,
+    failures: list[dict[str, str]],
+) -> None:
+    try:
+        rollback_catalogue(output_path, export_state.previous_catalogue)
+    except Exception as error:
+        message = warning_text(error)
+        recovery_path = export_state.previous_catalogue or output_path
+        failures.append({"stage": "rollback", "error": message})
+        summary["status"] = "partial"
+        summary["recovery_path"] = str(recovery_path)
+        print(f"Rollback failed: {message}. Recovery file retained at {recovery_path}.", file=sys.stderr)
+    else:
+        summary["status"] = "failed"
+        summary["catalogue_output"] = None
+        summary["catalogue_records"] = 0
+
+    recovery_manifest = failed_manifest_path(output_path)
+    summary["run_manifest"] = str(recovery_manifest)
+    write_manifest(recovery_manifest, summary, failures, replace_existing=False)
+
+
+def locked_batch_summary(
+    arguments: argparse.Namespace,
+    images: list[Path],
+    output_path: Path,
+    normal_manifest_path: Path,
+    *,
+    preserve_existing_manifest_on_failure: bool,
+) -> tuple[dict[str, Any], bool]:
+    failures: list[dict[str, str]] = []
+    pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
+    results = process_images(pipeline, images, failures) if pipeline else []
+    export_state = (
+        export_results(arguments, results, output_path, normal_manifest_path, failures) if pipeline else ExportState()
+    )
+
+    incomplete = any(result.status != "complete" for result in results)
+    status = "complete"
+    if failures or incomplete:
+        status = "partial" if export_state.record_count else "failed"
+
+    manifest = (
+        failed_manifest_path(output_path)
+        if preserve_existing_manifest_on_failure and not export_state.record_count
+        else normal_manifest_path
+    )
+    summary = {
+        "schema_version": 1,
+        "status": status,
+        "configuration": configuration(arguments, work_directory, request_timeout),
+        "model": model_metadata,
+        "images": [result.to_dict() for result in results],
+        "failures": failures,
+        "catalogue_output": export_state.catalogue_output,
+        "catalogue_records": export_state.record_count,
+        "run_manifest": str(manifest),
+        "previous_results": [str(path) for path in export_state.previous_results],
+    }
+    manifest_written = write_manifest(manifest, summary, failures, replace_existing=arguments.force)
+    if not manifest_written and export_state.wrote_catalogue:
+        recover_manifest_failure(output_path, summary, export_state, failures)
+    return summary, pipeline is not None
 
 
 # fmt: off
@@ -149,40 +258,26 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
 # fmt: on
     """Process a batch, write its files, and print a JSON summary."""
 
-    failures: list[dict[str, str]] = []
-    pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
-    results = process_images(pipeline, images, failures) if pipeline else []
-    if pipeline:
-        record_count, catalogue_output, previous_results = export_results(
-            arguments, results, output_path, normal_manifest_path, failures
+    lock = CatalogueLock(output_path)
+    try:
+        lock.acquire()
+    except Exception as error:
+        summary = lock_failure_summary(arguments, error)
+        emit_summary(summary, len(images), arguments.model)
+        return 2
+
+    try:
+        summary, pipeline_ready = locked_batch_summary(
+            arguments,
+            images,
+            output_path,
+            normal_manifest_path,
+            preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
         )
-    else:
-        record_count, catalogue_output, previous_results = 0, None, ()
+    finally:
+        lock.release()
 
-    incomplete = any(result.status != "complete" for result in results)
-    status = "complete"
-    if failures or incomplete:
-        status = "partial" if record_count else "failed"
-
-    manifest = (
-        failed_manifest_path(output_path)
-        if preserve_existing_manifest_on_failure and not record_count
-        else normal_manifest_path
-    )
-    summary: dict[str, Any] = {
-        "schema_version": 1,
-        "status": status,
-        "configuration": configuration(arguments, work_directory, request_timeout),
-        "model": model_metadata,
-        "images": [result.to_dict() for result in results],
-        "failures": failures,
-        "catalogue_output": catalogue_output,
-        "catalogue_records": record_count,
-        "run_manifest": str(manifest),
-        "previous_results": [str(path) for path in previous_results],
-    }
-    write_manifest(manifest, summary, failures, replace_existing=arguments.force)
     emit_summary(summary, len(images), arguments.model)
-    if pipeline is None:
+    if not pipeline_ready:
         return 2
     return 0 if summary["status"] == "complete" else 1

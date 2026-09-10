@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import ntpath
 import os
 import stat
 import sys
@@ -150,6 +151,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
     try:
+        check_path(path, purpose)
         metadata = path.lstat()
     except FileNotFoundError:
         raise ValueError(f"{purpose} does not exist: {path}") from None
@@ -210,6 +212,32 @@ def validate_output_target(path: Path, *, directory: bool, purpose: str) -> None
         raise ValueError(f"{purpose} must be a {expected}: {path}")
 
 
+def validate_output_layout(catalogue: str | Path, manifest: str | Path, crop_root: str | Path) -> None:
+    """Keep crop directories separate from published files on one Windows drive."""
+
+    raw_paths = tuple(os.fspath(path) for path in (catalogue, manifest, crop_root))
+    absolute_paths = tuple(os.path.abspath(path) for path in raw_paths)
+    windows_drives = {drive.casefold() for path in (*raw_paths, *absolute_paths) if (drive := ntpath.splitdrive(path)[0])}
+    if len(windows_drives) > 1:
+        raise ValueError("catalogue, manifest, and review-crop paths must use the same Windows drive")
+
+    catalogue_absolute, manifest_absolute, crop_absolute = absolute_paths
+    for artifact, purpose in ((catalogue_absolute, "catalogue output"), (manifest_absolute, "run manifest")):
+        try:
+            common = os.path.commonpath((artifact, crop_absolute))
+        except ValueError:
+            raise ValueError("catalogue, manifest, and review-crop paths must use the same Windows drive") from None
+        common = os.path.normcase(os.path.normpath(common))
+        artifact_normalized = os.path.normcase(os.path.normpath(artifact))
+        crop_normalized = os.path.normcase(os.path.normpath(crop_absolute))
+        if common == crop_normalized:
+            if purpose == "catalogue output":
+                raise ValueError("catalogue output must not be inside the review-crop directory")
+            raise ValueError("run manifest must not be inside the review-crop directory")
+        if common == artifact_normalized:
+            raise ValueError(f"review-crop root must not be inside the {purpose} path")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
@@ -230,10 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")
         validate_output_target(crop_root, directory=True, purpose="Review-crop root")
-        output_absolute = Path(os.path.abspath(output_path))
-        crop_absolute = Path(os.path.abspath(crop_root))
-        if crop_absolute == output_absolute or crop_absolute in output_absolute.parents:
-            raise ValueError("catalogue output must not be inside the review-crop directory")
+        validate_output_layout(output_path, run_manifest, crop_root)
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))

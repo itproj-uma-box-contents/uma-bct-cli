@@ -19,11 +19,28 @@ OLLAMA_VERSION="0.30.8"
 MINIMUM_OLLAMA_VERSION="$OLLAMA_VERSION"
 OLLAMA_RELEASE_URL="https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION"
 MINIMUM_GLIBC_VERSION="2.28"
+OLLAMA_LOG="$RUNTIME/ollama.log"
+OLLAMA_PID=""
 
 fail() {
     printf '\nUMA BCT could not continue: %s\n' "$1" >&2
     exit 2
 }
+
+stop_owned_ollama() {
+    [ -n "$OLLAMA_PID" ] || return 0
+    owned_pid=$OLLAMA_PID
+    OLLAMA_PID=""
+    if kill -0 "$owned_pid" 2>/dev/null; then
+        kill "$owned_pid" 2>/dev/null || true
+    fi
+    wait "$owned_pid" 2>/dev/null || true
+}
+
+trap stop_owned_ollama EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 has_input_images() {
     for image in "$INPUTS"/*; do
@@ -75,7 +92,7 @@ find_ollama() {
         "$RUNTIME/ollama/ollama" \
         "$RUNTIME/ollama/bin/ollama"
     do
-        if [ -x "$candidate" ]; then
+        if [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ]; then
             printf '%s\n' "$candidate"
             return 0
         fi
@@ -83,8 +100,72 @@ find_ollama() {
     return 1
 }
 
+find_llama_server() {
+    ollama_directory=$(dirname -- "$1")
+    case "$(uname -s)" in
+        Darwin)
+            candidates="$ollama_directory/llama-server
+$RUNTIME/ollama/lib/ollama/llama-server"
+            ;;
+        Linux)
+            candidates="$RUNTIME/ollama/lib/ollama/llama-server
+$ollama_directory/../lib/ollama/llama-server"
+            ;;
+    esac
+    printf '%s\n' "$candidates" | while IFS= read -r candidate; do
+        if [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            break
+        fi
+    done
+}
+
+select_ollama_port() {
+    "$APP_PYTHON" -c '
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+'
+}
+
+start_owned_ollama() {
+    [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
+    [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
+    if ! : >"$OLLAMA_LOG"; then
+        fail "The Ollama runtime log could not be prepared: $OLLAMA_LOG"
+    fi
+    for attempt in 1 2 3; do
+        ollama_port=$(select_ollama_port || true)
+        case "$ollama_port" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        [ "$ollama_port" -gt 0 ] && [ "$ollama_port" -le 65535 ] || continue
+        OLLAMA_HOST="http://127.0.0.1:$ollama_port"
+        export OLLAMA_HOST
+        printf 'Starting the isolated Ollama service (attempt %s of 3)...\n' "$attempt"
+        "$OLLAMA" serve >>"$OLLAMA_LOG" 2>&1 &
+        OLLAMA_PID=$!
+
+        elapsed=0
+        while [ "$elapsed" -lt 30 ]; do
+            if "$OLLAMA" list >/dev/null 2>&1 && kill -0 "$OLLAMA_PID" 2>/dev/null; then
+                sleep 1
+                if kill -0 "$OLLAMA_PID" 2>/dev/null && "$OLLAMA" list >/dev/null 2>&1; then
+                    return 0
+                fi
+            fi
+            kill -0 "$OLLAMA_PID" 2>/dev/null || break
+            elapsed=$((elapsed + 1))
+            [ "$elapsed" -ge 30 ] || sleep 1
+        done
+        stop_owned_ollama
+    done
+    fail "Ollama did not start after three attempts. Review the runtime log at $OLLAMA_LOG"
+}
+
 ollama_version_is_supported() {
-    current_version=$("$1" --version 2>&1 | awk '
+    current_version=$(OLLAMA_HOST=http://127.0.0.1:1 "$1" --version 2>&1 | awk '
         match($0, /[0-9]+\.[0-9]+\.[0-9]+/) {
             version = substr($0, RSTART, RLENGTH)
         }
@@ -256,7 +337,7 @@ for variable in $(env | sed -n 's/^\(UV_[A-Za-z0-9_]*\)=.*/\1/p'); do
     unset "$variable"
 done
 unset PYTHONHOME PYTHONPATH VIRTUAL_ENV PIP_INDEX_URL PIP_EXTRA_INDEX_URL 2>/dev/null || true
-unset OLLAMA_DOWNLOAD_URL OLLAMA_INSTALL_DIR OLLAMA_NO_START 2>/dev/null || true
+unset OLLAMA_HOST OLLAMA_DOWNLOAD_URL OLLAMA_INSTALL_DIR OLLAMA_NO_START 2>/dev/null || true
 unset TAR_OPTIONS GZIP XZ_OPT ZSTD_CLEVEL ZSTD_NBTHREADS 2>/dev/null || true
 
 UV="$RUNTIME/bin/uv"
@@ -276,7 +357,6 @@ export UV_CACHE_DIR="$RUNTIME/uv-cache"
 export UV_PYTHON_INSTALL_DIR="$RUNTIME/python"
 export UV_DEFAULT_INDEX="https://pypi.org/simple"
 export UV_NO_CONFIG=1
-export OLLAMA_HOST="http://127.0.0.1:11434"
 export OLLAMA_NO_CLOUD=1
 unset UMA_BCT_ALLOW_REMOTE_OLLAMA UMA_BCT_ALLOW_CONTAINER_OLLAMA 2>/dev/null || true
 
@@ -297,25 +377,21 @@ fi
 [ -x "$APP_CLI" ] || fail "The application could not be installed."
 
 OLLAMA=$(find_ollama || true)
-if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA"; then
-    [ "$private_data_present" -eq 0 ] || \
-        fail "Move private files out of inputs and outputs before installing or updating Ollama."
+LLAMA_SERVER=""
+[ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
+if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA" || [ -z "$LLAMA_SERVER" ]; then
+    [ "$private_data_present" -eq 0 ] || fail \
+        "The local Ollama runtime is incomplete or unsupported; both ollama and llama-server are required. Move private files out of inputs and outputs, then run this launcher again to repair it. Runtime log: $OLLAMA_LOG"
     install_ollama
     OLLAMA=$(find_ollama || true)
+    LLAMA_SERVER=""
+    [ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
 fi
-[ -n "$OLLAMA" ] || fail "Ollama could not be installed."
-ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated."
+[ -n "$OLLAMA" ] || fail "Ollama could not be installed. Runtime log: $OLLAMA_LOG"
+ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated. Runtime log: $OLLAMA_LOG"
+[ -n "$LLAMA_SERVER" ] || fail "Ollama's llama-server companion is missing. Runtime log: $OLLAMA_LOG"
 
-if ! "$OLLAMA" list >/dev/null 2>&1; then
-    printf 'Starting Ollama...\n'
-    nohup "$OLLAMA" serve >>"$RUNTIME/ollama.log" 2>&1 &
-    attempts=0
-    until "$OLLAMA" list >/dev/null 2>&1; do
-        attempts=$((attempts + 1))
-        [ "$attempts" -lt 30 ] || fail "Ollama did not start."
-        sleep 1
-    done
-fi
+start_owned_ollama
 
 cd "$ROOT"
 if [ "$private_data_present" -eq 0 ]; then

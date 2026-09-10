@@ -16,6 +16,9 @@ $OllamaVersion = "0.30.8"
 $MinimumOllamaVersion = [version] $OllamaVersion
 $OllamaInstallerUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/OllamaSetup.exe"
 $OllamaInstallerSha256 = "d7cfbb2509d9e9464972d162899a5f085c1802619b6bbe0c4e210b47bcf2d446"
+$OllamaLog = Join-Path $Runtime "ollama.log"
+$OllamaOutputLog = Join-Path $Runtime "ollama.stdout.log"
+$OllamaProcess = $null
 $SupportedExtensions = @(".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp")
 
 function Get-InputImages {
@@ -51,7 +54,28 @@ function Find-Ollama {
         (Join-Path $env:ProgramFiles "Ollama\ollama.exe")
     )
     foreach ($Candidate in $Candidates) {
-        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+        if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
+            ((Get-Item -LiteralPath $Candidate -Force).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            return $Candidate
+        }
+    }
+    return $null
+}
+
+function Find-LlamaServer([string] $Executable) {
+    if ([string]::IsNullOrWhiteSpace($Executable)) {
+        return $null
+    }
+    $ExecutableDirectory = Split-Path -Parent $Executable
+    $Candidates = @(
+        (Join-Path $ExecutableDirectory "lib\ollama\llama-server.exe"),
+        (Join-Path $ExecutableDirectory "..\lib\ollama\llama-server.exe")
+    )
+    foreach ($Candidate in $Candidates) {
+        if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
+            ((Get-Item -LiteralPath $Candidate -Force).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) {
             return $Candidate
         }
     }
@@ -88,14 +112,27 @@ function Assert-OllamaSignature([string] $Path) {
 }
 
 function Test-OllamaVersion([string] $Executable) {
+    $PreviousHost = $env:OLLAMA_HOST
+    $PreviousErrorActionPreference = $ErrorActionPreference
     try {
-        $VersionOutput = & $Executable --version 2>$null | Out-String
-        if ($VersionOutput -notmatch "(\d+\.\d+\.\d+)") {
+        $ErrorActionPreference = "Continue"
+        $env:OLLAMA_HOST = "http://127.0.0.1:1"
+        $VersionOutput = & $Executable --version 2>&1 | Out-String
+        $VersionMatches = [regex]::Matches($VersionOutput, "\d+\.\d+\.\d+")
+        if ($VersionMatches.Count -eq 0) {
             return $false
         }
-        return [version] $Matches[1] -ge $MinimumOllamaVersion
+        $ClientVersion = $VersionMatches[$VersionMatches.Count - 1].Value
+        return [version] $ClientVersion -ge $MinimumOllamaVersion
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        if ($null -eq $PreviousHost) {
+            Remove-Item Env:OLLAMA_HOST -ErrorAction SilentlyContinue
+        } else {
+            $env:OLLAMA_HOST = $PreviousHost
+        }
     }
 }
 
@@ -106,6 +143,79 @@ function Test-Ollama([string] $Executable) {
     } catch {
         return $false
     }
+}
+
+function Get-FreeLoopbackPort {
+    $Listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $Listener.Start()
+        return ([Net.IPEndPoint] $Listener.LocalEndpoint).Port
+    } finally {
+        $Listener.Stop()
+    }
+}
+
+function Stop-OwnedOllama {
+    if ($null -eq $script:OllamaProcess) {
+        return
+    }
+    $OwnedProcess = $script:OllamaProcess
+    $script:OllamaProcess = $null
+    try {
+        $OwnedProcess.Refresh()
+        if (-not $OwnedProcess.HasExited) {
+            Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+        $OwnedProcess.WaitForExit()
+    } catch {
+        # The exact child may already have exited and been reaped.
+    } finally {
+        $OwnedProcess.Dispose()
+    }
+}
+
+function Start-OwnedOllama([string] $Executable) {
+    foreach ($LogPath in @($OllamaLog, $OllamaOutputLog)) {
+        if (Test-Path -LiteralPath $LogPath) {
+            $LogItem = Get-Item -LiteralPath $LogPath -Force
+            if ($LogItem.PSIsContainer -or
+                ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
+            }
+        }
+    }
+    foreach ($Attempt in 1..3) {
+        try {
+            $Port = Get-FreeLoopbackPort
+            $env:OLLAMA_HOST = "http://127.0.0.1:$Port"
+            Write-Host "Starting the isolated Ollama service (attempt $Attempt of 3)..."
+            $script:OllamaProcess = Start-Process -FilePath $Executable `
+                -ArgumentList "serve" -WindowStyle Hidden -PassThru `
+                -RedirectStandardOutput $OllamaOutputLog -RedirectStandardError $OllamaLog
+        } catch {
+            Stop-OwnedOllama
+            continue
+        }
+
+        foreach ($Elapsed in 0..29) {
+            $script:OllamaProcess.Refresh()
+            if ($script:OllamaProcess.HasExited) {
+                break
+            }
+            if ((Test-Ollama $Executable)) {
+                Start-Sleep -Milliseconds 200
+                $script:OllamaProcess.Refresh()
+                if (-not $script:OllamaProcess.HasExited -and (Test-Ollama $Executable)) {
+                    return
+                }
+            }
+            if ($Elapsed -lt 29) {
+                Start-Sleep -Seconds 1
+            }
+        }
+        Stop-OwnedOllama
+    }
+    throw "Ollama did not start after three attempts. Review the runtime log at $OllamaLog"
 }
 
 function Install-Ollama {
@@ -150,6 +260,7 @@ function Assert-NoReparseAncestor([string] $Path) {
     }
 }
 
+$RunStatus = 2
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
@@ -187,7 +298,7 @@ try {
         ForEach-Object { Remove-Item "Env:$($_.Name)" }
     foreach ($Variable in @(
         "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PIP_INDEX_URL",
-        "PIP_EXTRA_INDEX_URL", "OLLAMA_DEBUG", "OLLAMA_DOWNLOAD_URL",
+        "PIP_EXTRA_INDEX_URL", "OLLAMA_HOST", "OLLAMA_DEBUG", "OLLAMA_DOWNLOAD_URL",
         "OLLAMA_INSTALL_DIR", "OLLAMA_NO_START", "OLLAMA_UNINSTALL",
         "OLLAMA_VERSION")) {
         Remove-Item "Env:$Variable" -ErrorAction SilentlyContinue
@@ -232,24 +343,28 @@ try {
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $Runtime "python"
     $env:UV_DEFAULT_INDEX = "https://pypi.org/simple"
     $env:UV_NO_CONFIG = "1"
-    $env:OLLAMA_HOST = "http://127.0.0.1:11434"
     $env:OLLAMA_NO_CLOUD = "1"
     Remove-Item Env:UMA_BCT_ALLOW_REMOTE_OLLAMA -ErrorAction SilentlyContinue
     Remove-Item Env:UMA_BCT_ALLOW_CONTAINER_OLLAMA -ErrorAction SilentlyContinue
 
     $Ollama = Find-Ollama
-    if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama)) {
+    $LlamaServer = Find-LlamaServer $Ollama
+    if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama) -or $null -eq $LlamaServer) {
         if ($PrivateDataPresent) {
-            throw "Move private files out of inputs and outputs before installing or updating Ollama."
+            throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of inputs and outputs, then run this launcher again to repair it. Runtime log: $OllamaLog"
         }
         Install-Ollama
         $Ollama = Find-Ollama
+        $LlamaServer = Find-LlamaServer $Ollama
     }
     if ($null -eq $Ollama) {
-        throw "Ollama could not be installed."
+        throw "Ollama could not be installed. Runtime log: $OllamaLog"
     }
     if (-not (Test-OllamaVersion $Ollama)) {
-        throw "Ollama is too old and could not be updated."
+        throw "Ollama is too old and could not be updated. Runtime log: $OllamaLog"
+    }
+    if ($null -eq $LlamaServer) {
+        throw "Ollama's llama-server.exe companion is missing. Runtime log: $OllamaLog"
     }
 
     if (-not $PrivateDataPresent) {
@@ -284,21 +399,7 @@ try {
         throw "The application could not be installed."
     }
 
-    if (-not (Test-Ollama $Ollama)) {
-        Write-Host "Starting Ollama..."
-        Start-Process -FilePath $Ollama -ArgumentList "serve" -WindowStyle Hidden
-        $Started = $false
-        foreach ($Attempt in 1..30) {
-            Start-Sleep -Seconds 1
-            if (Test-Ollama $Ollama) {
-                $Started = $true
-                break
-            }
-        }
-        if (-not $Started) {
-            throw "Ollama did not start."
-        }
-    }
+    Start-OwnedOllama $Ollama
 
     Push-Location $Root
     try {
@@ -343,8 +444,10 @@ try {
             "The catalogue may be partial, absent, or retained from the previous run."
         )
     }
-    exit $RunStatus
 } catch {
     [Console]::Error.WriteLine("`nUMA BCT could not continue: $($_.Exception.Message)")
-    exit 2
+    $RunStatus = 2
+} finally {
+    Stop-OwnedOllama
 }
+exit $RunStatus

@@ -99,12 +99,19 @@ The launchers create `inputs/`, `outputs/`, and a private
 1. Verify the supplied wheel and hash-pinned dependency file.
 2. Download and verify pinned uv and Ollama builds for the current platform.
 3. Install a managed Python 3.12 runtime and the UMA BCT wheel.
-4. force the numeric loopback Ollama endpoint and download the pinned model.
-5. Open `inputs/`, process the photos, and open `outputs/`.
+4. Validate the Ollama executable and its `llama-server` companion.
+5. Start an owned Ollama child on an OS-selected numeric loopback port.
+6. Download and load-probe the pinned model with the production context size.
+7. Open `inputs/`, process the photos, and open `outputs/`.
 
 Downloads finish before the launcher asks the user to add private photographs.
-Later runs reuse the local runtime and can run offline. The Windows Ollama
-installer also requires a valid Ollama Inc. Authenticode signature.
+Later runs reuse the runtime, input, and output folders in place and can run
+offline. The owned Ollama process is stopped and reaped on every exit path;
+services from other folders and anything already using port 11434 are neither
+reused nor terminated. Startup is retried on fresh loopback ports, and failures
+point to `.uma-bct-runtime/ollama.log`. An incomplete runtime is repaired only
+when `inputs` and `outputs` are empty. The Windows Ollama installer also requires
+a valid Ollama Inc. Authenticode signature.
 
 `client-constraints.txt` is generated from `uv.lock`; do not edit it by
 hand. It is required so every client launcher installs the same hash-verified
@@ -114,6 +121,7 @@ dependency versions.
 
 ```text
 local file/model preflight
+  -> one-token model load probe (16,384 context, thinking disabled)
   -> Qwen box detection
   -> OpenCV detection fallback
   -> review crops
@@ -123,9 +131,23 @@ local file/model preflight
   -> atomic CSV and compact run manifest
 ```
 
-The manifest keeps the model identity, detector route, final box readings,
-warnings, and failures. It deliberately does not contain per-attempt timing or
-proposal telemetry.
+The manifest keeps the model identity and actual per-run loopback endpoint,
+detector route, final box readings, warnings, and failures. It deliberately does
+not contain per-attempt timing or proposal telemetry. Direct CLI use continues
+to default to `127.0.0.1:11434`; only the client launchers select an isolated
+port.
+
+Setup and batch processing hold an exclusive `.uma-bct.lock` beside the
+catalogue before model work starts. The lock records its PID, is never silently
+stolen when stale, and is removed only when it is still the same filesystem
+object created by that run. A stale-lock error tells the operator how to verify
+and remove the exact reservation safely.
+
+CSV and manifest publication is recovery-aware. Forced runs retain timestamped
+prior files. If the manifest commit fails after CSV replacement, the prior CSV
+is restored atomically or a newly created CSV is removed, then a uniquely named
+failed-run manifest is attempted. A rollback failure produces partial status
+and reports the retained recovery path.
 
 Only numeric loopback Ollama is allowed by default. The bundled Compose service
 opts into its exact `ollama` hostname. An approved managed endpoint requires
@@ -183,3 +205,8 @@ Before delivery, install the wheel and sdist outside the checkout and smoke-test
 `uma-bct --help`, `uma-bct --version`, and `python -m uma_bct`. The
 real-model photo gate remains local and is handled separately by the test
 engineer.
+
+Launcher changes also require the deterministic ownership fixtures in
+`tests/test_client_delivery.py`. They cover foreign port-11434 services,
+dynamic port selection, missing companions, bind retries, startup failure,
+exit-code propagation, and owned-process cleanup without using a real model.
