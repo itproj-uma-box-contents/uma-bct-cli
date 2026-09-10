@@ -30,12 +30,7 @@ class BoxDetector(Protocol):
 class BoxCropper(Protocol):
     """Turn detector-neutral regions into clean box crops."""
 
-    def create_boxes(
-        self,
-        image: InputImage,
-        regions: Sequence[DetectedRegion],
-        output_directory: Path,
-    ) -> list[Box]: ...
+    def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]: ...
 
 
 class TextTranscriber(Protocol):
@@ -57,10 +52,5 @@ class VisionModelClient(Protocol):
     """Minimal structured vision-model transport used by Qwen adapters."""
 
     def query(
-        self,
-        image_path: Path,
-        prompt: str,
-        schema: dict[str, Any],
-        *,
-        validator: Callable[[Any], object] | None = None,
+        self, image_path: Path, prompt: str, schema: dict[str, Any], *, validator: Callable[[Any], object] | None = None
     ) -> Any: ...

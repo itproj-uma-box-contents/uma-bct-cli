@@ -33,11 +33,7 @@ from ..constants import (
     MIN_WIDTH_FRACTION,
 )
 from ..domain import BoundingBox, DetectedRegion, InputImage
-from ..imaging import (
-    read_image,
-    sort_in_rows,
-    suppress_overlaps,
-)
+from ..imaging import read_image, sort_in_rows, suppress_overlaps
 
 DETECTION_MAX_DIMENSION = 1400
 INTERNAL_CONFIDENCE_FLOOR = 0.45
@@ -47,13 +43,7 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
 
-def range_score(
-    value: float,
-    minimum: float,
-    preferred_minimum: float,
-    preferred_maximum: float,
-    maximum: float,
-) -> float:
+def range_score(value: float, minimum: float, preferred_minimum: float, preferred_maximum: float, maximum: float) -> float:
     """Score a value with a flat preferred range and tapered outer ranges."""
 
     if value < minimum or value > maximum:
@@ -83,9 +73,7 @@ def plausible_bbox(box: BoundingBox, image_width: int, image_height: int) -> boo
     )
 
 
-def line_segments(
-    edges: np.ndarray,
-) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
+def line_segments(edges: np.ndarray) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
     height, width = edges.shape
     short_side = min(height, width)
     lines = cv2.HoughLinesP(
@@ -112,9 +100,7 @@ def line_segments(
 
 
 def line_support(
-    bbox: tuple[int, int, int, int],
-    horizontal: list[tuple[int, ...]],
-    vertical: list[tuple[int, ...]],
+    bbox: tuple[int, int, int, int], horizontal: list[tuple[int, ...]], vertical: list[tuple[int, ...]]
 ) -> float:
     """Estimate how many candidate sides have nearby straight-line support."""
 
@@ -162,15 +148,9 @@ def candidate_confidence(
     contour_area = abs(float(cv2.contourArea(contour)))
     rectangularity = contour_area / box_area if box_area else 0.0
     perimeter = float(cv2.arcLength(contour, True))
-    polygon: Any = (
-        cv2.approxPolyDP(contour, 0.02 * perimeter, True) if perimeter else []
-    )
-    area_score = range_score(
-        area_fraction, MIN_AREA_FRACTION, 0.05, 0.25, MAX_AREA_FRACTION
-    )
-    aspect_score = range_score(
-        aspect_ratio, MIN_ASPECT_RATIO, 0.42, 0.90, MAX_ASPECT_RATIO
-    )
+    polygon: Any = cv2.approxPolyDP(contour, 0.02 * perimeter, True) if perimeter else []
+    area_score = range_score(area_fraction, MIN_AREA_FRACTION, 0.05, 0.25, MAX_AREA_FRACTION)
+    aspect_score = range_score(aspect_ratio, MIN_ASPECT_RATIO, 0.42, 0.90, MAX_ASPECT_RATIO)
     size_score = (clamp(width_fraction / 0.16) + clamp(height_fraction / 0.36)) / 2.0
     rectangularity_score = clamp((rectangularity - 0.18) / 0.62)
     polygon_score = 1.0 if 4 <= len(polygon) <= 8 else 0.35
@@ -189,9 +169,7 @@ def candidate_confidence(
     return round(clamp(confidence), 3)
 
 
-def detection_evidence(
-    detection_image: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+def detection_evidence(detection_image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return source edges and the joined rectangle mask used for contours."""
 
     height, width = detection_image.shape[:2]
@@ -239,20 +217,9 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
             continue
 
         bbox = (x, y, box_width, box_height)
-        confidence = candidate_confidence(
-            contour,
-            bbox,
-            (height, width),
-            horizontal_lines,
-            vertical_lines,
-        )
+        confidence = candidate_confidence(contour, bbox, (height, width), horizontal_lines, vertical_lines)
         if confidence >= INTERNAL_CONFIDENCE_FLOOR:
-            candidates.append(
-                DetectedRegion(
-                    bounding_box,
-                    confidence,
-                )
-            )
+            candidates.append(DetectedRegion(bounding_box, confidence))
     return candidates
 
 
@@ -267,10 +234,7 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
     if scale < 1.0:
         detection_image = cv2.resize(
             original,
-            (
-                max(1, round(original_width * scale)),
-                max(1, round(original_height * scale)),
-            ),
+            (max(1, round(original_width * scale)), max(1, round(original_height * scale))),
             interpolation=cv2.INTER_AREA,
         )
     else:
@@ -286,18 +250,9 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
         # nominal floating-point scale.
         left = box.x * original_width // detection_width
         top = box.y * original_height // detection_height
-        right = (
-            box.bottom_right[0] * original_width + detection_width - 1
-        ) // detection_width
-        bottom = (
-            box.bottom_right[1] * original_height + detection_height - 1
-        ) // detection_height
-        regions.append(
-            DetectedRegion(
-                BoundingBox((left, top), (right, bottom)),
-                candidate.confidence,
-            )
-        )
+        right = (box.bottom_right[0] * original_width + detection_width - 1) // detection_width
+        bottom = (box.bottom_right[1] * original_height + detection_height - 1) // detection_height
+        regions.append(DetectedRegion(BoundingBox((left, top), (right, bottom)), candidate.confidence))
     return regions
 
 

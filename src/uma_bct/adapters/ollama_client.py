@@ -63,13 +63,11 @@ def safe_progress_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     value = ANSI_CONTROL_SEQUENCE.sub("", value)
-    printable = "".join(
-        character if character.isprintable() else " " for character in value
-    )
+    printable = "".join(character if character.isprintable() else " " for character in value)
     return " ".join(printable.split())[:240]
 
 
-def _balanced_surrounding_prefix(value: str) -> bool:
+def has_balanced_surrounding_prefix(value: str) -> bool:
     """Allow balanced prose brackets while rejecting structural fragments."""
 
     depth = 0
@@ -85,7 +83,7 @@ def _balanced_surrounding_prefix(value: str) -> bool:
     return depth == 0
 
 
-def _starts_with_json_primitive(value: str) -> bool:
+def starts_with_json_primitive(value: str) -> bool:
     """Recognize complete or truncated primitive JSON at a wrapper boundary."""
 
     candidate = value.lstrip()
@@ -99,19 +97,12 @@ def _starts_with_json_primitive(value: str) -> bool:
         if candidate == "-":
             return True
         match = re.match(r"[A-Za-z]+", candidate)
-        return bool(
-            match
-            and any(name.startswith(match.group(0)) for name in JSON_LITERAL_NAMES)
-        )
+        return bool(match and any(name.startswith(match.group(0)) for name in JSON_LITERAL_NAMES))
     return not isinstance(decoded, (dict, list))
 
 
-def _invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
-    location = (
-        f" at line {error.lineno}, column {error.colno}"
-        if isinstance(error, json.JSONDecodeError)
-        else ""
-    )
+def invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
+    location = f" at line {error.lineno}, column {error.colno}" if isinstance(error, json.JSONDecodeError) else ""
     return f"The model response contained invalid or incomplete JSON{location}."
 
 
@@ -124,23 +115,21 @@ def json_from_text(raw: str) -> Any:
     if not text:
         raise ValueError("The model returned no text.")
 
-    starts = tuple(
-        position for character in ("{", "[") if (position := text.find(character)) >= 0
-    )
+    starts = tuple(position for character in ("{", "[") if (position := text.find(character)) >= 0)
     if not starts:
         raise ValueError("The model response did not contain a JSON object or array.")
     start = min(starts)
     prefix = text[:start]
-    if not _balanced_surrounding_prefix(prefix):
+    if not has_balanced_surrounding_prefix(prefix):
         raise ValueError("The model response contained ambiguous JSON fragments.")
-    if _starts_with_json_primitive(prefix):
+    if starts_with_json_primitive(prefix):
         raise ValueError("The model response contained an unrelated JSON value.")
 
     decoder = json.JSONDecoder()
     try:
         first, end = decoder.raw_decode(text, start)
     except (json.JSONDecodeError, RecursionError) as error:
-        raise ValueError(_invalid_json_message(error)) from None
+        raise ValueError(invalid_json_message(error)) from None
     if not isinstance(first, (dict, list)):
         raise ValueError("The model response must contain an object or array.")
 
@@ -158,31 +147,22 @@ def json_from_text(raw: str) -> Any:
             while cursor < len(text) and text[cursor].isspace():
                 cursor += 1
             if cursor >= len(text) or text[cursor] != "{":
-                raise ValueError(
-                    "The model response used an illegal JSON record separator."
-                )
+                raise ValueError("The model response used an illegal JSON record separator.")
         elif text[cursor] == "{":
             if cursor == separator_start:
-                raise ValueError(
-                    "The model response used an illegal JSON record separator."
-                )
+                raise ValueError("The model response used an illegal JSON record separator.")
         else:
             suffix = text[cursor:]
             if any(character in JSON_CONTAINER_CHARACTERS for character in suffix):
-                raise ValueError(
-                    "The model response contained ambiguous JSON fragments."
-                )
-            if _starts_with_json_primitive(suffix):
-                raise ValueError(
-                    "The model response contained an unrelated or incomplete "
-                    "JSON value."
-                )
+                raise ValueError("The model response contained ambiguous JSON fragments.")
+            if starts_with_json_primitive(suffix):
+                raise ValueError("The model response contained an unrelated or incomplete JSON value.")
             break
 
         try:
             value, cursor = decoder.raw_decode(text, cursor)
         except (json.JSONDecodeError, RecursionError) as error:
-            raise ValueError(_invalid_json_message(error)) from None
+            raise ValueError(invalid_json_message(error)) from None
         if not isinstance(value, dict):
             raise ValueError("Adjacent JSON values must be complete record objects.")
         values.append(value)
@@ -210,21 +190,14 @@ def collect_stream_text(stream: Any) -> tuple[str, str]:
 def bounded_response_error(value: str) -> str:
     """Keep channel diagnostics short and free of response payload text."""
 
-    printable = "".join(
-        character if character.isprintable() else " " for character in value
-    )
+    printable = "".join(character if character.isprintable() else " " for character in value)
     message = " ".join(printable.split()) or "response interpretation failed"
     if len(message) <= MAX_MODEL_RESPONSE_ERROR_CHARACTERS:
         return message
     return f"{message[: MAX_MODEL_RESPONSE_ERROR_CHARACTERS - 3]}..."
 
 
-def parse_model_response(
-    content: str,
-    thinking: str,
-    *,
-    validator: Callable[[Any], object] | None = None,
-) -> Any:
+def parse_model_response(content: str, thinking: str, *, validator: Callable[[Any], object] | None = None) -> Any:
     errors: list[str] = []
     for source, raw in (("content", content), ("thinking", thinking)):
         if not raw.strip():
@@ -238,10 +211,7 @@ def parse_model_response(
             try:
                 validator(value)
             except (OverflowError, TypeError, ValueError) as error:
-                errors.append(
-                    f"{source}: parsed JSON failed semantic validation "
-                    f"({error.__class__.__name__})"
-                )
+                errors.append(f"{source}: parsed JSON failed semantic validation ({error.__class__.__name__})")
                 continue
         return value
     if errors:
@@ -256,9 +226,7 @@ def timeout_from_environment() -> float:
     try:
         value = float(raw)
     except ValueError as error:
-        raise ValueError(
-            f"{TIMEOUT_ENVIRONMENT_VARIABLE} must be a positive number."
-        ) from error
+        raise ValueError(f"{TIMEOUT_ENVIRONMENT_VARIABLE} must be a positive number.") from error
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{TIMEOUT_ENVIRONMENT_VARIABLE} must be a positive number.")
     return value
@@ -287,9 +255,7 @@ def normalize_ollama_host(value: str) -> str:
     except ValueError:
         loopback = False
 
-    container = hostname == "ollama" and environment_flag(
-        CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE
-    )
+    container = hostname == "ollama" and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
     remote = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
     if not loopback and not container and not remote:
         raise ValueError(
@@ -298,11 +264,7 @@ def normalize_ollama_host(value: str) -> str:
         )
     if remote and not loopback and not container and parsed.scheme != "https":
         raise ValueError("Remote Ollama endpoints must use HTTPS.")
-    host_text = (
-        f"[{normalized_hostname}]"
-        if ":" in normalized_hostname
-        else normalized_hostname
-    )
+    host_text = f"[{normalized_hostname}]" if ":" in normalized_hostname else normalized_hostname
     return urlunsplit((parsed.scheme, f"{host_text}:{port}", "", "", ""))
 
 
@@ -314,9 +276,7 @@ class OllamaVisionModel:
     host: str | None = None
 
     def __post_init__(self) -> None:
-        if self.timeout_seconds is not None and (
-            not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0
-        ):
+        if self.timeout_seconds is not None and (not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
             raise ValueError("Ollama request timeout must be a positive number.")
 
     @property
@@ -328,59 +288,40 @@ class OllamaVisionModel:
         configured = self.host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
         return normalize_ollama_host(configured)
 
-    def _client(self) -> Any:
+    def client(self) -> Any:
         try:
             import ollama
         except ImportError as error:
-            raise RuntimeError(
-                "The 'ollama' package is missing; reinstall UMA BCT."
-            ) from error
+            raise RuntimeError("The 'ollama' package is missing; reinstall UMA BCT.") from error
         return ollama.Client(
-            host=self.effective_host,
-            timeout=self.effective_timeout,
-            follow_redirects=False,
-            trust_env=False,
+            host=self.effective_host, timeout=self.effective_timeout, follow_redirects=False, trust_env=False
         )
 
-    def _inventory(self) -> tuple[str, dict[str, str]]:
+    def inventory(self) -> tuple[str, dict[str, str]]:
         try:
             host = self.effective_host
         except ValueError as error:
             raise RuntimeError(str(error)) from error
         try:
-            with closing(self._client()) as client:
+            with closing(self.client()) as client:
                 response = client.list()
         except Exception as error:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {host}: {error}"
-            ) from error
+            raise RuntimeError(f"Cannot connect to Ollama at {host}: {error}") from error
         models = response_field(response, "models") or ()
-        available = {
-            str(response_field(item, "model") or ""): str(
-                response_field(item, "digest") or ""
-            )
-            for item in models
-        }
+        available = {str(response_field(item, "model") or ""): str(response_field(item, "digest") or "") for item in models}
         return host, available
 
-    def _metadata(self, host: str, available: dict[str, str]) -> dict[str, str]:
+    def metadata(self, host: str, available: dict[str, str]) -> dict[str, str]:
         if self.model not in available:
-            raise RuntimeError(
-                f"Ollama model '{self.model}' is not installed. "
-                f"Run: ollama pull {self.model}"
-            )
-        return {
-            "model": self.model,
-            "model_digest": available[self.model],
-            "ollama_host": host,
-        }
+            raise RuntimeError(f"Ollama model '{self.model}' is not installed. Run: ollama pull {self.model}")
+        return {"model": self.model, "model_digest": available[self.model], "ollama_host": host}
 
     def preflight(self) -> dict[str, str]:
-        return self._metadata(*self._inventory())
+        return self.metadata(*self.inventory())
 
-    def _pull_model(self, output: TextIO) -> None:
+    def pull_model(self, output: TextIO) -> None:
         try:
-            with closing(self._client()) as client:
+            with closing(self.client()) as client:
                 updates = client.pull(model=self.model, stream=True)
                 previous = ""
                 for update in updates:
@@ -389,52 +330,31 @@ class OllamaVisionModel:
                         print(status, file=output)
                         previous = status
         except Exception as error:
-            raise RuntimeError(
-                f"Could not download Ollama model '{self.model}': {error}"
-            ) from error
+            raise RuntimeError(f"Could not download Ollama model '{self.model}': {error}") from error
 
     def ensure_model(self, *, progress_stream: TextIO | None = None) -> dict[str, str]:
         output = progress_stream or sys.stderr
-        host, available = self._inventory()
+        host, available = self.inventory()
         if self.model not in available:
-            print(
-                f"Downloading Ollama model '{self.model}'. This is a large download.",
-                file=output,
-            )
-            self._pull_model(output)
-            host, available = self._inventory()
-        return self._metadata(host, available)
+            print(f"Downloading Ollama model '{self.model}'. This is a large download.", file=output)
+            self.pull_model(output)
+            host, available = self.inventory()
+        return self.metadata(host, available)
 
     def query(
-        self,
-        image_path: Path,
-        prompt: str,
-        schema: dict[str, Any],
-        *,
-        validator: Callable[[Any], object] | None = None,
+        self, image_path: Path, prompt: str, schema: dict[str, Any], *, validator: Callable[[Any], object] | None = None
     ) -> Any:
         try:
-            with closing(self._client()) as client:
+            with closing(self.client()) as client:
                 stream = client.chat(
                     model=self.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt,
-                            "images": [str(image_path)],
-                        }
-                    ],
+                    messages=[{"role": "user", "content": prompt, "images": [str(image_path)]}],
                     format=schema,
                     think=DEFAULT_THINK,
-                    options={
-                        "temperature": DEFAULT_TEMPERATURE,
-                        "num_ctx": self.context_length,
-                    },
+                    options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length},
                     stream=True,
                 )
                 content, thinking = collect_stream_text(stream)
         except Exception as error:
-            raise RuntimeError(
-                f"Local Ollama request failed for model '{self.model}': {error}"
-            ) from error
+            raise RuntimeError(f"Local Ollama request failed for model '{self.model}': {error}") from error
         return parse_model_response(content, thinking, validator=validator)

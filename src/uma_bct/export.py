@@ -21,21 +21,13 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .catalogue import append_flag, map_catalogue_record
-from .constants import (
-    DUPLICATE_FLAG,
-    FALLBACK_USED_FLAG,
-    LOW_CONFIDENCE_FLAG,
-    OUTPUT_COLUMNS,
-)
+from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, OUTPUT_COLUMNS
 from .path_safety import validate_path_hierarchy
 from .pipeline import ImageResult
 
 
 def catalogue_records(
-    results: Iterable[ImageResult],
-    *,
-    minimum_confidence: int = 80,
-    catalogue_path: str | Path | None = None,
+    results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None
 ) -> list[dict[str, str | int]]:
     """Map results and add batch flags without changing physical-box order."""
 
@@ -45,8 +37,7 @@ def catalogue_records(
     records: list[dict[str, str | int]] = []
     for result in results:
         used_fallback = (
-            len(result.fallback_path) > 1
-            or result.actual_detector.casefold() != result.requested_detector.casefold()
+            len(result.fallback_path) > 1 or result.actual_detector.casefold() != result.requested_detector.casefold()
         )
         for box_result in result.records:
             records.append(
@@ -59,9 +50,7 @@ def catalogue_records(
             )
 
     title_counts = Counter(
-        str(record["Node Title"]).strip().casefold()
-        for record in records
-        if str(record["Node Title"]).strip()
+        str(record["Node Title"]).strip().casefold() for record in records if str(record["Node Title"]).strip()
     )
     for record in records:
         title = str(record["Node Title"]).strip()
@@ -76,11 +65,7 @@ def catalogue_records(
 
 
 def export_catalogue(
-    results: Iterable[ImageResult],
-    output_path: str | Path,
-    *,
-    minimum_confidence: int = 80,
-    replace_existing: bool = True,
+    results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80, replace_existing: bool = True
 ) -> list[dict[str, str | int]]:
     """Atomically write a UTF-8 CSV and return its catalogue records."""
 
@@ -88,11 +73,7 @@ def export_catalogue(
     if destination.suffix.casefold() != ".csv":
         raise ValueError("Catalogue output must end in .csv.")
 
-    records = catalogue_records(
-        results,
-        minimum_confidence=minimum_confidence,
-        catalogue_path=destination,
-    )
+    records = catalogue_records(results, minimum_confidence=minimum_confidence, catalogue_path=destination)
     validate_path_hierarchy(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
         raise FileExistsError(f"Catalogue output already exists: {destination}")

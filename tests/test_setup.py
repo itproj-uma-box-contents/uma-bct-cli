@@ -15,10 +15,7 @@ class SetupTest(unittest.TestCase):
             root = Path(directory)
             model = Mock()
             stdout = io.StringIO()
-            with (
-                patch("uma_bct.setup_command.OllamaVisionModel", return_value=model),
-                contextlib.redirect_stdout(stdout),
-            ):
+            with patch("uma_bct.setup_command.OllamaVisionModel", return_value=model), contextlib.redirect_stdout(stdout):
                 status = run_setup(root=root, model_name="qwen-test")
             self.assertEqual(status, 0)
             self.assertTrue((root / "inputs").is_dir())
@@ -30,10 +27,7 @@ class SetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout, stderr = io.StringIO(), io.StringIO()
             with (
-                patch(
-                    "uma_bct.setup_command.OllamaVisionModel",
-                    side_effect=RuntimeError("server unavailable"),
-                ),
+                patch("uma_bct.setup_command.OllamaVisionModel", side_effect=RuntimeError("server unavailable")),
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(stderr),
             ):

@@ -17,11 +17,7 @@ from uma_bct.adapters.ollama_client import (
     json_from_text,
     normalize_ollama_host,
 )
-from uma_bct.adapters.qwen_detector import (
-    GROUNDING_QUESTION,
-    QwenBoxDetector,
-    validate_grounding_proposals,
-)
+from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, QwenBoxDetector, validate_grounding_proposals
 from uma_bct.adapters.qwen_response import normalize_boxes_envelope
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
@@ -66,15 +62,8 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertIs(normalize_boxes_envelope(response), response)
 
     def test_transcription_accepts_complete_equivalent_response_envelopes(self):
-        first = record(
-            handwritten=["Café 📦; O'Brien"],
-            auxiliary_annotations=["Fragile; retain [brackets]"],
-        )
-        second = record(
-            position="middle-right",
-            unit="5",
-            typed=["1960.0009", "Unit 5"],
-        )
+        first = record(handwritten=["Café 📦; O'Brien"], auxiliary_annotations=["Fragile; retain [brackets]"])
+        second = record(position="middle-right", unit="5", typed=["1960.0009", "Unit 5"])
         envelope = json.dumps({"boxes": [first, second]}, ensure_ascii=False)
         cases = (
             (envelope, [first, second]),
@@ -82,16 +71,8 @@ class QwenAdapterTest(unittest.TestCase):
             (f"Structured result follows:\n{envelope}\nEnd result.", [first, second]),
             (json.dumps(first, ensure_ascii=False), [first]),
             (json.dumps([first, second], ensure_ascii=False), [first, second]),
-            (
-                f"{json.dumps(first, ensure_ascii=False)}\n"
-                f"{json.dumps(second, ensure_ascii=False)}",
-                [first, second],
-            ),
-            (
-                f"{json.dumps(first, ensure_ascii=False)},\n"
-                f"{json.dumps(second, ensure_ascii=False)}",
-                [first, second],
-            ),
+            (f"{json.dumps(first, ensure_ascii=False)}\n{json.dumps(second, ensure_ascii=False)}", [first, second]),
+            (f"{json.dumps(first, ensure_ascii=False)},\n{json.dumps(second, ensure_ascii=False)}", [first, second]),
         )
 
         for raw, expected in cases:
@@ -108,12 +89,7 @@ class QwenAdapterTest(unittest.TestCase):
                 self.assertEqual(warnings, ())
 
     def test_detector_keeps_valid_boxes_and_reports_malformed_proposals(self):
-        response = {
-            "boxes": [
-                {"bbox_2d": [100, 200, 500, 800]},
-                {"bbox_2d": [5, 5, 4, 20]},
-            ]
-        }
+        response = {"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]}
         client = FakeVision(response)
         detector = QwenBoxDetector(client)
         with patch(
@@ -132,17 +108,12 @@ class QwenAdapterTest(unittest.TestCase):
             {"boxes": [{"bbox_2d": [1, 2, True, 4]}]},
             {"boxes": [{"bbox_2d": [-1, 2, 3, 4]}]},
         ):
-            with (
-                self.subTest(response=response),
-                self.assertRaises((TypeError, ValueError)),
-            ):
+            with self.subTest(response=response), self.assertRaises((TypeError, ValueError)):
                 validate_grounding_proposals(response)
 
     def test_transcriber_maps_multiple_records_and_marks_uncertainty(self):
         box = make_box()
-        client = FakeVision(
-            {"boxes": [record(), record(unit="5", typed=["1960.0009", "Unit 5?"])]}
-        )
+        client = FakeVision({"boxes": [record(), record(unit="5", typed=["1960.0009", "Unit 5?"])]})
         results = QwenTextTranscriber(client).transcribe(box)
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0].unit_number, "4")
@@ -158,10 +129,7 @@ class QwenAdapterTest(unittest.TestCase):
             {"boxes": [record(position="x" * (MAX_TEXT_CHARACTERS + 1))]},
             {"boxes": [record(typed=["x" * (MAX_TEXT_CHARACTERS + 1)])]},
         ):
-            with (
-                self.subTest(response=response),
-                self.assertRaises((TypeError, ValueError)),
-            ):
+            with self.subTest(response=response), self.assertRaises((TypeError, ValueError)):
                 validate_transcription_result(response)
 
     def test_transcription_rejects_excessive_records_after_rewrapping(self):
@@ -198,9 +166,7 @@ class QwenAdapterTest(unittest.TestCase):
     def test_response_parser_bounds_ambiguous_container_scanning(self):
         with (
             patch.object(
-                ollama_client,
-                "_balanced_surrounding_prefix",
-                wraps=ollama_client._balanced_surrounding_prefix,
+                ollama_client, "has_balanced_surrounding_prefix", wraps=ollama_client.has_balanced_surrounding_prefix
             ) as balance_check,
             self.assertRaises(ValueError),
         ):
@@ -242,22 +208,14 @@ class OllamaClientTest(unittest.TestCase):
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
         kwargs = {"validator": validator} if validator is not None else {}
-        with (
-            patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            result = OllamaVisionModel().query(
-                Path("box.png"), "prompt", {"type": "object"}, **kwargs
-            )
+        with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
+            result = OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"}, **kwargs)
         return result
 
     def test_endpoint_policy_defaults_to_numeric_loopback(self):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(normalize_ollama_host("localhost"), DEFAULT_OLLAMA_HOST)
-            self.assertEqual(
-                normalize_ollama_host("http://127.0.0.1:12000"),
-                "http://127.0.0.1:12000",
-            )
+            self.assertEqual(normalize_ollama_host("http://127.0.0.1:12000"), "http://127.0.0.1:12000")
             with self.assertRaisesRegex(ValueError, "numeric loopback"):
                 normalize_ollama_host("http://model.example:11434")
 
@@ -269,41 +227,20 @@ class OllamaClientTest(unittest.TestCase):
 
     def test_remote_and_compose_endpoints_require_explicit_opt_in(self):
         with patch.dict("os.environ", {"UMA_BCT_ALLOW_REMOTE_OLLAMA": "1"}, clear=True):
-            self.assertEqual(
-                normalize_ollama_host("https://model.example"),
-                "https://model.example:11434",
-            )
+            self.assertEqual(normalize_ollama_host("https://model.example"), "https://model.example:11434")
             with self.assertRaisesRegex(ValueError, "HTTPS"):
                 normalize_ollama_host("http://model.example")
-        with patch.dict(
-            "os.environ", {"UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1"}, clear=True
-        ):
-            self.assertEqual(
-                normalize_ollama_host("http://ollama:11434"),
-                "http://ollama:11434",
-            )
+        with patch.dict("os.environ", {"UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1"}, clear=True):
+            self.assertEqual(normalize_ollama_host("http://ollama:11434"), "http://ollama:11434")
 
     def test_query_collects_streamed_json_with_safe_client_settings(self):
-        chunks = [
-            {"message": {"content": '{"boxes":'}},
-            {"message": {"content": " []}"}},
-        ]
+        chunks = [{"message": {"content": '{"boxes":'}}, {"message": {"content": " []}"}}]
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
-        with (
-            patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            result = OllamaVisionModel().query(
-                Path("box.png"), "prompt", {"type": "object"}
-            )
+        with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
+            result = OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
         self.assertEqual(result, {"boxes": []})
-        factory.assert_called_once_with(
-            host=DEFAULT_OLLAMA_HOST,
-            timeout=600.0,
-            follow_redirects=False,
-            trust_env=False,
-        )
+        factory.assert_called_once_with(host=DEFAULT_OLLAMA_HOST, timeout=600.0, follow_redirects=False, trust_env=False)
         self.assertEqual(client.chat.call_args.kwargs["stream"], True)
 
     def test_query_uses_valid_thinking_when_content_fails_the_validator(self):
@@ -327,11 +264,7 @@ class OllamaClientTest(unittest.TestCase):
 
         for content in incomplete_content:
             with self.subTest(content=content):
-                result = self.query_response(
-                    content,
-                    thinking=thinking,
-                    validator=validate_grounding_proposals,
-                )
+                result = self.query_response(content, thinking=thinking, validator=validate_grounding_proposals)
                 boxes, warnings = validate_grounding_proposals(result)
                 self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
                 self.assertEqual(warnings, ())
@@ -341,9 +274,7 @@ class OllamaClientTest(unittest.TestCase):
         content = f'{{"boxes":[{{"bbox_2d":[0,0,{huge_integer},1]}}]}}'
         expected = {"bbox_2d": [10, 20, 30, 40]}
         result = self.query_response(
-            content,
-            thinking=json.dumps({"boxes": [expected]}),
-            validator=validate_grounding_proposals,
+            content, thinking=json.dumps({"boxes": [expected]}), validator=validate_grounding_proposals
         )
         boxes, warnings = validate_grounding_proposals(result)
         self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
@@ -353,9 +284,7 @@ class OllamaClientTest(unittest.TestCase):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
         ignored = record(unit="9", typed=["1960.0009", "Unit 9"])
         result = self.query_response(
-            json.dumps(expected),
-            thinking=json.dumps({"boxes": [ignored]}),
-            validator=validate_transcription_result,
+            json.dumps(expected), thinking=json.dumps({"boxes": [ignored]}), validator=validate_transcription_result
         )
         self.assertEqual(validate_transcription_result(result), [expected])
 
@@ -363,9 +292,7 @@ class OllamaClientTest(unittest.TestCase):
         private_text = "private archive text " * 300
         with self.assertRaises(ValueError) as raised:
             self.query_response(
-                json.dumps({"status": private_text}),
-                thinking='{\n  "boxes": [',
-                validator=validate_transcription_result,
+                json.dumps({"status": private_text}), thinking='{\n  "boxes": [', validator=validate_transcription_result
             )
         message = str(raised.exception)
         self.assertIn("content", message)
@@ -374,26 +301,13 @@ class OllamaClientTest(unittest.TestCase):
         self.assertNotIn(private_text, message)
 
     def test_setup_pull_rechecks_and_returns_model_identity(self):
-        missing = SimpleNamespace(
-            list=Mock(return_value={"models": []}),
-            close=Mock(),
-        )
-        pull = SimpleNamespace(
-            pull=Mock(return_value=iter([{"status": "downloading"}])),
-            close=Mock(),
-        )
+        missing = SimpleNamespace(list=Mock(return_value={"models": []}), close=Mock())
+        pull = SimpleNamespace(pull=Mock(return_value=iter([{"status": "downloading"}])), close=Mock())
         ready = SimpleNamespace(
-            list=Mock(
-                return_value={
-                    "models": [{"model": "qwen-test", "digest": "sha256:test"}]
-                }
-            ),
-            close=Mock(),
+            list=Mock(return_value={"models": [{"model": "qwen-test", "digest": "sha256:test"}]}), close=Mock()
         )
         model = OllamaVisionModel(model="qwen-test")
-        with patch.object(
-            OllamaVisionModel, "_client", side_effect=(missing, pull, ready)
-        ):
+        with patch.object(OllamaVisionModel, "client", side_effect=(missing, pull, ready)):
             metadata = model.ensure_model(progress_stream=io.StringIO())
         self.assertEqual(metadata["model_digest"], "sha256:test")
         pull.pull.assert_called_once_with(model="qwen-test", stream=True)

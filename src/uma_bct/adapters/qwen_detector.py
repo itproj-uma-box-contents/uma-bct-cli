@@ -47,14 +47,7 @@ GROUNDING_SCHEMA = {
             "maxItems": MAX_DETECTOR_PROPOSALS,
             "items": {
                 "type": "object",
-                "properties": {
-                    "bbox_2d": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 4,
-                        "maxItems": 4,
-                    }
-                },
+                "properties": {"bbox_2d": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}},
                 "required": ["bbox_2d"],
             },
         }
@@ -63,17 +56,11 @@ GROUNDING_SCHEMA = {
 }
 
 
-def validate_grounding_proposals(
-    value: Any,
-) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
+def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
     """Validate proposals, tolerating drops only in a canonical envelope."""
 
     canonical = isinstance(value, dict) and "boxes" in value
-    proposals = response_boxes(
-        value,
-        maximum=MAX_DETECTOR_PROPOSALS,
-        limit_subject="the grounding response",
-    )
+    proposals = response_boxes(value, maximum=MAX_DETECTOR_PROPOSALS, limit_subject="the grounding response")
 
     boxes: list[tuple[float, float, float, float]] = []
     dropped: list[str] = []
@@ -83,17 +70,13 @@ def validate_grounding_proposals(
             if not isinstance(bbox, list) or len(bbox) != 4:
                 raise TypeError(f"box {index}.bbox_2d must contain four numbers")
             if not all(
-                isinstance(coordinate, (int, float))
-                and not isinstance(coordinate, bool)
-                and math.isfinite(coordinate)
+                isinstance(coordinate, (int, float)) and not isinstance(coordinate, bool) and math.isfinite(coordinate)
                 for coordinate in bbox
             ):
                 raise TypeError(f"box {index}.bbox_2d must contain finite numbers")
             x1, y1, x2, y2 = (float(coordinate) for coordinate in bbox)
             if not all(0.0 <= coordinate <= 1000.0 for coordinate in (x1, y1, x2, y2)):
-                raise ValueError(
-                    f"box {index}.bbox_2d must use coordinates from 0 to 1000"
-                )
+                raise ValueError(f"box {index}.bbox_2d must use coordinates from 0 to 1000")
             if x2 <= x1 or y2 <= y1:
                 raise ValueError(f"box {index}.bbox_2d has invalid corners")
         except (OverflowError, TypeError, ValueError) as error:
@@ -106,9 +89,7 @@ def validate_grounding_proposals(
         detail = f": {'; '.join(dropped[:3])}" if dropped else ""
         raise ValueError(f"the grounding response contained no valid boxes{detail}")
     if dropped and not canonical:
-        raise ValueError(
-            "a noncanonical grounding response must contain only valid box records"
-        )
+        raise ValueError("a noncanonical grounding response must contain only valid box records")
     return boxes, tuple(dropped)
 
 
@@ -136,10 +117,7 @@ class QwenBoxDetector:
         self.dropped_proposal_warnings = ()
         with sanitized_detection_image(image) as image_path:
             result = self.client.query(
-                image_path,
-                GROUNDING_QUESTION,
-                GROUNDING_SCHEMA,
-                validator=validate_grounding_proposals,
+                image_path, GROUNDING_QUESTION, GROUNDING_SCHEMA, validator=validate_grounding_proposals
             )
         normalized_boxes, dropped = validate_grounding_proposals(result)
         regions: list[DetectedRegion] = []
@@ -150,18 +128,13 @@ class QwenBoxDetector:
             right = math.ceil(x2 * image.width / 1000.0)
             bottom = math.ceil(y2 * image.height / 1000.0)
             try:
-                region = DetectedRegion(
-                    BoundingBox((left, top), (right, bottom)), confidence=1.0
-                )
+                region = DetectedRegion(BoundingBox((left, top), (right, bottom)), confidence=1.0)
             except ValueError as error:
-                conversion_warnings.append(
-                    f"valid proposal {index} became unusable in image pixels: {error}"
-                )
+                conversion_warnings.append(f"valid proposal {index} became unusable in image pixels: {error}")
                 continue
             regions.append(region)
         self.dropped_proposal_warnings = tuple(
-            f"Qwen dropped a malformed proposal: {warning}"
-            for warning in (*dropped, *conversion_warnings)
+            f"Qwen dropped a malformed proposal: {warning}" for warning in (*dropped, *conversion_warnings)
         )
         if not regions:
             raise ValueError("the grounding response contained no usable pixel boxes")

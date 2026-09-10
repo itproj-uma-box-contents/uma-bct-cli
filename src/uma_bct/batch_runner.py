@@ -8,7 +8,7 @@ raising, so one failed image or a failed export still allows every other
 stage to report as much as it could complete. The overall ``status`` in the
 emitted summary is therefore derived at the end from whether any failures or
 incomplete images occurred, not tracked as the run progresses.
-``_public_summary`` intentionally re-shapes the full internal summary into a
+``public_summary`` intentionally re-shapes the full internal summary into a
 smaller public one (counts instead of full per-image detail) for the
 console; the full detail is only ever written to the run manifest file.
 """
@@ -26,18 +26,11 @@ from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import validate_path_hierarchy
 from .pipeline import ImageResult, warning_text
-from .run_artifacts import (
-    backup_existing_results,
-    failed_manifest_path,
-    run_directory,
-    write_json_atomic,
-)
+from .run_artifacts import backup_existing_results, failed_manifest_path, run_directory, write_json_atomic
 
 
 def configuration(
-    arguments: argparse.Namespace,
-    work_directory: Path | None,
-    request_timeout_seconds: float | None,
+    arguments: argparse.Namespace, work_directory: Path | None, request_timeout_seconds: float | None
 ) -> dict[str, Any]:
     return {
         "detector": arguments.detector,
@@ -52,11 +45,7 @@ def configuration(
     }
 
 
-def _process_images(
-    pipeline: Any,
-    images: list[Path],
-    failures: list[dict[str, str]],
-) -> list[ImageResult]:
+def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]]) -> list[ImageResult]:
     results: list[ImageResult] = []
     for image_path in images:
         print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
@@ -69,16 +58,11 @@ def _process_images(
             continue
         results.append(result)
         for warning in result.warnings:
-            print(
-                f"Warning for {ascii(str(image_path))}: {warning_text(warning)}",
-                file=sys.stderr,
-            )
+            print(f"Warning for {ascii(str(image_path))}: {warning_text(warning)}", file=sys.stderr)
     return results
 
 
-def _public_summary(
-    summary: dict[str, Any], *, image_count: int, model_name: str
-) -> dict[str, Any]:
+def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
     images = summary["images"]
     return {
         "schema_version": summary["schema_version"],
@@ -87,8 +71,7 @@ def _public_summary(
         "images_processed": len(images),
         "images_complete": sum(item["status"] == "complete" for item in images),
         "images_partial": sum(item["status"] == "partial" for item in images),
-        "images_failed": image_count
-        - sum(item["status"] in {"complete", "partial"} for item in images),
+        "images_failed": image_count - sum(item["status"] in {"complete", "partial"} for item in images),
         "catalogue_output": summary["catalogue_output"],
         "catalogue_records": summary["catalogue_records"],
         "failure_count": len(summary["failures"]),
@@ -98,9 +81,8 @@ def _public_summary(
     }
 
 
-def _prepare_pipeline(
-    arguments: argparse.Namespace,
-    failures: list[dict[str, str]],
+def prepare_pipeline(
+    arguments: argparse.Namespace, failures: list[dict[str, str]]
 ) -> tuple[Any | None, Path | None, float | None, dict[str, str]]:
     request_timeout = arguments.request_timeout
     metadata = {"model": arguments.model}
@@ -126,7 +108,7 @@ def _prepare_pipeline(
         return None, None, request_timeout, metadata
 
 
-def _export_results(
+def export_results(
     arguments: argparse.Namespace,
     results: list[ImageResult],
     output_path: Path,
@@ -134,12 +116,7 @@ def _export_results(
     failures: list[dict[str, str]],
 ) -> tuple[int, str | None, tuple[Path, ...]]:
     if not sum(len(result.records) for result in results):
-        failures.append(
-            {
-                "stage": "processing",
-                "error": "No usable catalogue records were produced.",
-            }
-        )
+        failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
         return 0, None, ()
     previous: tuple[Path, ...] = ()
     try:
@@ -148,16 +125,9 @@ def _export_results(
                 validate_path_hierarchy(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
-        previous = (
-            backup_existing_results((output_path, manifest_path))
-            if arguments.force
-            else ()
-        )
+        previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
         records = export_catalogue(
-            results,
-            output_path,
-            minimum_confidence=arguments.min_transcription_confidence,
-            replace_existing=arguments.force,
+            results, output_path, minimum_confidence=arguments.min_transcription_confidence, replace_existing=arguments.force
         )
         return len(records), str(output_path), previous
     except Exception as error:
@@ -167,12 +137,8 @@ def _export_results(
         return 0, None, previous
 
 
-def _write_manifest(
-    manifest: Path,
-    summary: dict[str, Any],
-    failures: list[dict[str, str]],
-    *,
-    replace_existing: bool,
+def write_manifest(
+    manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]], *, replace_existing: bool
 ) -> None:
     try:
         write_json_atomic(manifest, summary, replace_existing=replace_existing)
@@ -184,14 +150,8 @@ def _write_manifest(
         print(f"Manifest write failed: {message}", file=sys.stderr)
 
 
-def _emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
-    print(
-        json.dumps(
-            _public_summary(summary, image_count=image_count, model_name=model_name),
-            indent=2,
-            ensure_ascii=False,
-        )
-    )
+def emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
+    print(json.dumps(public_summary(summary, image_count=image_count, model_name=model_name), indent=2, ensure_ascii=False))
 
 
 def run_batch(
@@ -205,12 +165,10 @@ def run_batch(
     """Process one batch, write safe outputs, and emit one JSON summary."""
 
     failures: list[dict[str, str]] = []
-    pipeline, work_directory, request_timeout, model_metadata = _prepare_pipeline(
-        arguments, failures
-    )
-    results = _process_images(pipeline, images, failures) if pipeline else []
+    pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
+    results = process_images(pipeline, images, failures) if pipeline else []
     if pipeline:
-        record_count, catalogue_output, previous_results = _export_results(
+        record_count, catalogue_output, previous_results = export_results(
             arguments, results, output_path, normal_manifest_path, failures
         )
     else:
@@ -238,13 +196,8 @@ def run_batch(
         "run_manifest": str(manifest),
         "previous_results": [str(path) for path in previous_results],
     }
-    _write_manifest(
-        manifest,
-        summary,
-        failures,
-        replace_existing=arguments.force,
-    )
-    _emit_summary(summary, len(images), arguments.model)
+    write_manifest(manifest, summary, failures, replace_existing=arguments.force)
+    emit_summary(summary, len(images), arguments.model)
     if pipeline is None:
         return 2
     return 0 if summary["status"] == "complete" else 1

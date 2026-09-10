@@ -14,9 +14,7 @@ import stat
 from pathlib import Path
 
 
-def redirected_path_kind(
-    path: Path, metadata: os.stat_result | None = None
-) -> str | None:
+def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> str | None:
     metadata = metadata or path.lstat()
     if stat.S_ISLNK(metadata.st_mode):
         return "symbolic link"

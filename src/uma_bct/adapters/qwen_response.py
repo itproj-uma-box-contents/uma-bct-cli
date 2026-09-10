@@ -21,21 +21,12 @@ def normalize_boxes_envelope(value: Any) -> dict[str, Any]:
         return {"boxes": [value]}
     if isinstance(value, list):
         if any(isinstance(item, dict) and "boxes" in item for item in value):
-            raise TypeError(
-                "the response must not contain nested or mixed boxes envelopes"
-            )
+            raise TypeError("the response must not contain nested or mixed boxes envelopes")
         return {"boxes": value}
-    raise TypeError(
-        "the response must be an object, a record array, or adjacent records"
-    )
+    raise TypeError("the response must be an object, a record array, or adjacent records")
 
 
-def response_boxes(
-    value: Any,
-    *,
-    maximum: int,
-    limit_subject: str,
-) -> list[Any]:
+def response_boxes(value: Any, *, maximum: int, limit_subject: str) -> list[Any]:
     """Return the top-level boxes array after common shape and size checks."""
 
     normalized = normalize_boxes_envelope(value)
@@ -47,33 +38,19 @@ def response_boxes(
     return boxes
 
 
-def bounded_string(
-    item: dict[str, Any],
-    *,
-    box_number: int,
-    field: str,
-    maximum_characters: int,
-) -> str:
+def bounded_string(item: dict[str, Any], *, box_number: int, field: str, maximum_characters: int) -> str:
     """Validate one required bounded string field."""
 
     value = item.get(field)
     if not isinstance(value, str):
         raise TypeError(f"box {box_number}.{field} must be a string")
     if len(value) > maximum_characters:
-        raise ValueError(
-            f"box {box_number}.{field} must contain at most "
-            f"{maximum_characters} characters"
-        )
+        raise ValueError(f"box {box_number}.{field} must contain at most {maximum_characters} characters")
     return value
 
 
 def bounded_string_list(
-    item: dict[str, Any],
-    *,
-    box_number: int,
-    field: str,
-    maximum_items: int,
-    maximum_characters: int,
+    item: dict[str, Any], *, box_number: int, field: str, maximum_items: int, maximum_characters: int
 ) -> list[str]:
     """Validate a required bounded string array."""
 
@@ -81,12 +58,7 @@ def bounded_string_list(
     if not isinstance(value, list) or not all(isinstance(line, str) for line in value):
         raise ValueError(f"box {box_number}.{field} must be an array of strings")
     if len(value) > maximum_items:
-        raise ValueError(
-            f"box {box_number}.{field} must contain at most {maximum_items} lines"
-        )
+        raise ValueError(f"box {box_number}.{field} must contain at most {maximum_items} lines")
     if any(len(line) > maximum_characters for line in value):
-        raise ValueError(
-            f"box {box_number}.{field} lines must contain at most "
-            f"{maximum_characters} characters"
-        )
+        raise ValueError(f"box {box_number}.{field} lines must contain at most {maximum_characters} characters")
     return list(value)

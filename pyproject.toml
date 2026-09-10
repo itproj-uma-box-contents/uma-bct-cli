@@ -36,11 +36,17 @@ include = ["/src/uma_bct", "/pyproject.toml", "/README.md"]
 
 [tool.ruff]
 target-version = "py312"
-line-length = 88
+line-length = 125
 extend-exclude = ["Archive box photos", "add_repository_photos"]
 
 [tool.ruff.lint]
 select = ["B", "E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
 
 [tool.coverage.run]
 branch = true

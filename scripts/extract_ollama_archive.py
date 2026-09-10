@@ -17,7 +17,7 @@ import tarfile
 from pathlib import Path, PurePosixPath
 
 
-def _validate_link_target(member: tarfile.TarInfo) -> None:
+def validate_link_target(member: tarfile.TarInfo) -> None:
     """Reject links whose normalized archive-relative target escapes the root."""
 
     target_text = member.linkname.replace("\\", "/")
@@ -51,15 +51,10 @@ def extract_archive(source: Path, destination: Path) -> None:
                     path = PurePosixPath(member.name)
                     if path.is_absolute() or ".." in path.parts:
                         raise ValueError(f"Unsafe archive path: {member.name}")
-                    if not (
-                        member.isfile()
-                        or member.isdir()
-                        or member.issym()
-                        or member.islnk()
-                    ):
+                    if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
                         raise ValueError(f"Unsupported archive entry: {member.name}")
                     if member.issym() or member.islnk():
-                        _validate_link_target(member)
+                        validate_link_target(member)
                     archive.extract(member, destination, filter="data")
 
 

@@ -24,12 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .constants import (
-    CONTAINMENT_THRESHOLD,
-    MINIMUM_IMAGE_PADDING_FRACTION,
-    NMS_IOU_THRESHOLD,
-    PADDING_FRACTION,
-)
+from .constants import CONTAINMENT_THRESHOLD, MINIMUM_IMAGE_PADDING_FRACTION, NMS_IOU_THRESHOLD, PADDING_FRACTION
 from .domain import BoundingBox, Box, DetectedRegion, InputImage
 from .path_safety import validate_path_hierarchy
 
@@ -73,9 +68,7 @@ def suppress_overlaps(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]
         for kept in retained:
             intersection = intersection_area(region.bounding_box, kept.bounding_box)
             kept_area = kept.bounding_box.width * kept.bounding_box.height
-            if max(intersection / region_area, intersection / kept_area) >= (
-                CONTAINMENT_THRESHOLD
-            ):
+            if max(intersection / region_area, intersection / kept_area) >= (CONTAINMENT_THRESHOLD):
                 should_suppress = True
                 break
             if iou(region.bounding_box, kept.bounding_box) >= NMS_IOU_THRESHOLD:
@@ -94,16 +87,11 @@ def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     row_tolerance = max(1.0, median_height * 0.35)
     rows: list[list[DetectedRegion]] = []
 
-    for region in sorted(
-        regions,
-        key=lambda item: item.bounding_box.y + item.bounding_box.height / 2.0,
-    ):
+    for region in sorted(regions, key=lambda item: item.bounding_box.y + item.bounding_box.height / 2.0):
         center_y = region.bounding_box.y + region.bounding_box.height / 2.0
         matching_row: list[DetectedRegion] | None = None
         for row in rows:
-            row_center = sum(
-                item.bounding_box.y + item.bounding_box.height / 2.0 for item in row
-            ) / len(row)
+            row_center = sum(item.bounding_box.y + item.bounding_box.height / 2.0 for item in row) / len(row)
             if abs(center_y - row_center) <= row_tolerance:
                 matching_row = row
                 break
@@ -112,17 +100,8 @@ def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
         else:
             matching_row.append(region)
 
-    rows.sort(
-        key=lambda row: (
-            sum(item.bounding_box.y + item.bounding_box.height / 2.0 for item in row)
-            / len(row)
-        )
-    )
-    return [
-        region
-        for row in rows
-        for region in sorted(row, key=lambda item: item.bounding_box.x)
-    ]
+    rows.sort(key=lambda row: sum(item.bounding_box.y + item.bounding_box.height / 2.0 for item in row) / len(row))
+    return [region for row in rows for region in sorted(row, key=lambda item: item.bounding_box.x)]
 
 
 def position_hint(box: BoundingBox, image_width: int, image_height: int) -> str:
@@ -131,9 +110,7 @@ def position_hint(box: BoundingBox, image_width: int, image_height: int) -> str:
     return f"{('top', 'middle', 'bottom')[row]}-{('left', 'middle', 'right')[column]}"
 
 
-def clipped_box(
-    box: BoundingBox, image_width: int, image_height: int
-) -> BoundingBox | None:
+def clipped_box(box: BoundingBox, image_width: int, image_height: int) -> BoundingBox | None:
     x1 = max(0, min(image_width, box.top_left[0]))
     y1 = max(0, min(image_height, box.top_left[1]))
     x2 = max(0, min(image_width, box.bottom_right[0]))
@@ -189,12 +166,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 class OpenCVBoxCropper:
     """Create clean PNG crops from regions proposed by any detector."""
 
-    def create_boxes(
-        self,
-        image: InputImage,
-        regions: Sequence[DetectedRegion],
-        output_directory: Path,
-    ) -> list[Box]:
+    def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]:
         original = read_image(image.file_path)
         valid_regions: list[DetectedRegion] = []
         for region in regions:
@@ -210,9 +182,7 @@ class OpenCVBoxCropper:
         validate_path_hierarchy(crop_directory, "Review-crop directory")
         crop_directory.chmod(0o700)
         boxes: list[Box] = []
-        minimum_padding = math.ceil(
-            min(image.width, image.height) * MINIMUM_IMAGE_PADDING_FRACTION
-        )
+        minimum_padding = math.ceil(min(image.width, image.height) * MINIMUM_IMAGE_PADDING_FRACTION)
 
         for index, region in enumerate(ordered, start=1):
             box = region.bounding_box

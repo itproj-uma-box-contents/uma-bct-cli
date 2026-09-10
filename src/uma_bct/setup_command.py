@@ -46,10 +46,8 @@ def warn_about_permissions(path: Path, mode: int) -> None:
         )
 
 
-def _safe_error(error: Exception) -> str:
-    printable = "".join(
-        character if character.isprintable() else " " for character in str(error)
-    )
+def safe_error(error: Exception) -> str:
+    printable = "".join(character if character.isprintable() else " " for character in str(error))
     return (" ".join(printable.split()) or error.__class__.__name__)[:1000]
 
 
@@ -70,7 +68,7 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL) -> i
         warn_about_permissions(outputs, ensure_directory(outputs))
         OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
-        message = _safe_error(error)
+        message = safe_error(error)
         result.update(status="failed", error=message)
         print(f"Setup failed: {message}", file=sys.stderr)
         print(json.dumps(result, indent=2, ensure_ascii=False))

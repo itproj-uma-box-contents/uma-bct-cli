@@ -23,12 +23,7 @@ from typing import Literal
 
 from .domain import Box, BoxResult, DetectedRegion, InputImage
 from .imaging import create_full_image_box, load_input_image
-from .ports import (
-    BoxCropper,
-    BoxDetector,
-    FullImageTextTranscriber,
-    TextTranscriber,
-)
+from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]
@@ -37,9 +32,7 @@ ImageStatus = Literal["complete", "partial", "failed"]
 def warning_text(value: Exception | str) -> str:
     """Return bounded, single-line text safe for stderr and JSON."""
 
-    printable = "".join(
-        character if character.isprintable() else " " for character in str(value)
-    )
+    printable = "".join(character if character.isprintable() else " " for character in str(value))
     fallback = value.__class__.__name__ if isinstance(value, Exception) else "Warning"
     message = " ".join(printable.split()) or fallback
     return message if len(message) <= 240 else f"{message[:237]}..."
@@ -97,34 +90,22 @@ class BoxTranscriptionPipeline:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
             raise ValueError("Minimum detector confidence must be between 0 and 1.")
 
-    def _retained_regions(
-        self, detector: BoxDetector, regions: Sequence[DetectedRegion]
-    ) -> list[DetectedRegion]:
+    def retained_regions(self, detector: BoxDetector, regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
         if detector.name.casefold() != "opencv":
             return list(regions)
-        return [
-            region
-            for region in regions
-            if region.confidence >= self.minimum_detector_confidence
-        ]
+        return [region for region in regions if region.confidence >= self.minimum_detector_confidence]
 
-    def _detect_and_crop(
-        self,
-        image: InputImage,
-        detector: BoxDetector,
-        warnings: list[str],
+    def detect_and_crop(
+        self, image: InputImage, detector: BoxDetector, warnings: list[str]
     ) -> tuple[list[Box], str | None, bool]:
         try:
             detected = detector.detect(image)
         except Exception as error:
             return [], f"detection failed: {warning_text(error)}", False
 
-        dropped_warnings = tuple(
-            warning_text(value)
-            for value in getattr(detector, "dropped_proposal_warnings", ())
-        )
+        dropped_warnings = tuple(warning_text(value) for value in getattr(detector, "dropped_proposal_warnings", ()))
         warnings.extend(dropped_warnings)
-        retained = self._retained_regions(detector, detected)
+        retained = self.retained_regions(detector, detected)
         dropped_for_confidence = len(detected) - len(retained)
         if dropped_for_confidence:
             warnings.append(
@@ -132,11 +113,7 @@ class BoxTranscriptionPipeline:
                 f"regions below {self.minimum_detector_confidence:.2f} confidence."
             )
         if not retained:
-            reason = (
-                "detection returned no boxes"
-                if not detected
-                else "no box met the detector confidence threshold"
-            )
+            reason = "detection returned no boxes" if not detected else "no box met the detector confidence threshold"
             return [], reason, bool(dropped_warnings or dropped_for_confidence)
 
         try:
@@ -146,13 +123,10 @@ class BoxTranscriptionPipeline:
         if not boxes:
             return [], "detection returned no usable crop", False
         if len(boxes) != len(retained):
-            warnings.append(
-                f"{detector.name} proposed {len(retained)} regions; "
-                f"{len(boxes)} remained after crop checks."
-            )
+            warnings.append(f"{detector.name} proposed {len(retained)} regions; {len(boxes)} remained after crop checks.")
         return boxes, None, bool(dropped_warnings or dropped_for_confidence)
 
-    def _full_image_localization(
+    def full_image_localization(
         self,
         image: InputImage,
         warnings: list[str],
@@ -162,72 +136,38 @@ class BoxTranscriptionPipeline:
         incomplete: bool,
     ) -> Localization:
         if not isinstance(self.transcriber, FullImageTextTranscriber):
-            warnings.append(
-                f"{detector.name} localization failed ({failure}); "
-                "full-image recovery is unavailable."
-            )
+            warnings.append(f"{detector.name} localization failed ({failure}); full-image recovery is unavailable.")
             return Localization((), detector.name, tuple(route), incomplete=True)
 
-        warnings.append(
-            f"{detector.name} localization failed ({failure}); "
-            "processed the full image instead."
-        )
+        warnings.append(f"{detector.name} localization failed ({failure}); processed the full image instead.")
         route.append("full-image")
         try:
             full_box = create_full_image_box(image, self.work_directory)
         except Exception as error:
-            warnings.append(
-                f"Could not create the full-image review copy: {warning_text(error)}"
-            )
-            return Localization(
-                (), "full-image", tuple(route), full_image=True, incomplete=True
-            )
-        return Localization(
-            (full_box,),
-            "full-image",
-            tuple(route),
-            full_image=True,
-            incomplete=incomplete,
-        )
+            warnings.append(f"Could not create the full-image review copy: {warning_text(error)}")
+            return Localization((), "full-image", tuple(route), full_image=True, incomplete=True)
+        return Localization((full_box,), "full-image", tuple(route), full_image=True, incomplete=incomplete)
 
-    def _localize(self, image: InputImage, warnings: list[str]) -> Localization:
+    def localize(self, image: InputImage, warnings: list[str]) -> Localization:
         route = [self.detector.name]
-        boxes, failure, incomplete = self._detect_and_crop(
-            image, self.detector, warnings
-        )
+        boxes, failure, incomplete = self.detect_and_crop(image, self.detector, warnings)
         if boxes:
-            return Localization(
-                tuple(boxes), self.detector.name, tuple(route), incomplete=incomplete
-            )
+            return Localization(tuple(boxes), self.detector.name, tuple(route), incomplete=incomplete)
 
         last_detector = self.detector
         fallback = self.fallback_detector
         if fallback is not None and fallback.name != self.detector.name:
-            warnings.append(
-                f"{self.detector.name} localization failed; used {fallback.name}: "
-                f"{failure}"
-            )
-            print(
-                f"{self.detector.name} localization failed; using {fallback.name}.",
-                file=sys.stderr,
-            )
+            warnings.append(f"{self.detector.name} localization failed; used {fallback.name}: {failure}")
+            print(f"{self.detector.name} localization failed; using {fallback.name}.", file=sys.stderr)
             route.append(fallback.name)
             last_detector = fallback
-            boxes, failure, fallback_incomplete = self._detect_and_crop(
-                image, fallback, warnings
-            )
+            boxes, failure, fallback_incomplete = self.detect_and_crop(image, fallback, warnings)
             incomplete |= fallback_incomplete
             if boxes:
-                return Localization(
-                    tuple(boxes), fallback.name, tuple(route), incomplete=incomplete
-                )
-        return self._full_image_localization(
-            image, warnings, last_detector, failure, route, incomplete
-        )
+                return Localization(tuple(boxes), fallback.name, tuple(route), incomplete=incomplete)
+        return self.full_image_localization(image, warnings, last_detector, failure, route, incomplete)
 
-    def _transcribe_full_image(
-        self, box: Box, warnings: list[str], label: str
-    ) -> list[ObservedBox]:
+    def transcribe_full_image_box(self, box: Box, warnings: list[str], label: str) -> list[ObservedBox]:
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{label} is unavailable.")
             return []
@@ -241,36 +181,25 @@ class BoxTranscriptionPipeline:
             return []
         return observations_from_response(box, returned, 0)
 
-    def _transcribe_crops(
-        self, boxes: Sequence[Box], warnings: list[str]
-    ) -> tuple[list[ObservedBox], int]:
+    def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
         observations: list[ObservedBox] = []
         unresolved = 0
         for index, box in enumerate(boxes, start=1):
-            print(
-                f"Crop {index}/{len(boxes)}: bbox={box.bounding_box.as_xywh()}, "
-                f"hint={box.position}",
-                file=sys.stderr,
-            )
+            print(f"Crop {index}/{len(boxes)}: bbox={box.bounding_box.as_xywh()}, hint={box.position}", file=sys.stderr)
             try:
                 returned = self.transcriber.transcribe(box)
             except Exception as error:
-                warnings.append(
-                    f"Crop {index} {box.bounding_box.as_xywh()} failed: "
-                    f"{warning_text(error)}"
-                )
+                warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} failed: {warning_text(error)}")
                 unresolved += 1
                 continue
             if not returned:
-                warnings.append(
-                    f"Crop {index} {box.bounding_box.as_xywh()} returned no boxes."
-                )
+                warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} returned no boxes.")
                 unresolved += 1
                 continue
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
-    def _recover_failed_crops(
+    def recover_failed_crops(
         self,
         image: InputImage,
         localization: Localization,
@@ -286,20 +215,15 @@ class BoxTranscriptionPipeline:
             warnings.append("Full-image retry is unavailable.")
             return observations, unresolved, actual_detector, tuple(route)
 
-        print(
-            "All crop requests failed or returned no boxes; trying the full image once.",
-            file=sys.stderr,
-        )
+        print("All crop requests failed or returned no boxes; trying the full image once.", file=sys.stderr)
         try:
             full_box = create_full_image_box(image, self.work_directory)
         except Exception as error:
-            warnings.append(
-                f"Full-image retry could not create a review copy: {warning_text(error)}"
-            )
+            warnings.append(f"Full-image retry could not create a review copy: {warning_text(error)}")
             return observations, unresolved, actual_detector, tuple(route)
         if "full-image" not in route:
             route.append("full-image")
-        recovered = self._transcribe_full_image(full_box, warnings, "Full-image retry")
+        recovered = self.transcribe_full_image_box(full_box, warnings, "Full-image retry")
         if len(localization.boxes) == 1 and len(recovered) == 1:
             unresolved = 0
         return recovered, unresolved, "full-image", tuple(route)
@@ -307,17 +231,13 @@ class BoxTranscriptionPipeline:
     def process(self, image_path: str | Path) -> ImageResult:
         image = load_input_image(image_path)
         warnings: list[str] = []
-        localization = self._localize(image, warnings)
+        localization = self.localize(image, warnings)
         if localization.full_image and localization.boxes:
-            observations = self._transcribe_full_image(
-                localization.boxes[0], warnings, "Full-image transcription"
-            )
+            observations = self.transcribe_full_image_box(localization.boxes[0], warnings, "Full-image transcription")
             unresolved = 0 if observations else 1
         else:
-            observations, unresolved = self._transcribe_crops(
-                localization.boxes, warnings
-            )
-        observations, unresolved, actual_detector, route = self._recover_failed_crops(
+            observations, unresolved = self.transcribe_crops(localization.boxes, warnings)
+        observations, unresolved, actual_detector, route = self.recover_failed_crops(
             image, localization, observations, unresolved, warnings
         )
 
@@ -336,9 +256,7 @@ class BoxTranscriptionPipeline:
             fallback_path=route,
             transcriber=self.transcriber.name,
             status=status,
-            records=tuple(
-                BoxResult(item.box, item.transcription) for item in consolidated
-            ),
+            records=tuple(BoxResult(item.box, item.transcription) for item in consolidated),
             warnings=tuple(warnings),
             model_metadata=self.model_metadata,
         )

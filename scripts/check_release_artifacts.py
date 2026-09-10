@@ -66,9 +66,7 @@ def artifact_paths(arguments: Iterable[str]) -> list[Path]:
         candidate = Path(argument)
         if candidate.is_dir():
             paths.extend(
-                path
-                for path in sorted(candidate.iterdir())
-                if path.is_file() and path.name.endswith(ARCHIVE_SUFFIXES)
+                path for path in sorted(candidate.iterdir()) if path.is_file() and path.name.endswith(ARCHIVE_SUFFIXES)
             )
         else:
             paths.append(candidate)
@@ -80,11 +78,7 @@ def archive_members(path: Path) -> Iterable[tuple[str, bool]]:
         with zipfile.ZipFile(path) as archive:
             for member in archive.infolist():
                 mode = (member.external_attr >> 16) & 0xFFFF
-                regular = member.create_system != 3 or stat.S_IFMT(mode) in {
-                    0,
-                    stat.S_IFREG,
-                    stat.S_IFDIR,
-                }
+                regular = member.create_system != 3 or stat.S_IFMT(mode) in {0, stat.S_IFREG, stat.S_IFDIR}
                 yield member.filename, regular
         return
     if path.name.endswith(".tar.gz"):
@@ -133,9 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+")
     artifacts = artifact_paths(parser.parse_args(argv).paths)
-    findings = [
-        finding for artifact in artifacts for finding in inspect_artifact(artifact)
-    ]
+    findings = [finding for artifact in artifacts for finding in inspect_artifact(artifact)]
     if not artifacts:
         findings.append("No supported release artifact found.")
     if findings:

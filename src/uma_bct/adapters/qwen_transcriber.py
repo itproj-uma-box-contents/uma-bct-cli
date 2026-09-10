@@ -82,41 +82,25 @@ SCHEMA = {
                     "record_identifiers": {
                         "type": "array",
                         "maxItems": MAX_TEXT_LINES_PER_FIELD,
-                        "items": {
-                            "type": "string",
-                            "maxLength": MAX_TEXT_CHARACTERS,
-                        },
+                        "items": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     },
                     "unit": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     "typed": {
                         "type": "array",
                         "maxItems": MAX_TEXT_LINES_PER_FIELD,
-                        "items": {
-                            "type": "string",
-                            "maxLength": MAX_TEXT_CHARACTERS,
-                        },
+                        "items": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     },
                     "handwritten": {
                         "type": "array",
                         "maxItems": MAX_TEXT_LINES_PER_FIELD,
-                        "items": {
-                            "type": "string",
-                            "maxLength": MAX_TEXT_CHARACTERS,
-                        },
+                        "items": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     },
                     "auxiliary_annotations": {
                         "type": "array",
                         "maxItems": MAX_TEXT_LINES_PER_FIELD,
-                        "items": {
-                            "type": "string",
-                            "maxLength": MAX_TEXT_CHARACTERS,
-                        },
+                        "items": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     },
-                    "transcription_confidence": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 100,
-                    },
+                    "transcription_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
                 },
                 "required": [
                     "position",
@@ -150,56 +134,36 @@ class BoxRecord(TypedDict):
     transcription_confidence: int
 
 
-def _lines(item: dict[str, Any], index: int, field: str) -> list[str]:
+def validated_lines(item: dict[str, Any], index: int, field: str) -> list[str]:
     return bounded_string_list(
-        item,
-        box_number=index,
-        field=field,
-        maximum_items=MAX_TEXT_LINES_PER_FIELD,
-        maximum_characters=MAX_TEXT_CHARACTERS,
+        item, box_number=index, field=field, maximum_items=MAX_TEXT_LINES_PER_FIELD, maximum_characters=MAX_TEXT_CHARACTERS
     )
 
 
-def _validate_record(item: Any, index: int) -> BoxRecord:
+def validate_record(item: Any, index: int) -> BoxRecord:
     if not isinstance(item, dict):
         raise TypeError(f"box {index} must be an object")
     record: BoxRecord = {
-        "position": bounded_string(
-            item,
-            box_number=index,
-            field="position",
-            maximum_characters=MAX_TEXT_CHARACTERS,
-        ),
-        "record_identifiers": _lines(item, index, "record_identifiers"),
-        "unit": bounded_string(
-            item,
-            box_number=index,
-            field="unit",
-            maximum_characters=MAX_TEXT_CHARACTERS,
-        ),
-        "typed": _lines(item, index, "typed"),
-        "handwritten": _lines(item, index, "handwritten"),
-        "auxiliary_annotations": _lines(item, index, "auxiliary_annotations"),
+        "position": bounded_string(item, box_number=index, field="position", maximum_characters=MAX_TEXT_CHARACTERS),
+        "record_identifiers": validated_lines(item, index, "record_identifiers"),
+        "unit": bounded_string(item, box_number=index, field="unit", maximum_characters=MAX_TEXT_CHARACTERS),
+        "typed": validated_lines(item, index, "typed"),
+        "handwritten": validated_lines(item, index, "handwritten"),
+        "auxiliary_annotations": validated_lines(item, index, "auxiliary_annotations"),
         "transcription_confidence": 0,
     }
     confidence = item.get("transcription_confidence")
     if not isinstance(confidence, int) or isinstance(confidence, bool):
         raise TypeError(f"box {index}.transcription_confidence must be an integer")
     if not 0 <= confidence <= 100:
-        raise ValueError(
-            f"box {index}.transcription_confidence must be between 0 and 100"
-        )
+        raise ValueError(f"box {index}.transcription_confidence must be between 0 and 100")
     record["transcription_confidence"] = confidence
     return record
 
 
 def validate_transcription_result(value: Any) -> list[BoxRecord]:
-    records = response_boxes(
-        value,
-        maximum=MAX_TRANSCRIPTION_RECORDS,
-        limit_subject="the response",
-    )
-    return [_validate_record(item, index) for index, item in enumerate(records, 1)]
+    records = response_boxes(value, maximum=MAX_TRANSCRIPTION_RECORDS, limit_subject="the response")
+    return [validate_record(item, index) for index, item in enumerate(records, 1)]
 
 
 def crop_question(box: Box) -> str:
@@ -216,12 +180,8 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 {RULES}"""
 
 
-def _to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
-    values = (
-        *item["typed"],
-        *item["handwritten"],
-        *item["auxiliary_annotations"],
-    )
+def to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
+    values = (*item["typed"], *item["handwritten"], *item["auxiliary_annotations"])
     return BoxTranscription(
         box_id=box.box_id,
         position=item["position"] or box.position,
@@ -231,9 +191,7 @@ def _to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
         typed_lines=tuple(item["typed"]),
         handwritten_lines=tuple(item["handwritten"]),
         auxiliary_annotations=tuple(item["auxiliary_annotations"]),
-        needs_review=any(
-            not value.strip() or UNCERTAINTY.search(value) for value in values
-        ),
+        needs_review=any(not value.strip() or UNCERTAINTY.search(value) for value in values),
     )
 
 
@@ -242,19 +200,14 @@ class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
 
-    def _request(self, box: Box, prompt: str) -> list[BoxTranscription]:
+    def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         records = validate_transcription_result(
-            self.client.query(
-                box.image_file_path,
-                prompt,
-                SCHEMA,
-                validator=validate_transcription_result,
-            )
+            self.client.query(box.image_file_path, prompt, SCHEMA, validator=validate_transcription_result)
         )
-        return [_to_domain(box, record) for record in records]
+        return [to_domain(box, record) for record in records]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
-        return self._request(box, crop_question(box))
+        return self.request(box, crop_question(box))
 
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
-        return self._request(box, QUESTION)
+        return self.request(box, QUESTION)

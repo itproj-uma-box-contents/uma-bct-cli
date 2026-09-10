@@ -1,7 +1,7 @@
 """Command-line entry point for archive-box transcription.
 
 Most of this module's complexity is defensive path validation rather than
-argument parsing: ``discover_images``, ``_validate_output_target``, and the
+argument parsing: ``discover_images``, ``validate_output_target``, and the
 checks in ``main`` all call ``path_safety.redirected_path_kind`` to reject
 symlinks and directory junctions before touching a path, since this tool
 handles private archive photographs and a redirected input/output path could
@@ -23,11 +23,7 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from .adapters.ollama_client import (
-    DEFAULT_MODEL,
-    DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    TIMEOUT_ENVIRONMENT_VARIABLE,
-)
+from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
@@ -79,7 +75,7 @@ def positive_float(value: str) -> float:
     return result
 
 
-def _add_path_arguments(parser: argparse.ArgumentParser) -> None:
+def add_path_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-i",
         "--path-to-inputs",
@@ -107,20 +103,12 @@ def _add_path_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_processing_arguments(parser: argparse.ArgumentParser) -> None:
+def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "-d",
-        "--detector",
-        choices=tuple(DETECTORS),
-        default="qwen",
-        help="primary box detector (default: %(default)s)",
+        "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
     parser.add_argument(
-        "-t",
-        "--transcriber",
-        choices=tuple(TRANSCRIBERS),
-        default="qwen",
-        help="text transcriber (default: %(default)s)",
+        "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen", help="text transcriber (default: %(default)s)"
     )
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -146,27 +134,19 @@ def _add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         type=positive_float,
         default=None,
         metavar="SECONDS",
-        help=(
-            f"Ollama timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} "
-            f"or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"
-        ),
+        help=(f"Ollama timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
     )
-    parser.add_argument(
-        "-f", "--force", action="store_true", help="replace an existing catalogue"
-    )
+    parser.add_argument("-f", "--force", action="store_true", help="replace an existing catalogue")
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = SafeArgumentParser(
         prog="uma-bct",
         description="Detect and transcribe UMA archive boxes using local components.",
-        epilog=(
-            "Shortest workflow: run 'uma-bct setup', add photos to inputs/, "
-            "then run 'uma-bct'."
-        ),
+        epilog=("Shortest workflow: run 'uma-bct setup', add photos to inputs/, then run 'uma-bct'."),
     )
-    _add_path_arguments(parser)
-    _add_processing_arguments(parser)
+    add_path_arguments(parser)
+    add_processing_arguments(parser)
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     subcommands.add_parser("setup", help="prepare folders and the pinned model")
@@ -177,7 +157,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_argument_parser().parse_args(argv)
 
 
-def _metadata(path: Path, purpose: str) -> os.stat_result:
+def path_metadata(path: Path, purpose: str) -> os.stat_result:
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -189,7 +169,7 @@ def _metadata(path: Path, purpose: str) -> os.stat_result:
     return metadata
 
 
-def _ensure_readable(path: Path) -> None:
+def ensure_readable(path: Path) -> None:
     try:
         with path.open("rb") as image:
             image.read(1)
@@ -198,11 +178,11 @@ def _ensure_readable(path: Path) -> None:
 
 
 def discover_images(path: Path) -> list[Path]:
-    metadata = _metadata(path, "Input path")
+    metadata = path_metadata(path, "Input path")
     if stat.S_ISREG(metadata.st_mode):
         if path.suffix.casefold() not in IMAGE_EXTENSIONS:
             raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
-        _ensure_readable(path)
+        ensure_readable(path)
         return [path]
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"Input path is not a file or directory: {path}")
@@ -215,14 +195,14 @@ def discover_images(path: Path) -> list[Path]:
     for candidate in candidates:
         if candidate.suffix.casefold() not in IMAGE_EXTENSIONS:
             continue
-        metadata = _metadata(candidate, "Input image")
+        metadata = path_metadata(candidate, "Input image")
         if stat.S_ISREG(metadata.st_mode):
-            _ensure_readable(candidate)
+            ensure_readable(candidate)
             images.append(candidate)
     return sorted(images, key=lambda item: (item.name.casefold(), item.name))
 
 
-def _validate_output_target(path: Path, *, directory: bool, purpose: str) -> None:
+def validate_output_target(path: Path, *, directory: bool, purpose: str) -> None:
     validate_path_hierarchy(path, purpose)
 
     try:
@@ -233,9 +213,7 @@ def _validate_output_target(path: Path, *, directory: bool, purpose: str) -> Non
         raise ValueError(f"Could not inspect {purpose} {path}: {error}") from error
     if kind := redirected_path_kind(path, metadata):
         raise ValueError(f"{purpose} must not be a {kind}: {path}")
-    valid = (
-        stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
-    )
+    valid = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
     if not valid:
         expected = "directory" if directory else "regular file"
         raise ValueError(f"{purpose} must be a {expected}: {path}")
@@ -257,26 +235,20 @@ def main(argv: list[str] | None = None) -> int:
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
     try:
-        _validate_output_target(
-            output_path, directory=False, purpose="Catalogue output"
-        )
-        _validate_output_target(run_manifest, directory=False, purpose="Run manifest")
-        _validate_output_target(crop_root, directory=True, purpose="Review-crop root")
+        validate_output_target(output_path, directory=False, purpose="Catalogue output")
+        validate_output_target(run_manifest, directory=False, purpose="Run manifest")
+        validate_output_target(crop_root, directory=True, purpose="Review-crop root")
         output_absolute = Path(os.path.abspath(output_path))
         crop_absolute = Path(os.path.abspath(crop_root))
         if crop_absolute == output_absolute or crop_absolute in output_absolute.parents:
-            raise ValueError(
-                "catalogue output must not be inside the review-crop directory"
-            )
+            raise ValueError("catalogue output must not be inside the review-crop directory")
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))
     if not images:
         parser.error(f"no supported images found in {arguments.path_to_inputs}")
 
-    existing = next(
-        (path for path in (output_path, run_manifest) if path.exists()), None
-    )
+    existing = next((path for path in (output_path, run_manifest) if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
     return run_batch(

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.check_release_artifacts import inspect_artifact, unsafe_reason
-from scripts.extract_ollama_archive import _validate_link_target, extract_archive
+from scripts.extract_ollama_archive import extract_archive, validate_link_target
 
 
 class IdentityDecompressor:
@@ -30,7 +30,7 @@ class ArtifactSafetyTest(unittest.TestCase):
             member.type = entry_type
             member.linkname = linkname
             with self.subTest(entry_type=entry_type, linkname=linkname):
-                _validate_link_target(member)
+                validate_link_target(member)
 
     @unittest.skipIf(os.name == "nt", "safe-link extraction needs POSIX links")
     def test_extracts_safe_archive_internal_links(self):
@@ -55,25 +55,13 @@ class ArtifactSafetyTest(unittest.TestCase):
                 archive.addfile(hardlink)
             archive_path.write_bytes(buffer.getvalue())
 
-            with patch.dict(
-                "sys.modules",
-                {"zstandard": SimpleNamespace(ZstdDecompressor=IdentityDecompressor)},
-            ):
+            with patch.dict("sys.modules", {"zstandard": SimpleNamespace(ZstdDecompressor=IdentityDecompressor)}):
                 extract_archive(archive_path, root / "extracted")
-            self.assertEqual(
-                (root / "extracted/bin/ollama-link").read_bytes(), b"ollama"
-            )
-            self.assertEqual(
-                (root / "extracted/bin/ollama-hardlink").read_bytes(), b"ollama"
-            )
+            self.assertEqual((root / "extracted/bin/ollama-link").read_bytes(), b"ollama")
+            self.assertEqual((root / "extracted/bin/ollama-hardlink").read_bytes(), b"ollama")
 
     def test_release_scan_accepts_code_and_rejects_private_content(self):
-        for name in (
-            "Archive box photos/shelf.jpg",
-            "package/models/model.gguf",
-            "outputs/catalogue.csv",
-            "../escape.py",
-        ):
+        for name in ("Archive box photos/shelf.jpg", "package/models/model.gguf", "outputs/catalogue.csv", "../escape.py"):
             with self.subTest(name=name):
                 self.assertIsNotNone(unsafe_reason(name))
         self.assertIsNone(unsafe_reason("uma_bct/cli.py"))
@@ -130,11 +118,7 @@ class ArtifactSafetyTest(unittest.TestCase):
                 (tarfile.LNKTYPE, "/outside"),
             )
             for index, (entry_type, linkname) in enumerate(unsafe_links):
-                write_archive(
-                    "bin/ollama-link",
-                    entry_type=entry_type,
-                    linkname=linkname,
-                )
+                write_archive("bin/ollama-link", entry_type=entry_type, linkname=linkname)
                 with (
                     self.subTest(entry_type=entry_type, linkname=linkname),
                     patch.dict("sys.modules", {"zstandard": fake_zstandard}),

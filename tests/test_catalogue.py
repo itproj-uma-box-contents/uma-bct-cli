@@ -14,25 +14,14 @@ from uma_bct.export import catalogue_records, export_catalogue
 
 class CatalogueRulesTest(unittest.TestCase):
     def test_builds_titles_for_every_supported_identifier(self):
-        for identifier in (
-            "1960.0009",
-            "96/9",
-            "UMA-AC-000000330",
-            "UMA-SRE-20160038",
-        ):
+        for identifier in ("1960.0009", "96/9", "UMA-AC-000000330", "UMA-SRE-20160038"):
             with self.subTest(identifier=identifier):
                 box = make_box()
                 transcription = make_transcription(
-                    box,
-                    identifiers=(identifier,),
-                    unit="7",
-                    typed=(f"Record ID: {identifier}", "Unit 7"),
+                    box, identifiers=(identifier,), unit="7", typed=(f"Record ID: {identifier}", "Unit 7")
                 )
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(
-                    list(record)[:5],
-                    ["Node ID", "Node Type", "Node Title", "Description", "Date Range"],
-                )
+                self.assertEqual(list(record)[:5], ["Node ID", "Node Type", "Node Title", "Description", "Date Range"])
                 self.assertEqual(record["Node Type"], "Unit")
                 self.assertEqual(record["Node Title"], f"{identifier} Unit 0007")
                 self.assertEqual(record["Node ID"], "")
@@ -41,10 +30,7 @@ class CatalogueRulesTest(unittest.TestCase):
     def test_uses_first_identifier_and_flags_multiple(self):
         box = make_box()
         transcription = make_transcription(
-            box,
-            identifiers=("1990.0001", "UMA-SRE-20160038"),
-            typed=("1990.0001; UMA-SRE-20160038", "Unit 30"),
-            unit="30",
+            box, identifiers=("1990.0001", "UMA-SRE-20160038"), typed=("1990.0001; UMA-SRE-20160038", "Unit 30"), unit="30"
         )
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "1990.0001 Unit 0030")
@@ -53,26 +39,10 @@ class CatalogueRulesTest(unittest.TestCase):
     def test_blanks_missing_or_uncorroborated_identity(self):
         box = make_box()
         cases = (
+            (make_transcription(box, identifiers=(), typed=("Record origin", "Unit 4")), "Missing identifier"),
+            (make_transcription(box, identifiers=("1960.0009",), typed=("1960.0010", "Unit 4")), "Ambiguous identifier"),
             (
-                make_transcription(
-                    box, identifiers=(), typed=("Record origin", "Unit 4")
-                ),
-                "Missing identifier",
-            ),
-            (
-                make_transcription(
-                    box,
-                    identifiers=("1960.0009",),
-                    typed=("1960.0010", "Unit 4"),
-                ),
-                "Ambiguous identifier",
-            ),
-            (
-                make_transcription(
-                    box,
-                    identifiers=("1960.009",),
-                    typed=("Record ID: 1960.009", "Unit 4"),
-                ),
+                make_transcription(box, identifiers=("1960.009",), typed=("Record ID: 1960.009", "Unit 4")),
                 "Ambiguous identifier",
             ),
         )
@@ -84,43 +54,23 @@ class CatalogueRulesTest(unittest.TestCase):
 
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
-        transcription = make_transcription(
-            box,
-            identifiers=("12/5",),
-            typed=("Meeting 12/5", "Unit 4"),
-        )
+        transcription = make_transcription(box, identifiers=("12/5",), typed=("Meeting 12/5", "Unit 4"))
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "")
         self.assertIn("Transcription mismatch", record["Review Notes"])
 
     def test_requires_one_unambiguous_unit(self):
         box = make_box()
-        accepted = make_transcription(
-            box,
-            unit="7",
-            typed=("1960.0009",),
-            handwritten=("7",),
-        )
-        conflicting = make_transcription(
-            box,
-            unit="7",
-            typed=("1960.0009", "Unit 7", "Unit 8"),
-        )
-        self.assertEqual(
-            map_catalogue_record(accepted, box.image_file_path)["Node Title"],
-            "1960.0009 Unit 0007",
-        )
+        accepted = make_transcription(box, unit="7", typed=("1960.0009",), handwritten=("7",))
+        conflicting = make_transcription(box, unit="7", typed=("1960.0009", "Unit 7", "Unit 8"))
+        self.assertEqual(map_catalogue_record(accepted, box.image_file_path)["Node Title"], "1960.0009 Unit 0007")
         rejected = map_catalogue_record(conflicting, box.image_file_path)
         self.assertEqual(rejected["Node Title"], "")
         self.assertIn("Invalid unit", rejected["Review Notes"])
 
     def test_description_excludes_identity_and_escapes_formulas(self):
         box = make_box()
-        transcription = make_transcription(
-            box,
-            handwritten=("1960.0009", "=SUM(A1:A2)"),
-            auxiliary=("Fragile",),
-        )
+        transcription = make_transcription(box, handwritten=("1960.0009", "=SUM(A1:A2)"), auxiliary=("Fragile",))
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Description"], "'=SUM(A1:A2); Fragile")
 
@@ -130,8 +80,7 @@ class CatalogueRulesTest(unittest.TestCase):
         records = catalogue_records(
             [
                 make_result(
-                    BoxResult(first, make_transcription(first, confidence=70)),
-                    BoxResult(second, make_transcription(second)),
+                    BoxResult(first, make_transcription(first, confidence=70)), BoxResult(second, make_transcription(second))
                 )
             ]
         )
@@ -157,50 +106,25 @@ class CsvExportTest(unittest.TestCase):
             output = root / "outputs" / "catalogue.csv"
             shelf_b = make_image(root / "inputs/shelf-b.jpg")
             shelf_a = make_image(root / "inputs/shelf-a.jpg")
-            first_image = make_box(
-                image=shelf_b,
-                box_id="shelf-b:001",
-                crop_path=root / "outputs/crops/b-001.png",
-            )
+            first_image = make_box(image=shelf_b, box_id="shelf-b:001", crop_path=root / "outputs/crops/b-001.png")
             first_image_second_crop = make_box(
-                image=shelf_b,
-                box_id="shelf-b:002",
-                crop_path=root / "outputs/crops/b-002.png",
+                image=shelf_b, box_id="shelf-b:002", crop_path=root / "outputs/crops/b-002.png"
             )
-            second_image = make_box(
-                image=shelf_a,
-                box_id="shelf-a:001",
-                crop_path=root / "outputs/crops/a-001.png",
-            )
+            second_image = make_box(image=shelf_a, box_id="shelf-a:001", crop_path=root / "outputs/crops/a-001.png")
             first_result = make_result(
                 BoxResult(
                     first_image,
-                    make_transcription(
-                        first_image,
-                        identifiers=("2000.0002",),
-                        typed=("2000.0002", "Unit 2"),
-                        unit="2",
-                    ),
+                    make_transcription(first_image, identifiers=("2000.0002",), typed=("2000.0002", "Unit 2"), unit="2"),
                 ),
                 BoxResult(
                     first_image_second_crop,
-                    make_transcription(
-                        first_image_second_crop,
-                        identifiers=(),
-                        typed=("Unit 3",),
-                        unit="3",
-                    ),
+                    make_transcription(first_image_second_crop, identifiers=(), typed=("Unit 3",), unit="3"),
                 ),
             )
             second_result = make_result(
                 BoxResult(
                     second_image,
-                    make_transcription(
-                        second_image,
-                        identifiers=("1990.0001",),
-                        typed=("1990.0001", "Unit 1"),
-                        unit="1",
-                    ),
+                    make_transcription(second_image, identifiers=("1990.0001",), typed=("1990.0001", "Unit 1"), unit="1"),
                 )
             )
             export_catalogue([first_result, second_result], output)
@@ -237,10 +161,7 @@ class CsvExportTest(unittest.TestCase):
             box = make_box(crop_path=output.parent / "crops/box.png")
             result = make_result(BoxResult(box, make_transcription(box)))
             with (
-                patch(
-                    "uma_bct.export.csv.DictWriter.writerows",
-                    side_effect=OSError("disk full"),
-                ),
+                patch("uma_bct.export.csv.DictWriter.writerows", side_effect=OSError("disk full")),
                 self.assertRaisesRegex(OSError, "disk full"),
             ):
                 export_catalogue([result], output)

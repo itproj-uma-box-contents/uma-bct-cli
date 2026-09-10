@@ -50,16 +50,9 @@ class ImagingTest(unittest.TestCase):
             ]
             boxes = OpenCVBoxCropper().create_boxes(image, regions, root / "review")
             self.assertEqual(
-                [box.bounding_box for box in boxes],
-                [
-                    BoundingBox((95, 95), (125, 135)),
-                    BoundingBox((0, 784), (108, 1000)),
-                ],
+                [box.bounding_box for box in boxes], [BoundingBox((95, 95), (125, 135)), BoundingBox((0, 784), (108, 1000))]
             )
-            self.assertEqual(
-                [cv2.imread(str(box.image_file_path)).shape[:2] for box in boxes],
-                [(40, 30), (216, 108)],
-            )
+            self.assertEqual([cv2.imread(str(box.image_file_path)).shape[:2] for box in boxes], [(40, 30), (216, 108)])
             self.assertEqual(len({box.box_id for box in boxes}), 2)
             self.assertEqual(len({box.image_file_path for box in boxes}), 2)
 
@@ -98,23 +91,13 @@ class ImagingTest(unittest.TestCase):
             cv2.line(image, (left, 180), (right, 180), (20, 20, 20), 8)
         regions = detect_regions(image)
         self.assertEqual(len(regions), 2)
-        self.assertTrue(
-            all(plausible_bbox(region.bounding_box, 1200, 800) for region in regions)
-        )
+        self.assertTrue(all(plausible_bbox(region.bounding_box, 1200, 800) for region in regions))
 
     def test_deduplication_only_merges_overlapping_independent_crops(self):
         image = make_image()
         first = make_box(image=image, box_id="first")
-        overlapping = make_box(
-            image=image,
-            box_id="second",
-            bbox=BoundingBox((12, 22), (92, 182)),
-        )
-        separate = make_box(
-            image=image,
-            box_id="third",
-            bbox=BoundingBox((110, 20), (190, 180)),
-        )
+        overlapping = make_box(image=image, box_id="second", bbox=BoundingBox((12, 22), (92, 182)))
+        separate = make_box(image=image, box_id="third", bbox=BoundingBox((110, 20), (190, 180)))
         observations = [
             ObservedBox(first, make_transcription(first), 1),
             ObservedBox(overlapping, make_transcription(overlapping), 2),

@@ -20,15 +20,15 @@ CLIENT_FILES = (
 )
 
 
-def _wheel(directory: Path) -> Path:
+def find_wheel(directory: Path) -> Path:
     wheels = tuple(directory.glob("uma_bct_cli-*.whl"))
     if len(wheels) != 1:
         raise ValueError(f"Expected one UMA BCT wheel; found {len(wheels)}.")
     return wheels[0]
 
 
-def _sources(directory: Path, root: Path) -> tuple[Path, ...]:
-    sources = tuple(root / name for name in CLIENT_FILES) + (_wheel(directory),)
+def bundle_sources(directory: Path, root: Path) -> tuple[Path, ...]:
+    sources = tuple(root / name for name in CLIENT_FILES) + (find_wheel(directory),)
     missing = tuple(path for path in sources if not path.is_file())
     if missing:
         raise ValueError(f"Missing client file: {missing[0]}")
@@ -38,17 +38,15 @@ def _sources(directory: Path, root: Path) -> tuple[Path, ...]:
 def build_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -> Path:
     destination = directory / BUNDLE_NAME
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
-        for source in _sources(directory, source_root):
+        for source in bundle_sources(directory, source_root):
             archive.write(source, f"{BUNDLE_ROOT}/{source.name}")
     verify_client_bundle(directory, source_root=source_root)
     return destination
 
 
 def verify_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -> None:
-    sources = _sources(directory, source_root)
-    expected = {
-        f"{BUNDLE_ROOT}/{source.name}": source.read_bytes() for source in sources
-    }
+    sources = bundle_sources(directory, source_root)
+    expected = {f"{BUNDLE_ROOT}/{source.name}": source.read_bytes() for source in sources}
     try:
         with zipfile.ZipFile(directory / BUNDLE_NAME) as archive:
             if set(archive.namelist()) != set(expected):

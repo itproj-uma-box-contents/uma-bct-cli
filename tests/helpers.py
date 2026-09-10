@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from uma_bct.domain import (
-    BoundingBox,
-    Box,
-    BoxResult,
-    BoxTranscription,
-    InputImage,
-)
+from uma_bct.domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from uma_bct.pipeline import ImageResult
 
 
@@ -52,11 +46,7 @@ def make_transcription(
         confidence=confidence,
         record_identifiers=identifiers,
         unit_number=unit,
-        typed_lines=typed
-        if typed is not None
-        else (identifiers[0], f"Unit {unit}")
-        if identifiers
-        else (f"Unit {unit}",),
+        typed_lines=typed if typed is not None else (identifiers[0], f"Unit {unit}") if identifiers else (f"Unit {unit}",),
         handwritten_lines=handwritten,
         auxiliary_annotations=auxiliary,
         needs_review=needs_review,
