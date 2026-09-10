@@ -40,8 +40,10 @@ REMOTE_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_REMOTE_OLLAMA"
 CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE = "UMA_BCT_ALLOW_CONTAINER_OLLAMA"
 MAX_MODEL_RESPONSE_CHARACTERS = 4 * 1024 * 1024
 MAX_MODEL_RESPONSE_ERROR_CHARACTERS = 512
+MAX_JSON_CONTAINER_ATTEMPTS = 32
 ANSI_CONTROL_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 JSON_CONTAINER_CHARACTERS = frozenset("{}[]")
+JSON_LITERAL_NAMES = ("false", "null", "true")
 
 
 def environment_flag(name: str) -> bool:
@@ -68,6 +70,79 @@ def safe_progress_text(value: Any) -> str:
     return " ".join(printable.split())[:240]
 
 
+def _balanced_surrounding_prefix(value: str) -> bool:
+    """Allow balanced prose brackets while rejecting structural fragments."""
+
+    depth = 0
+    for character in value:
+        if character in "{}":
+            return False
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _starts_with_json_primitive(value: str) -> bool:
+    """Recognize complete or truncated primitive JSON at a wrapper boundary."""
+
+    candidate = value.lstrip()
+    if not candidate:
+        return False
+    try:
+        decoded, _ = json.JSONDecoder().raw_decode(candidate)
+    except (json.JSONDecodeError, RecursionError):
+        if candidate.startswith('"'):
+            return True
+        if candidate == "-":
+            return True
+        match = re.match(r"[A-Za-z]+", candidate)
+        return bool(
+            match
+            and any(name.startswith(match.group(0)) for name in JSON_LITERAL_NAMES)
+        )
+    return not isinstance(decoded, (dict, list))
+
+
+def _invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
+    location = (
+        f" at line {error.lineno}, column {error.colno}"
+        if isinstance(error, json.JSONDecodeError)
+        else ""
+    )
+    return f"The model response contained invalid or incomplete JSON{location}."
+
+
+def _decode_first_json_container(
+    text: str,
+) -> tuple[json.JSONDecoder, int, Any, int]:
+    """Find one bounded, unambiguous object or array in surrounding prose."""
+
+    decoder = json.JSONDecoder()
+    first_error: json.JSONDecodeError | RecursionError | None = None
+    attempts = 0
+    for match in re.finditer(r"[\[{]", text):
+        start = match.start()
+        if not _balanced_surrounding_prefix(text[:start]):
+            continue
+        attempts += 1
+        if attempts > MAX_JSON_CONTAINER_ATTEMPTS:
+            raise ValueError("The model response contained ambiguous JSON fragments.")
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (json.JSONDecodeError, RecursionError) as error:
+            if first_error is None:
+                first_error = error
+            continue
+        return decoder, start, value, end
+    if first_error is not None:
+        raise ValueError(_invalid_json_message(first_error)) from None
+    raise ValueError("The model response did not contain a JSON object or array.")
+
+
 def json_from_text(raw: str) -> Any:
     """Decode one structured value or a sequence of complete record objects."""
 
@@ -77,33 +152,13 @@ def json_from_text(raw: str) -> Any:
     if not text:
         raise ValueError("The model returned no text.")
 
-    starts = tuple(
-        position for character in ("{", "[") if (position := text.find(character)) >= 0
-    )
-    if not starts:
-        raise ValueError("The model response did not contain a JSON object or array.")
-    start = min(starts)
-    prefix = text[:start]
-    if any(character in JSON_CONTAINER_CHARACTERS for character in prefix):
-        raise ValueError("The model response contained ambiguous JSON fragments.")
-    try:
-        json.loads(prefix)
-    except (json.JSONDecodeError, RecursionError):
-        pass
-    else:
-        raise ValueError("The model response contained an unrelated JSON value.")
+    decoder, start, first, end = _decode_first_json_container(text)
 
-    decoder = json.JSONDecoder()
-    try:
-        first, end = decoder.raw_decode(text, start)
-    except (json.JSONDecodeError, RecursionError) as error:
-        if isinstance(error, json.JSONDecodeError):
-            location = f" at line {error.lineno}, column {error.colno}"
-        else:
-            location = ""
-        raise ValueError(
-            f"The model response contained invalid or incomplete JSON{location}."
-        ) from None
+    prefix = text[:start]
+    if not _balanced_surrounding_prefix(prefix):
+        raise ValueError("The model response contained ambiguous JSON fragments.")
+    if _starts_with_json_primitive(prefix):
+        raise ValueError("The model response contained an unrelated JSON value.")
     if not isinstance(first, (dict, list)):
         raise ValueError("The model response must contain an object or array.")
 
@@ -135,22 +190,17 @@ def json_from_text(raw: str) -> Any:
                 raise ValueError(
                     "The model response contained ambiguous JSON fragments."
                 )
-            try:
-                json.loads(suffix)
-            except (json.JSONDecodeError, RecursionError):
-                break
-            raise ValueError("The model response contained an unrelated JSON value.")
+            if _starts_with_json_primitive(suffix):
+                raise ValueError(
+                    "The model response contained an unrelated or incomplete "
+                    "JSON value."
+                )
+            break
 
         try:
             value, cursor = decoder.raw_decode(text, cursor)
         except (json.JSONDecodeError, RecursionError) as error:
-            if isinstance(error, json.JSONDecodeError):
-                location = f" at line {error.lineno}, column {error.colno}"
-            else:
-                location = ""
-            raise ValueError(
-                f"The model response contained invalid or incomplete JSON{location}."
-            ) from None
+            raise ValueError(_invalid_json_message(error)) from None
         if not isinstance(value, dict):
             raise ValueError("Adjacent JSON values must be complete record objects.")
         values.append(value)
@@ -205,7 +255,7 @@ def parse_model_response(
         if validator is not None:
             try:
                 validator(value)
-            except (TypeError, ValueError) as error:
+            except (OverflowError, TypeError, ValueError) as error:
                 errors.append(
                     f"{source}: parsed JSON failed semantic validation "
                     f"({error.__class__.__name__})"

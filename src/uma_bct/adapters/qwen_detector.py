@@ -8,9 +8,10 @@ handing regions to the rest of the pipeline, so nothing downstream needs to
 know about the model's coordinate convention. ``sanitized_detection_image``
 writes a fresh, EXIF-free PNG before every request so that even an opted-in
 remote endpoint never receives embedded metadata (GPS, camera serials,
-timestamps) from the original photo. Individual malformed proposals are
-dropped and recorded in ``dropped_proposal_warnings`` rather than failing the
-whole detection call; only a response with zero usable boxes raises.
+timestamps) from the original photo. A canonical envelope keeps the existing
+per-proposal resilience: malformed proposals are dropped and recorded in
+``dropped_proposal_warnings``. Equivalent noncanonical forms must contain only
+valid proposals so normalization cannot silently discard unrelated records.
 """
 
 from __future__ import annotations
@@ -65,8 +66,9 @@ GROUNDING_SCHEMA = {
 def validate_grounding_proposals(
     value: Any,
 ) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
-    """Validate proposals independently and report malformed entries."""
+    """Validate proposals, tolerating drops only in a canonical envelope."""
 
+    canonical = isinstance(value, dict) and "boxes" in value
     proposals = response_boxes(
         value,
         maximum=MAX_DETECTOR_PROPOSALS,
@@ -94,7 +96,7 @@ def validate_grounding_proposals(
                 )
             if x2 <= x1 or y2 <= y1:
                 raise ValueError(f"box {index}.bbox_2d has invalid corners")
-        except (TypeError, ValueError) as error:
+        except (OverflowError, TypeError, ValueError) as error:
             dropped.append(str(error))
             continue
         boxes.append((x1, y1, x2, y2))
@@ -103,6 +105,10 @@ def validate_grounding_proposals(
             raise ValueError("the grounding response contained no boxes")
         detail = f": {'; '.join(dropped[:3])}" if dropped else ""
         raise ValueError(f"the grounding response contained no valid boxes{detail}")
+    if dropped and not canonical:
+        raise ValueError(
+            "a noncanonical grounding response must contain only valid box records"
+        )
     return boxes, tuple(dropped)
 
 

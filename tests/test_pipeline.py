@@ -240,6 +240,19 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(result.actual_detector, "full-image")
         self.assertEqual(result.records[0].transcription.unit_number, "7")
 
+    def test_truncated_primitive_tail_still_uses_full_image_recovery(self):
+        invalid_crop = json.dumps(qwen_record()) + " tru"
+        recovered = qwen_record("8", position="centre")
+
+        result, request_count = self.process_qwen_responses(
+            invalid_crop, json.dumps({"boxes": [recovered]})
+        )
+
+        self.assertEqual(request_count, 2)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.actual_detector, "full-image")
+        self.assertEqual(result.records[0].transcription.unit_number, "8")
+
     def test_failed_full_image_recovery_does_not_invent_catalogue_rows(self):
         invalid_crop = json.dumps({"boxes": [qwen_record(typed=None)]})
         invalid_full_image = json.dumps({"boxes": [qwen_record(unit=None)]})

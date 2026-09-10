@@ -79,6 +79,12 @@ class QwenAdapterTest(unittest.TestCase):
             (envelope, [first, second]),
             (f"```json\n{envelope}\n```", [first, second]),
             (f"Structured result follows:\n{envelope}\nEnd result.", [first, second]),
+            (f"Structured [validated] result:\n{envelope}", [first, second]),
+            (
+                "Structured [validated] result:\n"
+                f"{json.dumps([first, second], ensure_ascii=False)}",
+                [first, second],
+            ),
             (json.dumps(first, ensure_ascii=False), [first]),
             (json.dumps([first, second], ensure_ascii=False), [first, second]),
             (
@@ -180,6 +186,10 @@ class QwenAdapterTest(unittest.TestCase):
             f"{valid_record}{valid_record}",
             f"{valid_record};{valid_record}",
             f"{valid_record}\n{{",
+            f"{valid_record} tru",
+            f'{valid_record} "unterminated',
+            f"{valid_record} -",
+            f"42 output follows {valid_record}",
         )
         for raw in invalid_responses:
             with self.subTest(raw=raw[:80]), self.assertRaises(ValueError):
@@ -292,6 +302,40 @@ class OllamaClientTest(unittest.TestCase):
             validator=validate_transcription_result,
         )
         self.assertEqual(validate_transcription_result(result), [expected])
+
+    def test_query_rejects_incomplete_noncanonical_detector_content(self):
+        first = {"bbox_2d": [1, 2, 3, 4]}
+        expected = {"bbox_2d": [10, 20, 30, 40]}
+        thinking = json.dumps({"boxes": [expected]})
+        incomplete_content = (
+            json.dumps({"status": "ok"}) + "\n" + json.dumps(first),
+            json.dumps([first, {"status": "ok"}]),
+            json.dumps([first]) + "\n" + json.dumps(expected),
+        )
+
+        for content in incomplete_content:
+            with self.subTest(content=content):
+                result = self.query_response(
+                    content,
+                    thinking=thinking,
+                    validator=validate_grounding_proposals,
+                )
+                boxes, warnings = validate_grounding_proposals(result)
+                self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
+                self.assertEqual(warnings, ())
+
+    def test_query_uses_thinking_when_detector_content_overflows(self):
+        huge_integer = "9" * 309
+        content = f'{{"boxes":[{{"bbox_2d":[0,0,{huge_integer},1]}}]}}'
+        expected = {"bbox_2d": [10, 20, 30, 40]}
+        result = self.query_response(
+            content,
+            thinking=json.dumps({"boxes": [expected]}),
+            validator=validate_grounding_proposals,
+        )
+        boxes, warnings = validate_grounding_proposals(result)
+        self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
+        self.assertEqual(warnings, ())
 
     def test_query_prefers_valid_content_over_valid_thinking(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
