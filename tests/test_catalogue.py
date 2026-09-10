@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from helpers import make_box, make_image, make_result, make_transcription
 
+from uma_bct.atomic import _rename_exclusive
 from uma_bct.catalogue import map_catalogue_record
 from uma_bct.constants import OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
@@ -178,6 +179,24 @@ class CsvExportTest(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "already exists"):
                 export_catalogue([result], output, replace_existing=False)
             self.assertEqual(output.read_text(encoding="utf-8"), "other process\n")
+
+    def test_does_not_replace_an_output_appearing_at_the_publication_syscall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.csv"
+            box = make_box(crop_path=output.parent / "crops/box.png")
+            result = make_result(BoxResult(box, make_transcription(box)))
+
+            def late_destination(source, destination):
+                destination.write_text("late output\n", encoding="utf-8")
+                return _rename_exclusive(source, destination)
+
+            with (
+                patch("uma_bct.atomic._rename_exclusive", side_effect=late_destination),
+                self.assertRaisesRegex(FileExistsError, "already exists"),
+            ):
+                export_catalogue([result], output, replace_existing=False)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
     def test_csv_is_the_only_output_format(self):
         with self.assertRaisesRegex(ValueError, "must end in .csv"):

@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from helpers import make_box, make_image, make_result, make_transcription
 
+from uma_bct.atomic import _rename_exclusive
 from uma_bct.batch_runner import run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
 from uma_bct.domain import BoxResult
@@ -225,6 +226,22 @@ class CliTest(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "already exists"):
                 write_json_atomic(manifest, {"status": "failed"}, replace_existing=False)
             self.assertEqual(manifest.read_text(encoding="utf-8"), '{"owner": "other process"}\n')
+
+    def test_manifest_writer_does_not_replace_a_file_appearing_at_the_publication_syscall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory).resolve() / "catalogue.run.json"
+
+            def late_destination(source, destination):
+                destination.write_text('{"owner": "late process"}\n', encoding="utf-8")
+                return _rename_exclusive(source, destination)
+
+            with (
+                patch("uma_bct.atomic._rename_exclusive", side_effect=late_destination),
+                self.assertRaisesRegex(FileExistsError, "already exists"),
+            ):
+                write_json_atomic(manifest, {"status": "failed"}, replace_existing=False)
+
+            self.assertEqual(manifest.read_text(encoding="utf-8"), '{"owner": "late process"}\n')
 
     def test_parent_reparse_detection_is_not_platform_dependent(self):
         with tempfile.TemporaryDirectory() as directory:

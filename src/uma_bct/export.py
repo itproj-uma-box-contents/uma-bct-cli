@@ -13,6 +13,7 @@ from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
+from .atomic import rename_new_file
 from .catalogue import append_flag, map_catalogue_record
 from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, OUTPUT_COLUMNS
 from .path_safety import check_path
@@ -94,7 +95,11 @@ def export_catalogue(
         check_path(destination, "Catalogue output")
         if destination.exists() and not replace_existing:
             raise FileExistsError(f"Catalogue output already exists: {destination}")
-        temporary_path.replace(destination)
+        if replace_existing:
+            temporary_path.replace(destination)
+        else:
+            rename_new_file(temporary_path, destination, existing_message=f"Catalogue output already exists: {destination}")
+            temporary_path = None
     except Exception:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

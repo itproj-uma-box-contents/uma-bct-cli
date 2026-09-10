@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .atomic import rename_new_file
 from .path_safety import check_path
 
 LOCK_FILE_NAME = ".uma-bct.lock"
@@ -219,7 +220,11 @@ def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_exist
         check_path(destination, "Run manifest")
         if destination.exists() and not replace_existing:
             raise FileExistsError(f"Run manifest already exists: {destination}")
-        temporary_path.replace(destination)
+        if replace_existing:
+            temporary_path.replace(destination)
+        else:
+            rename_new_file(temporary_path, destination, existing_message=f"Run manifest already exists: {destination}")
+            temporary_path = None
     except Exception:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
