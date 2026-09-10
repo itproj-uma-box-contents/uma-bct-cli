@@ -18,7 +18,7 @@ from uma_bct.adapters.ollama_client import (
     normalize_ollama_host,
 )
 from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, QwenBoxDetector, validate_grounding_proposals
-from uma_bct.adapters.qwen_response import normalize_boxes_envelope
+from uma_bct.adapters.qwen_response import wrap_boxes
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
     MAX_TRANSCRIPTION_RECORDS,
@@ -57,9 +57,9 @@ def record(**changes):
 
 
 class QwenAdapterTest(unittest.TestCase):
-    def test_normalizer_leaves_the_canonical_envelope_unchanged(self):
+    def test_wrap_boxes_keeps_the_normal_reply_unchanged(self):
         response = {"boxes": [record()]}
-        self.assertIs(normalize_boxes_envelope(response), response)
+        self.assertIs(wrap_boxes(response), response)
 
     def test_transcription_accepts_complete_equivalent_response_envelopes(self):
         first = record(handwritten=["Café 📦; O'Brien"], auxiliary_annotations=["Fragile; retain [brackets]"])
@@ -165,9 +165,7 @@ class QwenAdapterTest(unittest.TestCase):
 
     def test_response_parser_bounds_ambiguous_container_scanning(self):
         with (
-            patch.object(
-                ollama_client, "has_balanced_surrounding_prefix", wraps=ollama_client.has_balanced_surrounding_prefix
-            ) as balance_check,
+            patch.object(ollama_client, "prefix_is_safe", wraps=ollama_client.prefix_is_safe) as balance_check,
             self.assertRaises(ValueError),
         ):
             json_from_text("[" * 4096)

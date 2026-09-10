@@ -1,4 +1,4 @@
-"""Small detector- and transcriber-independent pipeline values."""
+"""Shared values used throughout the image pipeline."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class BoundingBox:
-    """A rectangle in original-image pixels, expressed as corner coordinates."""
+    """A rectangle in the original image."""
 
     top_left: tuple[int, int]
     bottom_right: tuple[int, int]
@@ -56,7 +56,7 @@ class InputImage:
 
 @dataclass(frozen=True)
 class DetectedRegion:
-    """Detector-neutral location of one proposed archive box."""
+    """The location of one possible archive box."""
 
     bounding_box: BoundingBox
     confidence: float
@@ -68,7 +68,7 @@ class DetectedRegion:
 
 @dataclass(frozen=True)
 class Box:
-    """A clean full-resolution box crop created from a detected region."""
+    """A full-size crop of one box."""
 
     box_id: str
     source_image: InputImage
@@ -97,7 +97,7 @@ class BoxTranscription:
             raise ValueError("Transcription confidence must be between 0 and 100.")
 
     def to_dict(self) -> dict[str, object]:
-        """Return the compact representation stored in a run manifest."""
+        """Build the small version saved in the run file."""
 
         value: dict[str, object] = {
             "box_id": self.box_id,
@@ -116,7 +116,7 @@ class BoxTranscription:
 
 @dataclass(frozen=True)
 class BoxResult:
-    """A physical box kept together with the transcription that describes it."""
+    """A box and the text read from it."""
 
     box: Box
     transcription: BoxTranscription

@@ -1,13 +1,7 @@
-"""Prepare the local client folders and Ollama model.
+"""Prepare the local folders and Ollama model.
 
-``run_setup`` is idempotent: ``ensure_directory`` uses
-``mkdir(..., exist_ok=True)`` and re-validates an existing directory's type
-and permissions rather than assuming a fresh one, and
-``OllamaVisionModel.ensure_model`` only downloads the pinned model if it
-isn't already installed. Every failure is caught and reported as JSON on
-stdout (exit code 2) rather than raised, since this command's whole purpose
-is to give a non-technical client a diagnosable first-run result instead of
-a Python traceback.
+Setup can be run more than once. It checks folder access, downloads the model
+only when needed, and reports failures as simple JSON.
 """
 
 from __future__ import annotations

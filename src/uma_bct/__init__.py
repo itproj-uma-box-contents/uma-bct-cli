@@ -1,1 +1,1 @@
-"""University of Melbourne Archives box transcription CLI."""
+"""UMA box transcription command-line app."""

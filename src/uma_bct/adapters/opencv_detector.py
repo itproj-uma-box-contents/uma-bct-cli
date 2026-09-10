@@ -1,18 +1,7 @@
-"""Geometry-based archive-box detection implemented with OpenCV.
+"""Find archive boxes with OpenCV when Qwen detection fails.
 
-This is the offline, model-free fallback detector: it finds box-like
-rectangles purely from edges and lines, with no vision model involved.
-Detection runs on a downscaled copy (``DETECTION_MAX_DIMENSION``) for speed,
-and ``detect_regions`` maps candidate boxes back to full-resolution source
-coordinates by scaling each axis independently against the *actual* resized
-dimensions (which are rounded independently per axis) rather than a single
-nominal scale factor, to match a known-good reference implementation exactly.
-``candidate_confidence`` is a hand-tuned weighted score (area, aspect ratio,
-size, rectangularity, polygon-approximation shape, and Hough-line edge
-support) rather than a learned model; ``line_support`` in particular checks
-whether each of the four candidate sides has a nearby straight line, which
-disambiguates a real box edge from an accidental rectangle formed by shadows
-or shelf clutter.
+It looks for rectangular edges on a smaller image, scores the likely boxes,
+then maps them back to the full-size photo.
 """
 
 from __future__ import annotations
@@ -44,7 +33,7 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
 
 
 def range_score(value: float, minimum: float, preferred_minimum: float, preferred_maximum: float, maximum: float) -> float:
-    """Score a value with a flat preferred range and tapered outer ranges."""
+    """Score how close a value is to the preferred range."""
 
     if value < minimum or value > maximum:
         return 0.0
@@ -61,7 +50,7 @@ def odd_size(value: float, minimum: int = 3) -> int:
 
 
 def plausible_bbox(box: BoundingBox, image_width: int, image_height: int) -> bool:
-    """Apply conservative geometry only to OpenCV-generated proposals."""
+    """Check whether an OpenCV box has a sensible size and shape."""
 
     area_fraction = (box.width * box.height) / float(image_width * image_height)
     aspect_ratio = box.width / float(box.height)
@@ -102,7 +91,7 @@ def line_segments(edges: np.ndarray) -> tuple[list[tuple[int, ...]], list[tuple[
 def line_support(
     bbox: tuple[int, int, int, int], horizontal: list[tuple[int, ...]], vertical: list[tuple[int, ...]]
 ) -> float:
-    """Estimate how many candidate sides have nearby straight-line support."""
+    """Check how many box sides have a nearby straight line."""
 
     x, y, width, height = bbox
     horizontal_tolerance = max(5, int(height * 0.09))
@@ -129,13 +118,10 @@ def line_support(
     return sum((top, bottom, left, right)) / 4.0
 
 
-def candidate_confidence(
-    contour: np.ndarray,
-    bbox: tuple[int, int, int, int],
-    image_shape: tuple[int, int],
-    horizontal_lines: list[tuple[int, ...]],
-    vertical_lines: list[tuple[int, ...]],
-) -> float:
+# fmt: off
+def candidate_confidence(contour: np.ndarray, bbox: tuple[int, int, int, int], image_shape: tuple[int, int],
+                         horizontal_lines: list[tuple[int, ...]], vertical_lines: list[tuple[int, ...]]) -> float:
+# fmt: on
     _, _, width, height = bbox
     image_height, image_width = image_shape
     image_area = float(image_width * image_height)
@@ -170,7 +156,7 @@ def candidate_confidence(
 
 
 def detection_evidence(detection_image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return source edges and the joined rectangle mask used for contours."""
+    """Build the edge images used to find box shapes."""
 
     height, width = detection_image.shape[:2]
     gray = cv2.cvtColor(detection_image, cv2.COLOR_BGR2GRAY)
@@ -200,7 +186,7 @@ def detection_evidence(detection_image: np.ndarray) -> tuple[np.ndarray, np.ndar
 
 
 def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
-    """Isolated OpenCV logic that can be replaced from the reference project."""
+    """Find the image shapes that might be boxes."""
 
     height, width = detection_image.shape[:2]
     edges, joined = detection_evidence(detection_image)
@@ -224,7 +210,7 @@ def extract_candidates(detection_image: np.ndarray) -> list[DetectedRegion]:
 
 
 def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
-    """Return OpenCV regions in full-resolution source coordinates."""
+    """Return OpenCV boxes in full-size image coordinates."""
 
     if original is None or original.size == 0:
         raise ValueError("The original image is empty.")
@@ -256,7 +242,7 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
 
 @dataclass(frozen=True)
 class OpenCVBoxDetector:
-    """Adapter exposing the reference OpenCV detector through BoxDetector."""
+    """Use OpenCV as a box detector."""
 
     name: str = "opencv"
 

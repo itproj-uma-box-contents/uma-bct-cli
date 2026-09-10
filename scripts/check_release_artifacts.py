@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Reject private images, outputs, or model files in release archives.
+"""Check release archives for private or unsafe files.
 
-This is the last automated privacy gate before a client ZIP ships (see the
-build sequence in ``DEVELOPMENT.md``): it opens each built wheel/sdist/zip
-and inspects every member name without ever extracting it, so a malformed or
-oversized archive can't do anything to the filesystem during the check
-itself. ``unsafe_reason`` flags an entry for any of several independent
-reasons -- a path-traversal attempt, a non-regular (symlink/special) entry, a
-private directory name like ``inputs`` or ``.uma-bct-runtime``, a generated
-run manifest, or a private file extension (photos, models, spreadsheets) --
-so a private path or file accidentally included during packaging fails the
-build instead of shipping to a client.
+The check reads file names without extracting anything. It blocks photos,
+models, generated outputs, links, and paths that could leave the archive.
 """
 
 from __future__ import annotations

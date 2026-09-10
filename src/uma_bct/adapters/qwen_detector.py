@@ -1,17 +1,7 @@
-"""Qwen box localization translated into detector-neutral pixel regions.
+"""Find archive boxes with Qwen and return normal pixel coordinates.
 
-Qwen is asked only to locate boxes, never to read them, and it reports
-coordinates normalized to a fixed 0-1000 grid regardless of the source
-image's actual resolution -- ``detect`` converts each ``bbox_2d`` back to
-pixel coordinates by scaling against ``image.width``/``image.height`` before
-handing regions to the rest of the pipeline, so nothing downstream needs to
-know about the model's coordinate convention. ``sanitized_detection_image``
-writes a fresh, EXIF-free PNG before every request so that even an opted-in
-remote endpoint never receives embedded metadata (GPS, camera serials,
-timestamps) from the original photo. A canonical envelope keeps the existing
-per-proposal resilience: malformed proposals are dropped and recorded in
-``dropped_proposal_warnings``. Equivalent noncanonical forms must contain only
-valid proposals so normalization cannot silently discard unrelated records.
+Qwen uses a 0-1000 grid, which is changed back to image pixels. The request
+uses a fresh PNG with no EXIF data, and every returned box is checked.
 """
 
 from __future__ import annotations
@@ -57,9 +47,9 @@ GROUNDING_SCHEMA = {
 
 
 def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
-    """Validate proposals, tolerating drops only in a canonical envelope."""
+    """Check returned boxes and allow partial results only in the normal shape."""
 
-    canonical = isinstance(value, dict) and "boxes" in value
+    normal_reply = isinstance(value, dict) and "boxes" in value
     proposals = response_boxes(value, maximum=MAX_DETECTOR_PROPOSALS, limit_subject="the grounding response")
 
     boxes: list[tuple[float, float, float, float]] = []
@@ -89,14 +79,14 @@ def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, f
             raise ValueError("the grounding response contained no boxes")
         detail = f": {'; '.join(dropped[:3])}" if dropped else ""
         raise ValueError(f"the grounding response contained no valid boxes{detail}")
-    if dropped and not canonical:
-        raise ValueError("a noncanonical grounding response must contain only valid box records")
+    if dropped and not normal_reply:
+        raise ValueError("a response without a boxes wrapper must contain only valid box records")
     return boxes, tuple(dropped)
 
 
 @contextmanager
 def sanitized_detection_image(image: InputImage):
-    """Yield an EXIF-free PNG so even opted-in remote inference omits metadata."""
+    """Make a temporary PNG with no EXIF data."""
 
     with tempfile.TemporaryDirectory(prefix="uma-bct-detection-") as directory:
         image_path = Path(directory) / "source.png"
@@ -108,7 +98,7 @@ def sanitized_detection_image(image: InputImage):
 
 @dataclass
 class QwenBoxDetector:
-    """Use a local Qwen vision model only to identify archive-box locations."""
+    """Use Qwen to find archive boxes."""
 
     client: VisionModelClient
     name: str = "qwen"

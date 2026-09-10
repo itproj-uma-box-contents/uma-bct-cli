@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Safely extract a verified Ollama .tar.zst archive.
+"""Safely unpack a verified Ollama .tar.zst archive.
 
-The archive is streamed member-by-member (``mode="r|"``) rather than loaded
-into memory, since the Ollama runtime archive is large. Every member path and
-link target is checked for an absolute path or archive-root escape before
-extraction (``extract_archive``), and ``filter="data"`` independently resolves
-targets against the destination while stripping inherited ownership and
-permission metadata. Only files, directories, and safe internal links are
-accepted.
+The archive is streamed because it is large. Paths and links are checked here,
+then Python's data filter checks them again before writing anything.
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 
 def validate_link_target(member: tarfile.TarInfo) -> None:
-    """Reject links whose normalized archive-relative target escapes the root."""
+    """Reject a link that points outside the archive."""
 
     target_text = member.linkname.replace("\\", "/")
     target = PurePosixPath(target_text)
@@ -38,7 +33,7 @@ def validate_link_target(member: tarfile.TarInfo) -> None:
 
 
 def extract_archive(source: Path, destination: Path) -> None:
-    """Extract files and safe internal links from a verified archive."""
+    """Unpack files and safe links from a checked archive."""
 
     import zstandard
 

@@ -1,14 +1,7 @@
-"""Build and atomically write the client CSV catalogue.
+"""Build and safely write the catalogue CSV.
 
-``catalogue_records`` runs in two passes because some flags depend on the
-full batch rather than one box: duplicate-title detection compares every
-record's title against every other record's, and the low-confidence flag
-needs the per-record confidence already computed by
-``catalogue.map_catalogue_record`` in the first pass. ``export_catalogue``
-writes to a temporary file in the same directory as the destination,
-``fsync``s it, and only then ``replace()``s the destination, so a crash or
-interruption during export can never leave a half-written or corrupt
-catalogue CSV behind.
+Rows are built first so duplicate and confidence flags can be added. The file
+is written beside the final path and replaced only when it is complete.
 """
 
 from __future__ import annotations
@@ -22,14 +15,14 @@ from pathlib import Path
 
 from .catalogue import append_flag, map_catalogue_record
 from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, OUTPUT_COLUMNS
-from .path_safety import validate_path_hierarchy
+from .path_safety import check_path
 from .pipeline import ImageResult
 
 
 def catalogue_records(
     results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None
 ) -> list[dict[str, str | int]]:
-    """Map results and add batch flags without changing physical-box order."""
+    """Build catalogue rows and keep the physical box order."""
 
     if not 0 <= minimum_confidence <= 100:
         raise ValueError("Low-confidence threshold must be between 0 and 100.")
@@ -68,18 +61,18 @@ def catalogue_records(
 def export_catalogue(
     results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80, replace_existing: bool = True
 ) -> list[dict[str, str | int]]:
-    """Atomically write a UTF-8 CSV and return its catalogue records."""
+    """Safely write the UTF-8 CSV and return its rows."""
 
     destination = Path(output_path)
     if destination.suffix.casefold() != ".csv":
         raise ValueError("Catalogue output must end in .csv.")
 
     records = catalogue_records(results, minimum_confidence=minimum_confidence, catalogue_path=destination)
-    validate_path_hierarchy(destination, "Catalogue output")
+    check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
         raise FileExistsError(f"Catalogue output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    validate_path_hierarchy(destination, "Catalogue output")
+    check_path(destination, "Catalogue output")
     temporary_path: Path | None = None
     # Write beside the final file, then swap it in only when complete.
     try:
@@ -98,7 +91,7 @@ def export_catalogue(
             writer.writerows(records)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        validate_path_hierarchy(destination, "Catalogue output")
+        check_path(destination, "Catalogue output")
         if destination.exists() and not replace_existing:
             raise FileExistsError(f"Catalogue output already exists: {destination}")
         temporary_path.replace(destination)

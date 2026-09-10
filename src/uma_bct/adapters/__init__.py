@@ -1,4 +1,4 @@
-"""Concrete detector, transcriber, and local model adapters."""
+"""The OpenCV, Qwen, and Ollama adapters."""
 
 from .ollama_client import OllamaVisionModel
 from .opencv_detector import OpenCVBoxDetector

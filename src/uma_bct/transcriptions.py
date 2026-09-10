@@ -1,16 +1,7 @@
-"""Combine overlapping crop responses without merging physical boxes.
+"""Merge repeat readings of the same box without joining separate boxes.
 
-Detectors intentionally over-propose padded crops, so the same physical box
-can be photographed (and transcribed) more than once. ``deduplicate`` groups
-``ObservedBox`` results using ``is_duplicate``, which requires both geometric
-overlap (crop bounding-box IoU) and content agreement (matching unit
-evidence, near-identical typed text, or a shared position hint) -- and
-refuses to merge across crops with conflicting unit numbers even when they
-overlap. ``merge_group`` then keeps, per field independently, whichever
-observation has the most detail (longest non-empty text, then confidence)
-rather than the first or "best overall" observation, and forces
-``needs_review`` whenever the merged observations actually disagreed with
-each other.
+Boxes need matching location and text before they can merge. Conflicting unit
+numbers stay separate, and any disagreement is sent for review.
 """
 
 from __future__ import annotations
@@ -36,7 +27,7 @@ class ObservedBox:
 
 
 def observations_from_response(box: Box, transcriptions: Sequence[BoxTranscription], crop_index: int) -> list[ObservedBox]:
-    """Give every record from one model response a distinct stable ID."""
+    """Give each returned box its own stable ID."""
 
     observations: list[ObservedBox] = []
     for response_index, transcription in enumerate(transcriptions, start=1):
@@ -72,7 +63,7 @@ def unit_conflict(first: ObservedBox, second: ObservedBox) -> bool:
 
 
 def is_duplicate(first: ObservedBox, second: ObservedBox) -> bool:
-    """Return whether two independently-created crops describe the same box."""
+    """Check whether two crops show the same box."""
 
     if first.crop_index == second.crop_index or unit_conflict(first, second):
         return False
@@ -118,7 +109,7 @@ def transcription_signature(item: ObservedBox) -> tuple[object, ...]:
 
 
 def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
-    """Keep the most detailed value for each field and flag disagreements."""
+    """Keep the best text from matching crops and flag differences."""
 
     representative = best_observation(group, lambda value: value.typed_lines)
     typed = representative.transcription.typed_lines

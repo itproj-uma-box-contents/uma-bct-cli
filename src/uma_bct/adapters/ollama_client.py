@@ -1,17 +1,7 @@
-"""Structured requests to a privacy-safe Ollama endpoint.
+"""Send safe, structured requests to Ollama.
 
-``normalize_ollama_host`` is the privacy boundary for the whole application:
-by default it only accepts a numeric loopback address, and a remote or
-Docker-hostname endpoint requires an explicit environment-variable opt-in
-(``UMA_BCT_ALLOW_REMOTE_OLLAMA`` / ``UMA_BCT_ALLOW_CONTAINER_OLLAMA``) plus
-HTTPS for anything not loopback -- this is what keeps archive photos on the
-local workstation by default. ``query`` streams the model's response instead
-of waiting for one payload, both to print progress dots and to enforce a
-4 MiB response cap mid-stream (``collect_stream_text``) before an
-unbounded or misbehaving model response is ever fully buffered.
-``parse_model_response`` tries both the ``content`` and ``thinking`` stream
-channels for JSON, since some model configurations put the structured
-response in one or the other.
+Local addresses are used by default so photos stay on the computer. Responses
+are streamed, capped at 4 MiB, and checked in both content and thinking.
 """
 
 from __future__ import annotations
@@ -67,8 +57,8 @@ def safe_progress_text(value: Any) -> str:
     return " ".join(printable.split())[:240]
 
 
-def has_balanced_surrounding_prefix(value: str) -> bool:
-    """Allow balanced prose brackets while rejecting structural fragments."""
+def prefix_is_safe(value: str) -> bool:
+    """Check that text before JSON has no broken brackets."""
 
     depth = 0
     for character in value:
@@ -83,8 +73,8 @@ def has_balanced_surrounding_prefix(value: str) -> bool:
     return depth == 0
 
 
-def starts_with_json_primitive(value: str) -> bool:
-    """Recognize complete or truncated primitive JSON at a wrapper boundary."""
+def starts_with_simple_json(value: str) -> bool:
+    """Check whether text starts with a simple JSON value."""
 
     candidate = value.lstrip()
     if not candidate:
@@ -107,7 +97,7 @@ def invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
 
 
 def json_from_text(raw: str) -> Any:
-    """Decode one structured value or a sequence of complete record objects."""
+    """Read one JSON result or a list of complete records."""
 
     if len(raw) > MAX_MODEL_RESPONSE_CHARACTERS:
         raise ValueError("The model response exceeded the 4 MiB safety limit.")
@@ -121,9 +111,9 @@ def json_from_text(raw: str) -> Any:
         raise ValueError("The model response did not contain a JSON object or array.")
     start = min(starts)
     prefix = text[:start]
-    if not has_balanced_surrounding_prefix(prefix):
+    if not prefix_is_safe(prefix):
         raise ValueError("The model response contained ambiguous JSON fragments.")
-    if starts_with_json_primitive(prefix):
+    if starts_with_simple_json(prefix):
         raise ValueError("The model response contained an unrelated JSON value.")
 
     decoder = json.JSONDecoder()
@@ -157,7 +147,7 @@ def json_from_text(raw: str) -> Any:
             suffix = text[cursor:]
             if any(character in JSON_CONTAINER_CHARACTERS for character in suffix):
                 raise ValueError("The model response contained ambiguous JSON fragments.")
-            if starts_with_json_primitive(suffix):
+            if starts_with_simple_json(suffix):
                 raise ValueError("The model response contained an unrelated or incomplete JSON value.")
             break
 
@@ -190,7 +180,7 @@ def collect_stream_text(stream: Any) -> tuple[str, str]:
 
 
 def bounded_response_error(value: str) -> str:
-    """Keep channel diagnostics short and free of response payload text."""
+    """Keep response errors short and hide the model's text."""
 
     printable = "".join(character if character.isprintable() else " " for character in value)
     message = " ".join(printable.split()) or "response interpretation failed"
@@ -236,7 +226,7 @@ def timeout_from_environment() -> float:
 
 
 def normalize_ollama_host(value: str) -> str:
-    """Allow loopback by default and require explicit, HTTPS remote opt-in."""
+    """Allow local Ollama by default and require opt-in for remote hosts."""
 
     configured = value if "://" in value else f"http://{value}"
     parsed = urlsplit(configured)

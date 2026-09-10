@@ -12,7 +12,7 @@ from helpers import make_box, make_image, make_result, make_transcription
 from uma_bct.batch_runner import run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_target
 from uma_bct.domain import BoxResult
-from uma_bct.path_safety import redirected_path_component
+from uma_bct.path_safety import check_path
 from uma_bct.run_artifacts import write_json_atomic
 
 
@@ -202,7 +202,17 @@ class CliTest(unittest.TestCase):
                 return "reparse point" if path == parent else None
 
             with patch("uma_bct.path_safety.redirected_path_kind", side_effect=fake_kind):
-                self.assertEqual(redirected_path_component(target), (parent, "reparse point"))
+                with self.assertRaisesRegex(ValueError, "reparse point"):
+                    check_path(target, "Catalogue output")
+
+    def test_path_check_wraps_reparse_inspection_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory).resolve() / "catalogue.csv"
+            with (
+                patch("uma_bct.path_safety.redirected_path_kind", side_effect=OSError("inspection failed")),
+                self.assertRaisesRegex(ValueError, "Could not inspect Catalogue output"),
+            ):
+                check_path(target, "Catalogue output")
 
     def test_routes_setup_without_starting_a_batch(self):
         with patch("uma_bct.cli.run_setup", return_value=0) as setup:

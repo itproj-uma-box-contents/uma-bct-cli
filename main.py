@@ -1,4 +1,4 @@
-"""Source-checkout entry point for `python main.py`."""
+"""Run the CLI from a source checkout."""
 
 from uma_bct.cli import main
 

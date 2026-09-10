@@ -1,17 +1,7 @@
-"""Qwen transcription of detector-independent archive-box crops.
+"""Read archive box text with Qwen.
 
-``QUESTION``/``RULES`` encode the actual data-entry policy in the prompt
-itself: identifiers must be copied character-by-character rather than
-guessed, printed and handwritten text must stay in separate fields, and
-confidence must reflect transcription accuracy rather than crop quality.
-``UNCERTAINTY`` is a second, code-side check on top of the model's own
-confidence score -- it flags a transcription for review when any field is
-empty or contains hedging language ("possibly", "illegible", a literal "?")
-or CJK characters, which in this all-English archive context are a strong
-signal of a misrecognition rather than genuine content. ``transcribe`` and
-``transcribe_full_image`` share the same validation and prompt fields
-(``FIELDS``/``RULES``); only the framing question differs between a single
-crop and a whole photo.
+The prompt keeps IDs, printed text, and handwriting separate. The code checks
+every field and sends uncertain text for human review.
 """
 
 from __future__ import annotations
@@ -22,7 +12,7 @@ from typing import Any, TypedDict
 
 from ..domain import Box, BoxTranscription
 from ..ports import VisionModelClient
-from .qwen_response import bounded_string, bounded_string_list, response_boxes
+from .qwen_response import check_text, check_text_lines, response_boxes
 
 MAX_TRANSCRIPTION_RECORDS = 100
 MAX_TEXT_LINES_PER_FIELD = 100
@@ -135,7 +125,7 @@ class BoxRecord(TypedDict):
 
 
 def validated_lines(item: dict[str, Any], index: int, field: str) -> list[str]:
-    return bounded_string_list(
+    return check_text_lines(
         item, box_number=index, field=field, maximum_items=MAX_TEXT_LINES_PER_FIELD, maximum_characters=MAX_TEXT_CHARACTERS
     )
 
@@ -144,9 +134,9 @@ def validate_record(item: Any, index: int) -> BoxRecord:
     if not isinstance(item, dict):
         raise TypeError(f"box {index} must be an object")
     record: BoxRecord = {
-        "position": bounded_string(item, box_number=index, field="position", maximum_characters=MAX_TEXT_CHARACTERS),
+        "position": check_text(item, box_number=index, field="position", maximum_characters=MAX_TEXT_CHARACTERS),
         "record_identifiers": validated_lines(item, index, "record_identifiers"),
-        "unit": bounded_string(item, box_number=index, field="unit", maximum_characters=MAX_TEXT_CHARACTERS),
+        "unit": check_text(item, box_number=index, field="unit", maximum_characters=MAX_TEXT_CHARACTERS),
         "typed": validated_lines(item, index, "typed"),
         "handwritten": validated_lines(item, index, "handwritten"),
         "auxiliary_annotations": validated_lines(item, index, "auxiliary_annotations"),

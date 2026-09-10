@@ -1,14 +1,7 @@
-"""Map validated box transcriptions into the client catalogue schema.
+"""Turn a checked transcription into one catalogue row.
 
-This module turns one ``BoxTranscription`` into a single catalogue row, and
-encodes the conservative "don't guess" review policy: an identifier or unit
-number is only accepted when the structured field the model returned agrees
-with what is actually visible in the transcribed lines (see
-``raw_identifier_mismatch`` and ``normalise_unit``); any disagreement clears
-the field and adds a review flag rather than picking one value. ``description``
-further filters out lines that are pure restatements of the identifier/unit
-already captured in structured fields, so reviewers see only the additional
-detail a box's front face carries.
+IDs and unit numbers are used only when they match the visible text. Anything
+unclear stays blank and gets a review note instead of being guessed.
 """
 
 from __future__ import annotations
@@ -41,7 +34,7 @@ SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
 
 
 def escape_spreadsheet_formula(value: str) -> str:
-    """Prevent spreadsheet applications from evaluating transcribed text."""
+    """Stop spreadsheet apps from running transcribed text as a formula."""
 
     return f"'{value}" if SPREADSHEET_FORMULA_PREFIX.match(value) else value
 
@@ -98,7 +91,7 @@ def raw_identifier_mismatch(transcription: BoxTranscription, explicit_identifier
 
 
 def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...], bool, bool]:
-    """Return corroborated identifiers, ambiguity evidence, and mismatch state."""
+    """Return IDs that match the visible text and say if review is needed."""
 
     if not transcription.record_identifiers:
         unexpected, malformed = identifier_evidence_details((*transcription.typed_lines, *transcription.handwritten_lines))
@@ -151,14 +144,11 @@ def description(transcription: BoxTranscription) -> str:
     return escape_spreadsheet_formula("; ".join(visible))
 
 
-def map_catalogue_record(
-    transcription: BoxTranscription,
-    image_file_path: str | Path,
-    *,
-    catalogue_path: str | Path | None = None,
-    additional_flags: Iterable[str] = (),
-) -> dict[str, str | int]:
-    """Convert one transcription to the client import and review columns."""
+# fmt: off
+def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
+                         catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = ()) -> dict[str, str | int]:
+# fmt: on
+    """Build one catalogue row from a transcription."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)

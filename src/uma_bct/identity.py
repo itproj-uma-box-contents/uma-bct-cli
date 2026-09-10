@@ -1,16 +1,7 @@
-"""Conservative, readable evidence checks for box identifiers and units.
+"""Check the visible evidence for record IDs and unit numbers.
 
-The model returns identifiers and unit numbers as free text, and this module
-is the sole source of truth for whether that text should be trusted. Every
-public function returns evidence rather than a boolean judgment call: the
-``RECORD_IDENTIFIER*`` regexes distinguish accepted identifier formats
-(current ``UMA-xx(E)-########`` and ``YYYY.NNNN``, plus the legacy ``NN/NNN``
-form) from a separate set of ``MALFORMED_*`` patterns that catch near-misses
--- their only job is to flag a line as untrustworthy, not to correct it. Unit
-numbers are resolved the same way: ``collect_unit_evidence`` gathers every
-contextual and bare-handwritten unit-like token across a box's lines and
-reports ``ambiguous=True`` the moment two different values are found, so
-``catalogue.normalise_unit`` can refuse to pick one.
+Known formats are accepted and close-but-wrong text is marked unclear. The
+code never repairs an ID or chooses between different unit numbers.
 """
 
 from __future__ import annotations
@@ -75,7 +66,7 @@ def identifier_only_line(line: str) -> bool:
 
 
 def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], bool]:
-    """Return supported visible identifiers and whether malformed evidence exists."""
+    """Return visible IDs and say if any ID-like text is wrong."""
 
     identifiers: list[str] = []
     seen: set[str] = set()
@@ -110,7 +101,7 @@ class UnitEvidence:
 
 
 def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterable[str]) -> UnitEvidence:
-    """Collect explicit unit labels and narrowly supported handwritten values."""
+    """Collect unit numbers from printed and handwritten text."""
 
     typed = tuple(visual_lines(typed_lines))
     handwritten = tuple(visual_lines(handwritten_lines))
@@ -136,7 +127,7 @@ def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterabl
 
 
 def identity_only_line(line: str, structured_identifiers: Iterable[str], structured_unit: str) -> bool:
-    """Return whether a description line contains only accepted identity text."""
+    """Check whether a line contains only the box ID or unit number."""
 
     identifier_keys = {
         normalise_identifier(value).casefold()

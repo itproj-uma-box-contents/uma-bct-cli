@@ -1,4 +1,4 @@
-"""Current catalogue transcription and export column contracts."""
+"""Catalogue rules and output column names."""
 
 OUTPUT_COLUMNS = [
     "Node ID",

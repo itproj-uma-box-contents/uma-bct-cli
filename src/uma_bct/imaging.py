@@ -1,16 +1,7 @@
-"""Shared OpenCV loading, region validation, and full-resolution cropping.
+"""Read source images and make ordered box crops.
 
-Crops and full-image review copies are always cut from the original,
-full-resolution image (``read_image``), never from a resized detection copy,
-so downstream transcription always sees maximum detail regardless of what
-scale a detector worked at internally. ``image_key`` derives a filesystem-
-and collision-safe directory name for one source image from its filename
-alone (not its full path), so batch IDs stay stable if a batch is moved to
-another workstation. ``suppress_overlaps`` performs detector-agnostic
-non-max suppression using both containment and IoU thresholds, and
-``sort_in_rows`` buckets regions into shelf rows by vertical center before
-sorting each row left-to-right, so multi-row shelves are processed in
-natural reading order regardless of a detector's own output order.
+Crops always come from the full-size photo. Overlapping detections are cleaned
+up, sorted into shelf order, and saved with stable file names.
 """
 
 from __future__ import annotations
@@ -26,7 +17,7 @@ import numpy as np
 
 from .constants import CONTAINMENT_THRESHOLD, MINIMUM_IMAGE_PADDING_FRACTION, NMS_IOU_THRESHOLD, PADDING_FRACTION
 from .domain import BoundingBox, Box, DetectedRegion, InputImage
-from .path_safety import validate_path_hierarchy
+from .path_safety import check_path
 
 
 def read_image(path: Path) -> np.ndarray:
@@ -121,7 +112,7 @@ def clipped_box(box: BoundingBox, image_width: int, image_height: int) -> Boundi
 
 
 def image_key(path: Path) -> str:
-    """Return a readable, collision-safe identifier for one source image."""
+    """Make a stable folder name for one source image."""
 
     safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", path.stem).strip("-._")
     safe_stem = safe_stem or "image"
@@ -136,20 +127,20 @@ def image_key(path: Path) -> str:
 
 
 def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
-    """Save a reviewable full-image model input under the current run directory."""
+    """Save a full-image copy for review or fallback."""
 
     source_key = image_key(image.file_path)
     image_directory = output_directory / source_key
     # Check again here in case the output path changed during model work.
-    validate_path_hierarchy(image_directory, "Full-image review directory")
+    check_path(image_directory, "Full-image review directory")
     image_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    validate_path_hierarchy(image_directory, "Full-image review directory")
+    check_path(image_directory, "Full-image review directory")
     image_directory.chmod(0o700)
     image_path = image_directory / "full_image.png"
-    validate_path_hierarchy(image_path, "Full-image review copy")
+    check_path(image_path, "Full-image review copy")
     if not cv2.imwrite(str(image_path), read_image(image.file_path)):
         raise OSError(f"Could not write full-image review copy: {image_path}")
-    validate_path_hierarchy(image_path, "Full-image review copy")
+    check_path(image_path, "Full-image review copy")
     image_path.chmod(0o600)
     bounding_box = BoundingBox((0, 0), (image.width, image.height))
     return Box(
@@ -163,7 +154,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 
 
 class OpenCVBoxCropper:
-    """Create clean PNG crops from regions proposed by any detector."""
+    """Create clean PNG crops from detected boxes."""
 
     def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]:
         original = read_image(image.file_path)
@@ -177,9 +168,9 @@ class OpenCVBoxCropper:
         source_key = image_key(image.file_path)
         crop_directory = output_directory / source_key
         # Check again here in case the output path changed during model work.
-        validate_path_hierarchy(crop_directory, "Review-crop directory")
+        check_path(crop_directory, "Review-crop directory")
         crop_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        validate_path_hierarchy(crop_directory, "Review-crop directory")
+        check_path(crop_directory, "Review-crop directory")
         crop_directory.chmod(0o700)
         boxes: list[Box] = []
         minimum_padding = math.ceil(min(image.width, image.height) * MINIMUM_IMAGE_PADDING_FRACTION)
@@ -195,10 +186,10 @@ class OpenCVBoxCropper:
             padded = BoundingBox((x1, y1), (x2, y2))
             crop_path = crop_directory / f"box_{index:03d}.png"
             crop = original[y1:y2, x1:x2].copy()
-            validate_path_hierarchy(crop_path, "Review crop")
+            check_path(crop_path, "Review crop")
             if not cv2.imwrite(str(crop_path), crop):
                 raise OSError(f"Could not write box crop: {crop_path}")
-            validate_path_hierarchy(crop_path, "Review crop")
+            check_path(crop_path, "Review crop")
             crop_path.chmod(0o600)
             boxes.append(
                 Box(

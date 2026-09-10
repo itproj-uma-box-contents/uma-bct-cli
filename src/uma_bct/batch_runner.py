@@ -1,16 +1,7 @@
-"""Batch orchestration and compact result reporting.
+"""Run a batch and report what happened.
 
-``run_batch`` runs the whole CLI batch as a sequence of stages that each fail
-independently rather than aborting the run: preflight (model/pipeline
-setup), per-image processing, catalogue export, and manifest write each
-record their own failures into a shared ``failures`` list instead of
-raising, so one failed image or a failed export still allows every other
-stage to report as much as it could complete. The overall ``status`` in the
-emitted summary is therefore derived at the end from whether any failures or
-incomplete images occurred, not tracked as the run progresses.
-``public_summary`` intentionally re-shapes the full internal summary into a
-smaller public one (counts instead of full per-image detail) for the
-console; the full detail is only ever written to the run manifest file.
+One bad image does not stop the rest. Errors are saved in the run result, and
+the terminal only gets a short summary.
 """
 
 from __future__ import annotations
@@ -24,7 +15,7 @@ from typing import Any
 from .adapters.ollama_client import timeout_from_environment
 from .bootstrap import build_pipeline
 from .export import export_catalogue
-from .path_safety import validate_path_hierarchy
+from .path_safety import check_path
 from .pipeline import ImageResult, warning_text
 from .run_artifacts import backup_existing_results, failed_manifest_path, run_directory, write_json_atomic
 
@@ -108,13 +99,10 @@ def prepare_pipeline(
         return None, None, request_timeout, metadata
 
 
-def export_results(
-    arguments: argparse.Namespace,
-    results: list[ImageResult],
-    output_path: Path,
-    manifest_path: Path,
-    failures: list[dict[str, str]],
-) -> tuple[int, str | None, tuple[Path, ...]]:
+# fmt: off
+def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
+                   manifest_path: Path, failures: list[dict[str, str]]) -> tuple[int, str | None, tuple[Path, ...]]:
+# fmt: on
     if not sum(len(result.records) for result in results):
         failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
         return 0, None, ()
@@ -123,7 +111,7 @@ def export_results(
         # Check again because model processing can take a long time.
         if not arguments.force:
             for path in (output_path, manifest_path):
-                validate_path_hierarchy(path, "Output")
+                check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
         previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
@@ -155,15 +143,11 @@ def emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> 
     print(json.dumps(public_summary(summary, image_count=image_count, model_name=model_name), indent=2, ensure_ascii=False))
 
 
-def run_batch(
-    arguments: argparse.Namespace,
-    images: list[Path],
-    output_path: Path,
-    normal_manifest_path: Path,
-    *,
-    preserve_existing_manifest_on_failure: bool,
-) -> int:
-    """Process one batch, write safe outputs, and emit one JSON summary."""
+# fmt: off
+def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path, normal_manifest_path: Path, *,
+              preserve_existing_manifest_on_failure: bool) -> int:
+# fmt: on
+    """Process a batch, write its files, and print a JSON summary."""
 
     failures: list[dict[str, str]] = []
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)

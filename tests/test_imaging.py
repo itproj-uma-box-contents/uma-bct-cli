@@ -10,7 +10,7 @@ from helpers import make_box, make_image, make_transcription
 from uma_bct.adapters.opencv_detector import detect_regions, plausible_bbox
 from uma_bct.domain import BoundingBox, DetectedRegion, InputImage
 from uma_bct.imaging import OpenCVBoxCropper, load_input_image
-from uma_bct.path_safety import validate_path_hierarchy
+from uma_bct.path_safety import check_path
 from uma_bct.transcriptions import ObservedBox, deduplicate
 
 
@@ -65,7 +65,7 @@ class ImagingTest(unittest.TestCase):
             regions = [DetectedRegion(BoundingBox((10, 10), (90, 90)), 1.0)]
             review = root / "review"
             review.mkdir()
-            validate_path_hierarchy(review, "Review-crop root")
+            check_path(review, "Review-crop root")
 
             original = root / "review-original"
             outside = root / "outside"

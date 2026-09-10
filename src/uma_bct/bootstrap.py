@@ -1,15 +1,7 @@
-"""Composition root: the only module that selects concrete components.
+"""Build the detector and transcriber chosen by the CLI.
 
-``DETECTORS`` and ``TRANSCRIBERS`` are name -> factory lookup tables so the
-CLI can select adapters by string (``--detector``, ``--transcriber``) without
-any other module needing to know concrete adapter classes exist.
-``build_pipeline`` resolves those names, builds one shared
-``OllamaVisionModel`` client, runs a preflight check (confirms the model is
-installed before any image work starts), and wires everything into a
-``BoxTranscriptionPipeline``. Choosing the "qwen" detector implicitly
-attaches OpenCV as ``fallback_detector``, so a failed or low-confidence Qwen
-localization can still be recovered geometrically without the caller asking
-for it.
+Qwen shares one Ollama client, and OpenCV is added as its detection fallback.
+The model is checked before any image work starts.
 """
 
 from __future__ import annotations
@@ -30,16 +22,11 @@ DETECTORS: dict[str, DetectorFactory] = {"opencv": lambda model_client: OpenCVBo
 TRANSCRIBERS: dict[str, TranscriberFactory] = {"qwen": QwenTextTranscriber}
 
 
-def build_pipeline(
-    *,
-    detector_name: str,
-    transcriber_name: str,
-    model_name: str,
-    work_directory: Path,
-    minimum_detector_confidence: float,
-    request_timeout_seconds: float | None = None,
-) -> BoxTranscriptionPipeline:
-    """Resolve the requested adapters and inject them into one pipeline."""
+# fmt: off
+def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str, work_directory: Path,
+                   minimum_detector_confidence: float, request_timeout_seconds: float | None = None) -> BoxTranscriptionPipeline:
+# fmt: on
+    """Build the requested detector and transcriber."""
 
     try:
         detector_factory = DETECTORS[detector_name]

@@ -10,14 +10,10 @@ def make_image(path: Path | None = None) -> InputImage:
     return InputImage(path or Path("shelf.jpg"), width=200, height=300)
 
 
-def make_box(
-    *,
-    image: InputImage | None = None,
-    box_id: str = "shelf:001",
-    bbox: BoundingBox | None = None,
-    crop_path: Path | None = None,
-    confidence: float = 0.95,
-) -> Box:
+# fmt: off
+def make_box(*, image: InputImage | None = None, box_id: str = "shelf:001", bbox: BoundingBox | None = None,
+             crop_path: Path | None = None, confidence: float = 0.95) -> Box:
+# fmt: on
     source = image or make_image()
     return Box(
         box_id=box_id,
@@ -29,17 +25,11 @@ def make_box(
     )
 
 
-def make_transcription(
-    box: Box,
-    *,
-    identifiers: tuple[str, ...] = ("1960.0009",),
-    unit: str = "4",
-    typed: tuple[str, ...] | None = None,
-    handwritten: tuple[str, ...] = (),
-    auxiliary: tuple[str, ...] = (),
-    confidence: int = 95,
-    needs_review: bool = False,
-) -> BoxTranscription:
+# fmt: off
+def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",), unit: str = "4",
+                       typed: tuple[str, ...] | None = None, handwritten: tuple[str, ...] = (),
+                       auxiliary: tuple[str, ...] = (), confidence: int = 95, needs_review: bool = False) -> BoxTranscription:
+# fmt: on
     return BoxTranscription(
         box_id=box.box_id,
         position=box.position,
@@ -53,14 +43,10 @@ def make_transcription(
     )
 
 
-def make_result(
-    *records: BoxResult,
-    requested: str = "qwen",
-    actual: str = "qwen",
-    route: tuple[str, ...] = ("qwen",),
-    status: str = "complete",
-    warnings: tuple[str, ...] = (),
-) -> ImageResult:
+# fmt: off
+def make_result(*records: BoxResult, requested: str = "qwen", actual: str = "qwen",
+                route: tuple[str, ...] = ("qwen",), status: str = "complete", warnings: tuple[str, ...] = ()) -> ImageResult:
+# fmt: on
     image = records[0].box.source_image if records else make_image()
     return ImageResult(
         input_image=image,

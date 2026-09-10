@@ -1,16 +1,7 @@
-"""Detector/transcriber-independent processing for one shelf image.
+"""Process one shelf image from detection through transcription.
 
-Processing one image runs through three stages, each with its own fallback:
-localization (primary detector, then a secondary detector, then a full-image
-review copy as a last resort), transcription (per-crop, or whole-image for
-the full-image path), and deduplication (independent observations from
-overlapping crops are merged by ``transcriptions.deduplicate``). A result's
-``status`` is derived rather than tracked explicitly: "failed" means no box
-survived deduplication, "partial" means at least one crop was unresolved or
-localization had to fall back, and "complete" means every stage succeeded
-cleanly. Warnings accumulate throughout and are attached to the result
-instead of being raised, so one bad crop never aborts an otherwise
-successful image.
+Detection can fall back to OpenCV and then the full image. One bad crop becomes
+a warning instead of stopping the whole image.
 """
 
 from __future__ import annotations
@@ -30,7 +21,7 @@ ImageStatus = Literal["complete", "partial", "failed"]
 
 
 def warning_text(value: Exception | str) -> str:
-    """Return bounded, single-line text safe for stderr and JSON."""
+    """Make a short one-line warning for logs and JSON."""
 
     printable = "".join(character if character.isprintable() else " " for character in str(value))
     fallback = value.__class__.__name__ if isinstance(value, Exception) else "Warning"
@@ -126,15 +117,10 @@ class BoxTranscriptionPipeline:
             warnings.append(f"{detector.name} proposed {len(retained)} regions; {len(boxes)} remained after crop checks.")
         return boxes, None, bool(dropped_warnings or dropped_for_confidence)
 
-    def full_image_localization(
-        self,
-        image: InputImage,
-        warnings: list[str],
-        detector: BoxDetector,
-        failure: str | None,
-        route: list[str],
-        incomplete: bool,
-    ) -> Localization:
+    # fmt: off
+    def full_image_localization(self, image: InputImage, warnings: list[str], detector: BoxDetector,
+                                failure: str | None, route: list[str], incomplete: bool) -> Localization:
+    # fmt: on
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{detector.name} localization failed ({failure}); full-image recovery is unavailable.")
             return Localization((), detector.name, tuple(route), incomplete=True)
@@ -199,14 +185,10 @@ class BoxTranscriptionPipeline:
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
-    def recover_failed_crops(
-        self,
-        image: InputImage,
-        localization: Localization,
-        observations: list[ObservedBox],
-        unresolved: int,
-        warnings: list[str],
-    ) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
+    # fmt: off
+    def recover_failed_crops(self, image: InputImage, localization: Localization, observations: list[ObservedBox],
+                             unresolved: int, warnings: list[str]) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
+    # fmt: on
         route = list(localization.route)
         actual_detector = localization.actual_detector
         # Retry the full image only when every crop failed.
