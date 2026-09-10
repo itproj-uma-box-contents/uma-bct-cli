@@ -209,6 +209,7 @@ class BoxTranscriptionPipeline:
     ) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
         route = list(localization.route)
         actual_detector = localization.actual_detector
+        # Retry the full image only when every crop failed.
         if localization.full_image or not localization.boxes or observations:
             return observations, unresolved, actual_detector, tuple(route)
         if not isinstance(self.transcriber, FullImageTextTranscriber):

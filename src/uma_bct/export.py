@@ -49,6 +49,7 @@ def catalogue_records(
                 )
             )
 
+    # Duplicate titles can only be found after every row has been built.
     title_counts = Counter(
         str(record["Node Title"]).strip().casefold() for record in records if str(record["Node Title"]).strip()
     )
@@ -80,6 +81,7 @@ def export_catalogue(
     destination.parent.mkdir(parents=True, exist_ok=True)
     validate_path_hierarchy(destination, "Catalogue output")
     temporary_path: Path | None = None
+    # Write beside the final file, then swap it in only when complete.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",

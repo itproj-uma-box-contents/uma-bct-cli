@@ -100,7 +100,9 @@ def text_detail(lines: Sequence[str]) -> tuple[int, int]:
 
 
 def best_observation(group: Sequence[ObservedBox], value: Callable[[BoxTranscription], Sequence[str]]) -> ObservedBox:
-    return max(group, key=lambda item: (text_detail(value(item.transcription)), item.transcription.confidence, -item.crop_index))
+    return max(
+        group, key=lambda item: (text_detail(value(item.transcription)), item.transcription.confidence, -item.crop_index)
+    )
 
 
 def transcription_signature(item: ObservedBox) -> tuple[object, ...]:
@@ -155,6 +157,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
 
 def deduplicate(observations: Sequence[ObservedBox]) -> list[ObservedBox]:
     groups: list[list[ObservedBox]] = []
+    # Merge matching crops, but never merge two records from the same crop.
     for observation in observations:
         group = next(
             (

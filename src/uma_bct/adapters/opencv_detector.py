@@ -245,9 +245,7 @@ def detect_regions(original: np.ndarray) -> list[DetectedRegion]:
     regions: list[DetectedRegion] = []
     for candidate in candidates:
         box = candidate.bounding_box
-        # Resize dimensions are rounded independently. Match the reference by
-        # mapping each axis using the actual resized dimensions rather than the
-        # nominal floating-point scale.
+        # Use the real resized dimensions so rounding does not shift the box.
         left = box.x * original_width // detection_width
         top = box.y * original_height // detection_height
         right = (box.bottom_right[0] * original_width + detection_width - 1) // detection_width

@@ -30,6 +30,7 @@ def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> 
 def redirected_path_component(path: Path) -> tuple[Path, str] | None:
     """Return the first existing redirected component in a path hierarchy."""
 
+    # Walk back to the root because the final path may not exist yet.
     for component in (path, *path.parents):
         try:
             metadata = component.lstat()

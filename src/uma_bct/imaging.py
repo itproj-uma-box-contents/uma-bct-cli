@@ -126,9 +126,7 @@ def image_key(path: Path) -> str:
     safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", path.stem).strip("-._")
     safe_stem = safe_stem or "image"
     extension = re.sub(r"[^A-Za-z0-9]+", "", path.suffix.casefold())[:16] or "image"
-    # Input discovery is intentionally one directory deep, so the filename is
-    # the batch-relative path.  Avoid hashing an absolute path: IDs should stay
-    # stable when the same batch is moved to another managed workstation.
+    # Use the filename so IDs stay stable when a batch moves to another computer.
     normalized_path = path.name
     path_digest = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:10]
     maximum_component_bytes = 120
@@ -142,6 +140,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 
     source_key = image_key(image.file_path)
     image_directory = output_directory / source_key
+    # Check again here in case the output path changed during model work.
     validate_path_hierarchy(image_directory, "Full-image review directory")
     image_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     validate_path_hierarchy(image_directory, "Full-image review directory")
@@ -177,6 +176,7 @@ class OpenCVBoxCropper:
         ordered = sort_in_rows(suppress_overlaps(valid_regions))
         source_key = image_key(image.file_path)
         crop_directory = output_directory / source_key
+        # Check again here in case the output path changed during model work.
         validate_path_hierarchy(crop_directory, "Review-crop directory")
         crop_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         validate_path_hierarchy(crop_directory, "Review-crop directory")

@@ -115,6 +115,7 @@ def json_from_text(raw: str) -> Any:
     if not text:
         raise ValueError("The model returned no text.")
 
+    # Start at the first JSON shape so broken fragments cannot be skipped.
     starts = tuple(position for character in ("{", "[") if (position := text.find(character)) >= 0)
     if not starts:
         raise ValueError("The model response did not contain a JSON object or array.")
@@ -135,6 +136,7 @@ def json_from_text(raw: str) -> Any:
 
     values = [first]
     cursor = end
+    # Extra values are allowed only when they are complete record objects.
     while True:
         separator_start = cursor
         while cursor < len(text) and text[cursor].isspace():
@@ -199,6 +201,7 @@ def bounded_response_error(value: str) -> str:
 
 def parse_model_response(content: str, thinking: str, *, validator: Callable[[Any], object] | None = None) -> Any:
     errors: list[str] = []
+    # Use content first, then thinking if parsing or validation fails.
     for source, raw in (("content", content), ("thinking", thinking)):
         if not raw.strip():
             continue
@@ -257,6 +260,7 @@ def normalize_ollama_host(value: str) -> str:
 
     container = hostname == "ollama" and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
     remote = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
+    # Remote hosts need an explicit opt-in because image pixels leave this computer.
     if not loopback and not container and not remote:
         raise ValueError(
             "OLLAMA_HOST must use numeric loopback by default. Remote processing "

@@ -234,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     crop_root = arguments.path_to_box_images or output_path.parent / "crops"
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
+    # Check every output before reading photos or starting the model.
     try:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")

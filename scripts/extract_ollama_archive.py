@@ -54,6 +54,7 @@ def extract_archive(source: Path, destination: Path) -> None:
                     if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
                         raise ValueError(f"Unsupported archive entry: {member.name}")
                     if member.issym() or member.islnk():
+                        # Check the link text here; tarfile checks the resolved path again below.
                         validate_link_target(member)
                     archive.extract(member, destination, filter="data")
 

@@ -64,6 +64,7 @@ def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, f
 
     boxes: list[tuple[float, float, float, float]] = []
     dropped: list[str] = []
+    # A normal boxes envelope may keep good proposals and report the bad ones.
     for index, item in enumerate(proposals, start=1):
         try:
             bbox = item.get("bbox_2d") if isinstance(item, dict) else None

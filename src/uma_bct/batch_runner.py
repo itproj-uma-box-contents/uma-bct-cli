@@ -120,6 +120,7 @@ def export_results(
         return 0, None, ()
     previous: tuple[Path, ...] = ()
     try:
+        # Check again because model processing can take a long time.
         if not arguments.force:
             for path in (output_path, manifest_path):
                 validate_path_hierarchy(path, "Output")

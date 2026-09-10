@@ -75,6 +75,7 @@ def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     validate_path_hierarchy(destination, "Run manifest")
     temporary_path: Path | None = None
+    # Write beside the manifest, then swap it in only when complete.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=destination.parent, prefix=".uma-bct-json-", suffix=".tmp", delete=False
