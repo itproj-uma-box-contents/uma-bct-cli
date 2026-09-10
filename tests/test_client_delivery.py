@@ -1,10 +1,12 @@
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -32,6 +34,8 @@ def write_event(name):
 
 command = sys.argv[1] if len(sys.argv) > 1 else ""
 if command == "--version":
+    if os.environ.get("UMA_BCT_FAKE_OLLAMA_STALL_VERSION") == "1":
+        time.sleep(10)
     print("ollama version is 0.30.8")
     raise SystemExit(0)
 
@@ -254,11 +258,13 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertNotIn('$env:OLLAMA_HOST = "http://127.0.0.1:11434"', windows)
         self.assertIn("socket.AF_INET", posix)
         self.assertIn("1 2 3", posix)
-        self.assertIn("OLLAMA_HOST=http://127.0.0.1:1", posix)
+        self.assertIn('environment["OLLAMA_HOST"] = "http://127.0.0.1:1"', posix)
         self.assertIn("timeout=0.5", posix)
+        self.assertIn("timeout=5", posix)
         self.assertIn("TcpListener", windows)
         self.assertIn("1..3", windows)
-        self.assertIn('$env:OLLAMA_HOST = "http://127.0.0.1:1"', windows)
+        self.assertIn('$StartInfo.EnvironmentVariables["OLLAMA_HOST"] = "http://127.0.0.1:1"', windows)
+        self.assertIn("WaitForExit(5000)", windows)
         self.assertIn(".Wait(500)", windows)
         self.assertIn("ReceiveTimeout = 500", windows)
         self.assertIn("finally", windows)
@@ -385,6 +391,15 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("ollama.log", result.stderr)
             self.assertEqual(len(events.read_text(encoding="utf-8").splitlines()), 3)
 
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            environment["UMA_BCT_FAKE_OLLAMA_STALL_VERSION"] = "1"
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=8)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("incomplete or unsupported", result.stderr)
+            self.assertFalse(events.exists())
+
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_cleans_up_when_interrupted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -467,6 +482,26 @@ class ClientDeliveryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            environment["UMA_BCT_FAKE_OLLAMA_STALL_STARTS"] = "1"
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()],
+                ["stalled", "stopped", "runner-started", "started"],
+            )
+            for line in events.read_text(encoding="utf-8").splitlines()[-2:]:
+                with self.assertRaises(OSError):
+                    os.kill(int(line.split()[-1]), 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
             environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "3"
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
@@ -478,6 +513,21 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("three attempts", result.stderr)
             self.assertEqual(len(events.read_text(encoding="utf-8").splitlines()), 3)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            environment["UMA_BCT_FAKE_OLLAMA_STALL_VERSION"] = "1"
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("incomplete or unsupported", result.stderr)
+            self.assertFalse(events.exists())
 
         for exit_code in (0, 1, 2):
             with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
@@ -497,6 +547,44 @@ class ClientDeliveryTest(unittest.TestCase):
                 for line in event_lines:
                     with self.assertRaises(OSError):
                         os.kill(int(line.split()[-1]), 0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_cleans_up_its_process_tree_on_ctrl_break(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            process = subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if events.exists() and (root / "app-host.txt").exists():
+                        break
+                    if process.poll() is not None:
+                        self.fail("Windows launcher exited before the interruption fixture was ready")
+                    time.sleep(0.1)
+                else:
+                    self.fail("Windows interruption fixture did not become ready")
+
+                event_lines = events.read_text(encoding="utf-8").splitlines()
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                process.communicate(timeout=10)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+            self.assertEqual([line.split()[0] for line in event_lines], ["runner-started", "started"])
+            for line in event_lines:
+                with self.assertRaises(OSError):
+                    os.kill(int(line.split()[-1]), 0)
 
 
 if __name__ == "__main__":

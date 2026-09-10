@@ -113,6 +113,21 @@ class CatalogueLock:
         if identity is None:
             return
 
+        try:
+            metadata = self.path.lstat()
+        except FileNotFoundError:
+            if descriptor is not None:
+                os.close(descriptor)
+            return
+        except OSError:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
+        if (metadata.st_dev, metadata.st_ino) != identity:
+            if descriptor is not None:
+                os.close(descriptor)
+            return
+
         quarantine = self.path.with_name(f".uma-bct-lock-release-{uuid.uuid4().hex}.tmp")
         try:
             os.replace(self.path, quarantine)

@@ -181,23 +181,31 @@ start_owned_ollama() {
 }
 
 ollama_version_is_supported() {
-    current_version=$(OLLAMA_HOST=http://127.0.0.1:1 "$1" --version 2>&1 | awk '
-        match($0, /[0-9]+\.[0-9]+\.[0-9]+/) {
-            version = substr($0, RSTART, RLENGTH)
-        }
-        END { print version }
-    ')
-    awk -v current="$current_version" -v minimum="$MINIMUM_OLLAMA_VERSION" '
-        BEGIN {
-            split(current, found, ".")
-            split(minimum, required, ".")
-            for (part = 1; part <= 3; part++) {
-                if ((found[part] + 0) > (required[part] + 0)) exit 0
-                if ((found[part] + 0) < (required[part] + 0)) exit 1
-            }
-            exit 0
-        }
-    '
+    "$APP_PYTHON" -c '
+import os
+import re
+import subprocess
+import sys
+
+environment = os.environ.copy()
+environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
+try:
+    result = subprocess.run(
+        [sys.argv[1], "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=5,
+        check=False,
+        env=environment,
+    )
+except (OSError, subprocess.SubprocessError):
+    raise SystemExit(1)
+versions = re.findall(r"\d+\.\d+\.\d+", result.stdout)
+found = tuple(map(int, versions[-1].split("."))) if versions else ()
+required = tuple(map(int, sys.argv[2].split(".")))
+raise SystemExit(0 if found >= required else 1)
+' "$1" "$MINIMUM_OLLAMA_VERSION"
 }
 
 require_supported_glibc() {

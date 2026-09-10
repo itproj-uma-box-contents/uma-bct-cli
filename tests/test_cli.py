@@ -590,6 +590,10 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(summary["status"], "partial")
             self.assertEqual(summary["failure_count"], 1)
             self.assertIn("Lock cleanup failed", progress)
+            self.assertIn(".failed-", summary["run_manifest"])
+            recovery_manifest = json.loads(Path(summary["run_manifest"]).read_text(encoding="utf-8"))
+            self.assertEqual(recovery_manifest["status"], summary["status"])
+            self.assertEqual(recovery_manifest["failures"], [{"stage": "lock_cleanup", "error": "cleanup denied"}])
 
     def test_preflight_and_lock_cleanup_failures_still_emit_one_json_document(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -674,6 +678,48 @@ class BatchRunnerTest(unittest.TestCase):
 
             self.assertEqual(status, 1)
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "raced catalogue")
+
+    def test_catalogue_appearing_after_backup_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outputs = root / "outputs"
+            outputs.mkdir()
+            catalogue = outputs / "catalogue.csv"
+            manifest = outputs / "catalogue.run.json"
+            manifest.write_text("old manifest", encoding="utf-8")
+
+            def appear_after_backup(paths):
+                backups = backup_existing_results(paths)
+                catalogue.write_text("late catalogue", encoding="utf-8")
+                return backups
+
+            with patch("uma_bct.batch_runner.backup_existing_results", side_effect=appear_after_backup):
+                status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
+
+            self.assertEqual(status, 1)
+            self.assertEqual(catalogue.read_text(encoding="utf-8"), "late catalogue")
+            self.assertIsNone(summary["catalogue_output"])
+
+    def test_manifest_appearing_after_backup_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outputs = root / "outputs"
+            outputs.mkdir()
+            catalogue = outputs / "catalogue.csv"
+            manifest = outputs / "catalogue.run.json"
+
+            def appear_after_backup(paths):
+                backups = backup_existing_results(paths)
+                manifest.write_text("late manifest", encoding="utf-8")
+                return backups
+
+            with patch("uma_bct.batch_runner.backup_existing_results", side_effect=appear_after_backup):
+                status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
+
+            self.assertEqual(status, 1)
+            self.assertEqual(manifest.read_text(encoding="utf-8"), "late manifest")
+            self.assertFalse(catalogue.exists())
+            self.assertIn(".failed-", summary["run_manifest"])
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ class ExportState:
     catalogue_output: str | None = None
     previous_results: tuple[Path, ...] = ()
     previous_catalogue: Path | None = None
+    replace_manifest: bool = False
     wrote_catalogue: bool = False
 
 
@@ -135,11 +136,15 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
         previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
-        records = export_catalogue(
-            results, output_path, minimum_confidence=arguments.min_transcription_confidence, replace_existing=arguments.force
-        )
         previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
-        return ExportState(len(records), str(output_path), previous, previous_catalogue, True)
+        replace_manifest = any(path.name.endswith(".run.json") for path in previous)
+        records = export_catalogue(
+            results,
+            output_path,
+            minimum_confidence=arguments.min_transcription_confidence,
+            replace_existing=previous_catalogue is not None,
+        )
+        return ExportState(len(records), str(output_path), previous, previous_catalogue, replace_manifest, True)
     except Exception as error:
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
@@ -245,7 +250,7 @@ def locked_batch_summary(
         "run_manifest": str(manifest),
         "previous_results": [str(path) for path in export_state.previous_results],
     }
-    manifest_written = write_manifest(manifest, summary, failures, replace_existing=arguments.force)
+    manifest_written = write_manifest(manifest, summary, failures, replace_existing=export_state.replace_manifest)
     if not manifest_written and export_state.wrote_catalogue:
         recover_manifest_failure(output_path, summary, export_state, failures)
     return summary, pipeline is not None
@@ -284,6 +289,9 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
         summary["failures"].append({"stage": "lock_cleanup", "error": release_error})
         summary["status"] = "partial" if summary["catalogue_output"] else "failed"
         print(f"Lock cleanup failed: {release_error}", file=sys.stderr)
+        recovery_manifest = failed_manifest_path(output_path)
+        summary["run_manifest"] = str(recovery_manifest)
+        write_manifest(recovery_manifest, summary, summary["failures"], replace_existing=False)
 
     emit_summary(summary, len(images), arguments.model)
     if release_error is not None:

@@ -110,12 +110,23 @@ function Assert-OllamaSignature([string] $Path) {
 }
 
 function Test-OllamaVersion([string] $Executable) {
-    $PreviousHost = $env:OLLAMA_HOST
-    $PreviousErrorActionPreference = $ErrorActionPreference
+    $Process = $null
     try {
-        $ErrorActionPreference = "Continue"
-        $env:OLLAMA_HOST = "http://127.0.0.1:1"
-        $VersionOutput = & $Executable --version 2>&1 | Out-String
+        $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+        $StartInfo.FileName = $Executable
+        $StartInfo.Arguments = "--version"
+        $StartInfo.UseShellExecute = $false
+        $StartInfo.CreateNoWindow = $true
+        $StartInfo.RedirectStandardOutput = $true
+        $StartInfo.RedirectStandardError = $true
+        $StartInfo.EnvironmentVariables["OLLAMA_HOST"] = "http://127.0.0.1:1"
+        $Process = [Diagnostics.Process]::Start($StartInfo)
+        if (-not $Process.WaitForExit(5000)) {
+            $Process.Kill()
+            $Process.WaitForExit()
+            return $false
+        }
+        $VersionOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
         $VersionMatches = [regex]::Matches($VersionOutput, "\d+\.\d+\.\d+")
         if ($VersionMatches.Count -eq 0) {
             return $false
@@ -125,11 +136,8 @@ function Test-OllamaVersion([string] $Executable) {
     } catch {
         return $false
     } finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
-        if ($null -eq $PreviousHost) {
-            Remove-Item Env:OLLAMA_HOST -ErrorAction SilentlyContinue
-        } else {
-            $env:OLLAMA_HOST = $PreviousHost
+        if ($null -ne $Process) {
+            $Process.Dispose()
         }
     }
 }

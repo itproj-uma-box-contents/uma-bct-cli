@@ -8,6 +8,8 @@ using System.Threading;
 
 public static class FakeLauncherTool
 {
+    private static int startCount = 0;
+
     private static string Role()
     {
         return Path.GetFileName(Environment.GetCommandLineArgs()[0]).ToLowerInvariant();
@@ -52,6 +54,10 @@ public static class FakeLauncherTool
             Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_HOST"),
             Environment.GetEnvironmentVariable("OLLAMA_HOST") + Environment.NewLine
         );
+        if (Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_WAIT") == "1")
+        {
+            Thread.Sleep(30000);
+        }
         int exitCode;
         return Int32.TryParse(Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_EXIT"), out exitCode)
             ? exitCode
@@ -73,6 +79,7 @@ public static class FakeLauncherTool
         }
         int count = File.Exists(counterPath) ? Int32.Parse(File.ReadAllText(counterPath)) : 0;
         count += 1;
+        startCount = count;
         File.WriteAllText(counterPath, count.ToString());
         int failures;
         Int32.TryParse(Environment.GetEnvironmentVariable("UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"), out failures);
@@ -90,6 +97,22 @@ public static class FakeLauncherTool
         Uri endpoint = Endpoint();
         TcpListener listener = new TcpListener(IPAddress.Parse(endpoint.Host), endpoint.Port);
         listener.Start();
+        int stalledStarts;
+        Int32.TryParse(Environment.GetEnvironmentVariable("UMA_BCT_FAKE_OLLAMA_STALL_STARTS"), out stalledStarts);
+        if (startCount <= stalledStarts)
+        {
+            WriteEvent("stalled");
+            using (TcpClient stalledClient = listener.AcceptTcpClient())
+            using (NetworkStream stalledStream = stalledClient.GetStream())
+            {
+                byte[] request = new byte[4096];
+                stalledStream.Read(request, 0, request.Length);
+                Thread.Sleep(2000);
+            }
+            listener.Stop();
+            WriteEvent("stopped");
+            return 98;
+        }
         ProcessStartInfo runnerStart = new ProcessStartInfo(Environment.GetCommandLineArgs()[0], "runner");
         runnerStart.UseShellExecute = false;
         Process runner = Process.Start(runnerStart);
@@ -136,6 +159,10 @@ public static class FakeLauncherTool
         }
         if (args[0] == "--version")
         {
+            if (Environment.GetEnvironmentVariable("UMA_BCT_FAKE_OLLAMA_STALL_VERSION") == "1")
+            {
+                Thread.Sleep(10000);
+            }
             Console.Error.WriteLine("Warning: client version is 0.30.8");
             return 0;
         }

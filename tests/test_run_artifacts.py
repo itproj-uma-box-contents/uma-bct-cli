@@ -46,11 +46,15 @@ class CatalogueLockTest(unittest.TestCase):
             lock_path.replace(original)
             lock_path.write_text('{"pid": 999}\n', encoding="utf-8")
 
-            lock.release()
+            with patch("uma_bct.run_artifacts.os.replace") as replace:
+                lock.release()
 
+            replace.assert_not_called()
             self.assertTrue(lock_path.exists())
             self.assertEqual(json.loads(lock_path.read_text(encoding="utf-8")), {"pid": 999})
             self.assertTrue(original.exists())
+            with self.assertRaisesRegex(RuntimeError, "PID 999"):
+                CatalogueLock(catalogue).acquire()
 
     @unittest.skipIf(os.name == "nt", "FIFO fixture requires POSIX")
     def test_non_regular_stale_lock_does_not_block(self):
