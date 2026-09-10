@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
+
+MACOS_ROOT_ALIASES = frozenset({Path("/etc"), Path("/tmp"), Path("/var")})
 
 
 def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> str | None:
@@ -28,7 +31,7 @@ def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> 
 def check_path(path: Path, purpose: str) -> None:
     """Reject a linked path or parent."""
 
-    checked_path = Path(os.path.abspath(path))
+    checked_path = path.absolute()
     # Walk back to the root because the final path may not exist yet.
     for part in (checked_path, *checked_path.parents):
         try:
@@ -44,7 +47,10 @@ def check_path(path: Path, purpose: str) -> None:
         if kind:
             # macOS exposes root-owned aliases such as /var; unprivileged users cannot redirect them.
             root_owned_alias = (
-                kind == "symbolic link" and part.parent == Path(part.anchor) and getattr(metadata, "st_uid", -1) == 0
+                sys.platform == "darwin"
+                and part in MACOS_ROOT_ALIASES
+                and kind == "symbolic link"
+                and getattr(metadata, "st_uid", -1) == 0
             )
             if root_owned_alias:
                 continue

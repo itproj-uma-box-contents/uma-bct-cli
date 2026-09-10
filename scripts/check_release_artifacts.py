@@ -96,7 +96,7 @@ def unsafe_reason(name: str, regular: bool = True) -> str | None:
         return "generated catalogue lock"
     if folded.endswith(".run.json") or ".run.json." in folded:
         return "generated run manifest"
-    if folded.startswith((".uma-bct-json-", ".uma-bct-catalogue-", ".uma-bct-rollback-")):
+    if folded.startswith((".uma-bct-json-", ".uma-bct-catalogue-", ".uma-bct-lock-release-", ".uma-bct-rollback-")):
         return "generated temporary output"
     for suffix in PRIVATE_SUFFIXES:
         if folded.endswith(suffix) or f"{suffix}." in folded:

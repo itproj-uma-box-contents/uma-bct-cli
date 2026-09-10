@@ -1,8 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 
 public static class FakeLauncherTool
 {
@@ -16,7 +18,7 @@ public static class FakeLauncherTool
         return new Uri(Environment.GetEnvironmentVariable("OLLAMA_HOST"));
     }
 
-    private static void WriteEvent(string name)
+    private static void WriteEvent(string name, int processId = 0)
     {
         string path = Environment.GetEnvironmentVariable("UMA_BCT_FAKE_OLLAMA_EVENTS");
         if (!String.IsNullOrEmpty(path))
@@ -24,7 +26,7 @@ public static class FakeLauncherTool
             File.AppendAllText(
                 path,
                 name + " " + Environment.GetEnvironmentVariable("OLLAMA_HOST") + " " +
-                    System.Diagnostics.Process.GetCurrentProcess().Id + Environment.NewLine
+                    (processId == 0 ? Process.GetCurrentProcess().Id : processId) + Environment.NewLine
             );
         }
     }
@@ -58,29 +60,8 @@ public static class FakeLauncherTool
 
     private static int ListModels()
     {
-        Uri endpoint = Endpoint();
-        try
-        {
-            using (TcpClient client = new TcpClient())
-            {
-                client.ReceiveTimeout = 1000;
-                client.SendTimeout = 1000;
-                client.Connect(endpoint.Host, endpoint.Port);
-                using (NetworkStream stream = client.GetStream())
-                {
-                    byte[] request = Encoding.ASCII.GetBytes("GET /api/tags HTTP/1.0\r\n\r\n");
-                    stream.Write(request, 0, request.Length);
-                    byte[] response = new byte[128];
-                    int length = stream.Read(response, 0, response.Length);
-                    string text = Encoding.ASCII.GetString(response, 0, length);
-                    return text.Contains("200 OK") ? 0 : 1;
-                }
-            }
-        }
-        catch
-        {
-            return 1;
-        }
+        WriteEvent("unexpected-list");
+        return 1;
     }
 
     private static bool FailThisStart()
@@ -109,6 +90,11 @@ public static class FakeLauncherTool
         Uri endpoint = Endpoint();
         TcpListener listener = new TcpListener(IPAddress.Parse(endpoint.Host), endpoint.Port);
         listener.Start();
+        ProcessStartInfo runnerStart = new ProcessStartInfo(Environment.GetCommandLineArgs()[0], "runner");
+        runnerStart.UseShellExecute = false;
+        Process runner = Process.Start(runnerStart);
+        WriteEvent("runner-started", runner.Id);
+        runner.Dispose();
         WriteEvent("started");
         while (true)
         {
@@ -156,6 +142,13 @@ public static class FakeLauncherTool
         if (args[0] == "list")
         {
             return ListModels();
+        }
+        if (args[0] == "runner")
+        {
+            while (true)
+            {
+                Thread.Sleep(1000);
+            }
         }
         return args[0] == "serve" ? Serve() : 1;
     }

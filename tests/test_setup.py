@@ -66,6 +66,31 @@ class SetupTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "parent must not be a symbolic link"):
                 ensure_directory(linked / "inputs")
 
+    def test_rejects_a_setup_root_with_redirected_component_before_dot_dot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outside = root / "outside"
+            (outside / "child").mkdir(parents=True)
+            linked = root / "linked"
+            try:
+                linked.symlink_to(outside / "child", target_is_directory=True)
+            except OSError as error:
+                self.skipTest(str(error))
+            model = Mock()
+            stdout = io.StringIO()
+
+            with (
+                patch("uma_bct.setup_command.OllamaVisionModel", return_value=model),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                status = run_setup(root=linked / "..")
+
+            self.assertEqual(status, 2)
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "failed")
+            self.assertFalse((outside / "inputs").exists())
+            model.ensure_model.assert_not_called()
+
     def test_setup_rechecks_paths_after_directory_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -114,6 +139,22 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(json.loads(stdout.getvalue())["status"], "failed")
             self.assertTrue(lock_path.exists())
             model.ensure_model.assert_not_called()
+
+    def test_setup_lock_cleanup_failure_keeps_json_and_returns_two(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                patch("uma_bct.setup_command.OllamaVisionModel"),
+                patch("uma_bct.setup_command.CatalogueLock.release", side_effect=OSError("cleanup denied")),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = run_setup(root=root)
+
+            self.assertEqual(status, 2)
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "failed")
+            self.assertIn("Lock cleanup failed", stderr.getvalue())
 
 
 if __name__ == "__main__":

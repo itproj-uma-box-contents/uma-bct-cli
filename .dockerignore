@@ -36,6 +36,7 @@ outputs
 *.uma-bct.lock
 **/.uma-bct-json-*.tmp
 **/.uma-bct-catalogue-*
+**/.uma-bct-lock-release-*
 **/.uma-bct-rollback-*
 **/*.avif
 **/*.bmp

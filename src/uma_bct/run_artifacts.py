@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -54,13 +55,21 @@ class CatalogueLock:
         self._identity: tuple[int, int] | None = None
 
     def _owner_text(self) -> str:
+        descriptor: int | None = None
         try:
             check_path(self.path, "Catalogue lock")
-            with self.path.open(encoding="utf-8") as lock_file:
-                value = json.loads(lock_file.read(256))
-            pid = value.get("pid") if isinstance(value, dict) else None
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self.path, flags)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return "PID unavailable"
+            value = json.loads(os.read(descriptor, 256).decode())
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
-            pid = None
+            return "PID unavailable"
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        pid = value.get("pid") if isinstance(value, dict) else None
         return f"PID {pid}" if isinstance(pid, int) and pid > 0 else "PID unavailable"
 
     def acquire(self) -> None:
@@ -104,33 +113,23 @@ class CatalogueLock:
         if identity is None:
             return
 
+        quarantine = self.path.with_name(f".uma-bct-lock-release-{uuid.uuid4().hex}.tmp")
         try:
-            metadata = self.path.lstat()
+            os.replace(self.path, quarantine)
         except FileNotFoundError:
-            if descriptor is not None:
-                os.close(descriptor)
-            return
-        except OSError:
-            if descriptor is not None:
-                os.close(descriptor)
-            raise
-        current_identity = (metadata.st_dev, metadata.st_ino)
-        if current_identity != identity:
-            if descriptor is not None:
-                os.close(descriptor)
-            return
-
-        if os.name == "nt":
-            try:
-                metadata = self.path.lstat()
-            except FileNotFoundError:
-                return
+            pass
+        else:
+            metadata = quarantine.lstat()
             if (metadata.st_dev, metadata.st_ino) == identity:
-                self.path.unlink()
-            return
-
-        try:
-            self.path.unlink()
+                quarantine.unlink()
+            else:
+                try:
+                    os.link(quarantine, self.path, follow_symlinks=False)
+                except OSError as error:
+                    raise RuntimeError(
+                        f"The catalogue lock changed during cleanup; the replacement was retained at {quarantine}."
+                    ) from error
+                quarantine.unlink()
         finally:
             if descriptor is not None:
                 os.close(descriptor)

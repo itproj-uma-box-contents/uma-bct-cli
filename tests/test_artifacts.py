@@ -66,6 +66,7 @@ class ArtifactSafetyTest(unittest.TestCase):
             "package/models/model.gguf",
             "outputs/catalogue.csv",
             ".uma-bct.lock",
+            ".uma-bct-lock-release-private.tmp",
             ".uma-bct-rollback-private.csv.tmp",
             "../escape.py",
         ):

@@ -129,6 +129,21 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
 '
 }
 
+ollama_is_healthy() {
+    OLLAMA_HEALTH_PORT=$ollama_port "$APP_PYTHON" -c '
+import http.client
+import os
+
+connection = http.client.HTTPConnection("127.0.0.1", int(os.environ["OLLAMA_HEALTH_PORT"]), timeout=0.5)
+try:
+    connection.request("GET", "/api/version")
+    response = connection.getresponse()
+    raise SystemExit(0 if response.status == 200 else 1)
+finally:
+    connection.close()
+' >/dev/null 2>&1
+}
+
 start_owned_ollama() {
     [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
     [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
@@ -147,17 +162,18 @@ start_owned_ollama() {
         "$OLLAMA" serve >>"$OLLAMA_LOG" 2>&1 &
         OLLAMA_PID=$!
 
-        elapsed=0
-        while [ "$elapsed" -lt 30 ]; do
-            if "$OLLAMA" list >/dev/null 2>&1 && kill -0 "$OLLAMA_PID" 2>/dev/null; then
+        deadline=$(($(date +%s) + 30))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if ollama_is_healthy && kill -0 "$OLLAMA_PID" 2>/dev/null; then
                 sleep 1
-                if kill -0 "$OLLAMA_PID" 2>/dev/null && "$OLLAMA" list >/dev/null 2>&1; then
+                if [ "$(date +%s)" -lt "$deadline" ] && \
+                    kill -0 "$OLLAMA_PID" 2>/dev/null && ollama_is_healthy
+                then
                     return 0
                 fi
             fi
             kill -0 "$OLLAMA_PID" 2>/dev/null || break
-            elapsed=$((elapsed + 1))
-            [ "$elapsed" -ge 30 ] || sleep 1
+            sleep 1
         done
         stop_owned_ollama
     done

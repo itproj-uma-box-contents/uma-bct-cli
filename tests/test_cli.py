@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from uma_bct.batch_runner import run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
 from uma_bct.domain import BoxResult
 from uma_bct.path_safety import check_path
-from uma_bct.run_artifacts import catalogue_lock_path, write_json_atomic
+from uma_bct.run_artifacts import backup_existing_results, catalogue_lock_path, write_json_atomic
 
 
 class FakeBatchPipeline:
@@ -105,6 +106,25 @@ class CliTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "parent must not be a symbolic link"):
                 discover_images(linked / "shelf.jpg")
+
+    def test_rejects_a_redirected_component_before_dot_dot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outside = root / "outside"
+            (outside / "escaped").mkdir(parents=True)
+            (outside / "child").mkdir()
+            (outside / "escaped/shelf.jpg").write_bytes(b"private")
+            linked = root / "linked"
+            try:
+                linked.symlink_to(outside / "child", target_is_directory=True)
+            except OSError as error:
+                self.skipTest(str(error))
+
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                discover_images(linked / "../escaped/shelf.jpg")
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                write_json_atomic(linked / "../escaped/catalogue.run.json", {"status": "failed"})
+            self.assertFalse((outside / "escaped/catalogue.run.json").exists())
 
     def test_rejects_a_redirected_parent_of_a_new_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -298,6 +318,18 @@ class CliTest(unittest.TestCase):
     def test_rejects_cross_drive_windows_output_layouts(self):
         with self.assertRaisesRegex(ValueError, "same Windows drive"):
             validate_output_layout(r"C:\results\catalogue.csv", r"C:\results\catalogue.run.json", r"D:\review\crops")
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS system alias test")
+    def test_output_layout_compares_physical_macos_alias_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lexical_root = Path(directory)
+            physical_root = lexical_root.resolve()
+            if lexical_root == physical_root:
+                self.skipTest("temporary path has no system alias")
+            with self.assertRaisesRegex(ValueError, "inside the review-crop"):
+                validate_output_layout(
+                    physical_root / "crops/catalogue.csv", physical_root / "catalogue.run.json", lexical_root / "crops"
+                )
 
 
 class BatchRunnerTest(unittest.TestCase):
@@ -547,6 +579,101 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertIsNone(summary["run_manifest"])
             self.assertGreaterEqual(summary["failure_count"], 2)
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "old catalogue")
+
+    def test_lock_cleanup_failure_keeps_json_and_returns_lock_error_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with patch("uma_bct.batch_runner.CatalogueLock.release", side_effect=OSError("cleanup denied")):
+                status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"])
+
+            self.assertEqual(status, 2)
+            self.assertEqual(summary["status"], "partial")
+            self.assertEqual(summary["failure_count"], 1)
+            self.assertIn("Lock cleanup failed", progress)
+
+    def test_preflight_and_lock_cleanup_failures_still_emit_one_json_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            args = arguments(root)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                patch("uma_bct.batch_runner.build_pipeline", side_effect=RuntimeError("preflight denied")),
+                patch("uma_bct.batch_runner.CatalogueLock.release", side_effect=OSError("cleanup denied")),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = run_batch(
+                    args,
+                    [root / "inputs/shelf.jpg"],
+                    args.path_to_outputs,
+                    root / "outputs/catalogue.run.json",
+                    preserve_existing_manifest_on_failure=False,
+                )
+
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(status, 2)
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["failure_count"], 2)
+            self.assertIn("Lock cleanup failed", stderr.getvalue())
+
+    def test_forced_backup_race_does_not_restore_a_manifest_as_csv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outputs = root / "outputs"
+            outputs.mkdir()
+            catalogue = outputs / "catalogue.csv"
+            manifest = outputs / "catalogue.run.json"
+            catalogue.write_text("old catalogue", encoding="utf-8")
+            manifest.write_text("old manifest", encoding="utf-8")
+            real_writer = write_json_atomic
+
+            def catalogue_disappears(paths):
+                catalogue.unlink()
+                return backup_existing_results(paths)
+
+            def fail_normal_manifest(destination, value, *, replace_existing=True):
+                if destination == manifest:
+                    raise OSError("manifest disk failure")
+                return real_writer(destination, value, replace_existing=replace_existing)
+
+            with (
+                patch("uma_bct.batch_runner.backup_existing_results", side_effect=catalogue_disappears),
+                patch("uma_bct.batch_runner.write_json_atomic", side_effect=fail_normal_manifest),
+            ):
+                status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
+
+            self.assertEqual(status, 1)
+            self.assertFalse(catalogue.exists())
+            self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
+            self.assertTrue(all(not path.casefold().endswith(".csv") for path in summary["previous_results"]))
+
+    def test_forced_backup_race_restores_a_catalogue_that_appears(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            outputs = root / "outputs"
+            outputs.mkdir()
+            catalogue = outputs / "catalogue.csv"
+            manifest = outputs / "catalogue.run.json"
+            manifest.write_text("old manifest", encoding="utf-8")
+            real_writer = write_json_atomic
+
+            def catalogue_appears(paths):
+                catalogue.write_text("raced catalogue", encoding="utf-8")
+                return backup_existing_results(paths)
+
+            def fail_normal_manifest(destination, value, *, replace_existing=True):
+                if destination == manifest:
+                    raise OSError("manifest disk failure")
+                return real_writer(destination, value, replace_existing=replace_existing)
+
+            with (
+                patch("uma_bct.batch_runner.backup_existing_results", side_effect=catalogue_appears),
+                patch("uma_bct.batch_runner.write_json_atomic", side_effect=fail_normal_manifest),
+            ):
+                status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
+
+            self.assertEqual(status, 1)
+            self.assertEqual(catalogue.read_text(encoding="utf-8"), "raced catalogue")
 
 
 if __name__ == "__main__":

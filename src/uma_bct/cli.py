@@ -216,7 +216,7 @@ def validate_output_layout(catalogue: str | Path, manifest: str | Path, crop_roo
     """Keep crop directories separate from published files on one Windows drive."""
 
     raw_paths = tuple(os.fspath(path) for path in (catalogue, manifest, crop_root))
-    absolute_paths = tuple(os.path.abspath(path) for path in raw_paths)
+    absolute_paths = tuple(os.path.realpath(path) for path in raw_paths)
     windows_drives = {drive.casefold() for path in (*raw_paths, *absolute_paths) if (drive := ntpath.splitdrive(path)[0])}
     if len(windows_drives) > 1:
         raise ValueError("catalogue, manifest, and review-crop paths must use the same Windows drive")

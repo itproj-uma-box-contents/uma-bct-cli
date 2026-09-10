@@ -61,6 +61,7 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL) -> i
         "model": model_name,
     }
     lock: CatalogueLock | None = None
+    status = 0
     try:
         warn_about_permissions(inputs, ensure_directory(inputs))
         warn_about_permissions(outputs, ensure_directory(outputs))
@@ -71,10 +72,17 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL) -> i
         message = safe_error(error)
         result.update(status="failed", error=message)
         print(f"Setup failed: {message}", file=sys.stderr)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 2
+        status = 2
     finally:
         if lock is not None:
-            lock.release()
+            try:
+                lock.release()
+            except Exception as error:
+                message = safe_error(error)
+                existing_error = result.get("error")
+                combined = f"{existing_error}; lock cleanup failed: {message}" if existing_error else message
+                result.update(status="failed", error=combined[:1000])
+                print(f"Lock cleanup failed: {message}", file=sys.stderr)
+                status = 2
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    return status

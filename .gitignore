@@ -35,6 +35,7 @@ dist/
 *.uma-bct.lock
 .uma-bct-json-*.tmp
 .uma-bct-catalogue-*
+.uma-bct-lock-release-*
 .uma-bct-rollback-*
 /outputs/
 **/outputs/

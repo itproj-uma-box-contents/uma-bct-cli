@@ -18,6 +18,7 @@ import os
 import signal
 import socket
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -37,18 +38,14 @@ if command == "--version":
 endpoint = urlsplit(os.environ["OLLAMA_HOST"])
 address = (endpoint.hostname, endpoint.port)
 if command == "list":
-    try:
-        with socket.create_connection(address, timeout=0.5) as connection:
-            connection.sendall(b"GET /api/tags HTTP/1.0\\r\\n\\r\\n")
-            response = connection.recv(64)
-        raise SystemExit(0 if b"200" in response else 1)
-    except OSError:
-        raise SystemExit(1)
+    write_event("unexpected-list")
+    raise SystemExit(1)
 
 if command != "serve":
     raise SystemExit(1)
 
 counter_path = os.environ.get("UMA_BCT_FAKE_OLLAMA_COUNTER")
+count = 1
 if counter_path:
     counter = Path(counter_path)
     count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
@@ -66,6 +63,16 @@ try:
 except OSError:
     write_event("bind-failed")
     raise
+
+if count <= int(os.environ.get("UMA_BCT_FAKE_OLLAMA_STALL_STARTS", "0")):
+    write_event("stalled")
+    connection, _ = server.accept()
+    with connection:
+        connection.recv(4096)
+        time.sleep(2)
+    server.close()
+    write_event("stopped")
+    raise SystemExit(98)
 
 write_event("started")
 
@@ -154,7 +161,7 @@ def prepare_windows_launcher(
         shutil.copy2(fake_executable, path)
 
     local_app_data = root / "local-app-data"
-    ollama = local_app_data / "Programs/Ollama/ollama.exe"
+    ollama = runtime / "ollama/ollama.exe"
     ollama.parent.mkdir(parents=True)
     shutil.copy2(fake_executable, ollama)
     if companion:
@@ -236,6 +243,9 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertLess(posix.index('setup >"$RUNTIME/setup.json"'), posix.index("Press Enter after"))
         self.assertLess(windows.index("& $AppCli setup"), windows.index("Read-Host"))
         self.assertIn("Get-AuthenticodeSignature", windows)
+        self.assertIn("ollama-windows-amd64.zip", windows)
+        self.assertNotIn("OllamaSetup.exe", windows)
+        self.assertNotIn(r"Programs\Ollama", windows)
 
     def test_launchers_own_a_dynamic_service_and_have_bounded_startup(self):
         posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
@@ -245,13 +255,20 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertIn("socket.AF_INET", posix)
         self.assertIn("1 2 3", posix)
         self.assertIn("OLLAMA_HOST=http://127.0.0.1:1", posix)
+        self.assertIn("timeout=0.5", posix)
         self.assertIn("TcpListener", windows)
         self.assertIn("1..3", windows)
         self.assertIn('$env:OLLAMA_HOST = "http://127.0.0.1:1"', windows)
+        self.assertIn(".Wait(500)", windows)
+        self.assertIn("ReceiveTimeout = 500", windows)
         self.assertIn("finally", windows)
         for launcher in (posix, windows):
             self.assertIn("llama-server", launcher)
             self.assertIn("ollama.log", launcher)
+            self.assertIn("/api/version", launcher)
+            self.assertNotIn(" list ", launcher)
+        self.assertIn("taskkill.exe", windows)
+        self.assertIn(" /T /F", windows)
 
     def test_posix_launcher_preflights_glibc_before_runtime_preparation(self):
         posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
@@ -323,6 +340,17 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(
                 [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()],
                 ["bind-failed", "started", "stopped"],
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            environment["UMA_BCT_FAKE_OLLAMA_STALL_STARTS"] = "1"
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()],
+                ["stalled", "stopped", "started", "stopped"],
             )
 
         for exit_code in (0, 1, 2):
@@ -408,10 +436,10 @@ class ClientDeliveryTest(unittest.TestCase):
                 self.assertRegex(selected_host, r"^http://127\.0\.0\.1:\d+$")
                 self.assertNotEqual(selected_host, "http://127.0.0.1:11434")
                 event_lines = events.read_text(encoding="utf-8").splitlines()
-                self.assertEqual([line.split()[0] for line in event_lines], ["bind-failed", "started"])
-                child_pid = int(event_lines[-1].split()[-1])
-                with self.assertRaises(OSError):
-                    os.kill(child_pid, 0)
+                self.assertEqual([line.split()[0] for line in event_lines], ["bind-failed", "runner-started", "started"])
+                for line in event_lines[-2:]:
+                    with self.assertRaises(OSError):
+                        os.kill(int(line.split()[-1]), 0)
 
             with socket.create_connection(("127.0.0.1", 11434), timeout=1):
                 pass
@@ -464,7 +492,11 @@ class ClientDeliveryTest(unittest.TestCase):
                     timeout=20,
                 )
                 self.assertEqual(result.returncode, exit_code, result.stderr)
-                self.assertEqual([line.split()[0] for line in events.read_text().splitlines()], ["started"])
+                event_lines = events.read_text(encoding="utf-8").splitlines()
+                self.assertEqual([line.split()[0] for line in event_lines], ["runner-started", "started"])
+                for line in event_lines:
+                    with self.assertRaises(OSError):
+                        os.kill(int(line.split()[-1]), 0)
 
 
 if __name__ == "__main__":

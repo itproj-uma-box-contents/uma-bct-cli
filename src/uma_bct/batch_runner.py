@@ -127,7 +127,6 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
         failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
         return ExportState()
     previous: tuple[Path, ...] = ()
-    catalogue_existed = output_path.exists()
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
@@ -139,7 +138,7 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
         records = export_catalogue(
             results, output_path, minimum_confidence=arguments.min_transcription_confidence, replace_existing=arguments.force
         )
-        previous_catalogue = previous[0] if catalogue_existed else None
+        previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
         return ExportState(len(records), str(output_path), previous, previous_catalogue, True)
     except Exception as error:
         message = warning_text(error)
@@ -266,6 +265,7 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
         emit_summary(summary, len(images), arguments.model)
         return 2
 
+    release_error: str | None = None
     try:
         summary, pipeline_ready = locked_batch_summary(
             arguments,
@@ -275,9 +275,19 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
             preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
         )
     finally:
-        lock.release()
+        try:
+            lock.release()
+        except Exception as error:
+            release_error = warning_text(error)
+
+    if release_error is not None:
+        summary["failures"].append({"stage": "lock_cleanup", "error": release_error})
+        summary["status"] = "partial" if summary["catalogue_output"] else "failed"
+        print(f"Lock cleanup failed: {release_error}", file=sys.stderr)
 
     emit_summary(summary, len(images), arguments.model)
+    if release_error is not None:
+        return 2
     if not pipeline_ready:
         return 2
     return 0 if summary["status"] == "complete" else 1

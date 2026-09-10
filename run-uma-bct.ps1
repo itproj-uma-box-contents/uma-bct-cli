@@ -14,8 +14,9 @@ $UvArchiveUrl = "https://releases.astral.sh/github/uv/releases/download/$UvVersi
 $UvArchiveSha256 = "ddbfcee1ac615a0499f6aa97b5ec8ebdf3ee4a7714a48055ec2ba0030e3cf810"
 $OllamaVersion = "0.30.8"
 $MinimumOllamaVersion = [version] $OllamaVersion
-$OllamaInstallerUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/OllamaSetup.exe"
-$OllamaInstallerSha256 = "d7cfbb2509d9e9464972d162899a5f085c1802619b6bbe0c4e210b47bcf2d446"
+$OllamaArchiveUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/ollama-windows-amd64.zip"
+$OllamaArchiveSha256 = "c2d26d97e698027329c252629d7113bbc05d874b49960cbb03e93a39ae9fd95c"
+$OllamaDirectory = Join-Path $Runtime "ollama"
 $OllamaLog = Join-Path $Runtime "ollama.log"
 $OllamaOutputLog = Join-Path $Runtime "ollama.stdout.log"
 $OllamaProcess = $null
@@ -49,10 +50,7 @@ function Open-LocalFolder([string] $Path) {
 }
 
 function Find-Ollama {
-    $Candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"),
-        (Join-Path $env:ProgramFiles "Ollama\ollama.exe")
-    )
+    $Candidates = @((Join-Path $OllamaDirectory "ollama.exe"))
     foreach ($Candidate in $Candidates) {
         if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
             ((Get-Item -LiteralPath $Candidate -Force).Attributes -band
@@ -107,7 +105,7 @@ function Assert-OllamaSignature([string] $Path) {
     }
     if ($Signature.Status -ne "Valid" -or
         $Subject -notmatch "(^|, )O=Ollama Inc\.(,|$)") {
-        throw "Ollama installer signature verification failed."
+        throw "Ollama runtime signature verification failed."
     }
 }
 
@@ -136,12 +134,32 @@ function Test-OllamaVersion([string] $Executable) {
     }
 }
 
-function Test-Ollama([string] $Executable) {
+function Test-OllamaHealth {
+    $Client = $null
     try {
-        & $Executable list *> $null
-        return $LASTEXITCODE -eq 0
+        $Endpoint = [Uri] $env:OLLAMA_HOST
+        $Client = [Net.Sockets.TcpClient]::new()
+        $Connection = $Client.ConnectAsync($Endpoint.Host, $Endpoint.Port)
+        if (-not $Connection.Wait(500)) {
+            return $false
+        }
+        $Client.ReceiveTimeout = 500
+        $Client.SendTimeout = 500
+        $Stream = $Client.GetStream()
+        $Request = [Text.Encoding]::ASCII.GetBytes(
+            "GET /api/version HTTP/1.0`r`nHost: 127.0.0.1`r`n`r`n"
+        )
+        $Stream.Write($Request, 0, $Request.Length)
+        $Response = [byte[]]::new(64)
+        $Length = $Stream.Read($Response, 0, $Response.Length)
+        $Status = [Text.Encoding]::ASCII.GetString($Response, 0, $Length)
+        return $Status -match "^HTTP/1\.[01] 200 "
     } catch {
         return $false
+    } finally {
+        if ($null -ne $Client) {
+            $Client.Dispose()
+        }
     }
 }
 
@@ -164,7 +182,16 @@ function Stop-OwnedOllama {
     try {
         $OwnedProcess.Refresh()
         if (-not $OwnedProcess.HasExited) {
-            Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
+            $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+            try {
+                & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
+            } catch {
+                # Fall through to the exact-process fallback below.
+            }
+            $OwnedProcess.Refresh()
+            if (-not $OwnedProcess.HasExited) {
+                Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
+            }
         }
         $OwnedProcess.WaitForExit()
     } catch {
@@ -197,21 +224,21 @@ function Start-OwnedOllama([string] $Executable) {
             continue
         }
 
-        foreach ($Elapsed in 0..29) {
+        $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+        while ([DateTime]::UtcNow -lt $Deadline) {
             $script:OllamaProcess.Refresh()
             if ($script:OllamaProcess.HasExited) {
                 break
             }
-            if ((Test-Ollama $Executable)) {
+            if (Test-OllamaHealth) {
                 Start-Sleep -Milliseconds 200
                 $script:OllamaProcess.Refresh()
-                if (-not $script:OllamaProcess.HasExited -and (Test-Ollama $Executable)) {
+                if ([DateTime]::UtcNow -lt $Deadline -and
+                    -not $script:OllamaProcess.HasExited -and (Test-OllamaHealth)) {
                     return
                 }
             }
-            if ($Elapsed -lt 29) {
-                Start-Sleep -Seconds 1
-            }
+            Start-Sleep -Milliseconds 500
         }
         Stop-OwnedOllama
     }
@@ -219,22 +246,29 @@ function Start-OwnedOllama([string] $Executable) {
 }
 
 function Install-Ollama {
-    Write-Host "Installing the verified local Ollama service..."
+    Write-Host "Installing the verified private Ollama runtime..."
     Assert-NoPrivateData
-    $OllamaInstaller = Join-Path $Runtime "OllamaSetup.exe"
-    Invoke-WebRequest -Uri $OllamaInstallerUrl -OutFile $OllamaInstaller -UseBasicParsing
-    Assert-InstallerHash $OllamaInstaller $OllamaInstallerSha256
-    Assert-OllamaSignature $OllamaInstaller
+    $OllamaArchive = Join-Path $Runtime "ollama-windows-amd64.zip"
+    $OllamaStaging = Join-Path $Runtime "ollama-install"
     try {
-        $Installer = Start-Process -FilePath $OllamaInstaller `
-            -ArgumentList "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES" `
-            -PassThru
-        $Installer.WaitForExit()
-        if ($Installer.ExitCode -ne 0) {
-            throw "Ollama installation failed with exit code $($Installer.ExitCode)."
+        Invoke-WebRequest -Uri $OllamaArchiveUrl -OutFile $OllamaArchive -UseBasicParsing
+        Assert-InstallerHash $OllamaArchive $OllamaArchiveSha256
+        Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
+        Microsoft.PowerShell.Archive\Expand-Archive `
+            -LiteralPath $OllamaArchive -DestinationPath $OllamaStaging
+        $StagedOllama = Join-Path $OllamaStaging "ollama.exe"
+        $StagedLlamaServer = Join-Path $OllamaStaging "lib\ollama\llama-server.exe"
+        if (-not (Test-Path -LiteralPath $StagedOllama -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $StagedLlamaServer -PathType Leaf)) {
+            throw "The verified Ollama archive is missing required executables."
         }
+        Assert-OllamaSignature $StagedOllama
+        Assert-OllamaSignature $StagedLlamaServer
+        Remove-Item -LiteralPath $OllamaDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $OllamaStaging -Destination $OllamaDirectory
     } finally {
-        Remove-Item -LiteralPath $OllamaInstaller -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $OllamaArchive -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -278,6 +312,8 @@ try {
     Assert-LocalDirectory (Join-Path $Runtime "uv-cache")
     Assert-LocalDirectory (Join-Path $Runtime "python")
     Assert-LocalDirectory $AppEnvironment
+    Assert-LocalDirectory $OllamaDirectory
+    Assert-LocalDirectory (Join-Path $Runtime "ollama-install")
     New-Item -ItemType Directory -Force -Path $Inputs, $Outputs, $Runtime | Out-Null
     $PrivateDataPresent = Test-PrivateData
 

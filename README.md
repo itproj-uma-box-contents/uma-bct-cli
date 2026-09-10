@@ -24,10 +24,9 @@ else, processes the photos, and opens the `outputs` folder when it finishes.
 
 The first run needs an internet connection and can take a while because it
 installs the private local runtime and downloads the large transcription model.
-The `inputs` folder opens after that preparation is complete. The operating
-system may ask for permission to install Ollama. Later runs reuse what was
-downloaded and can work offline. For another batch, replace the photos in
-`inputs` and start the same launcher again. Keep the unzipped folder in the
+The `inputs` folder opens after that preparation is complete. Later runs reuse
+what was downloaded and can work offline. For another batch, replace the photos
+in `inputs` and start the same launcher again. Keep the unzipped folder in the
 same place after the first run; the existing runtime, `inputs`, and `outputs`
 folders are reused in place.
 
@@ -96,9 +95,8 @@ and left-to-right/top-to-bottom crop order:
 
 If the launcher stops, read the short message in its window, correct the stated
 problem, and run the same launcher again. Common first-run causes are no internet
-connection, insufficient free disk space, or the operating system declining an
-Ollama installation prompt. Setup also performs a one-token inference check, so
-an incomplete Ollama runtime or insufficient memory is reported before any
-photo crops are processed. The repair message includes the local Ollama log
-path. Runtime repair is allowed only while `inputs` and `outputs` are empty, so
-private files never coexist with online preparation.
+connection or insufficient free disk space. Setup also performs a one-token
+inference check, so an incomplete Ollama runtime or insufficient memory is
+reported before any photo crops are processed. The repair message includes the
+local Ollama log path. Runtime repair is allowed only while `inputs` and
+`outputs` are empty, so private files never coexist with online preparation.

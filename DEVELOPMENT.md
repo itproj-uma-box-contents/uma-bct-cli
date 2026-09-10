@@ -110,8 +110,9 @@ offline. The owned Ollama process is stopped and reaped on every exit path;
 services from other folders and anything already using port 11434 are neither
 reused nor terminated. Startup is retried on fresh loopback ports, and failures
 point to `.uma-bct-runtime/ollama.log`. An incomplete runtime is repaired only
-when `inputs` and `outputs` are empty. The Windows Ollama installer also requires
-a valid Ollama Inc. Authenticode signature.
+when `inputs` and `outputs` are empty. Windows uses the checksum-pinned portable
+Ollama archive and verifies the Authenticode signatures on both required
+executables; it does not run the desktop installer or alter foreign services.
 
 `client-constraints.txt` is generated from `uv.lock`; do not edit it by
 hand. It is required so every client launcher installs the same hash-verified
