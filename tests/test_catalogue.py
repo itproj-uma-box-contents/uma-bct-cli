@@ -89,6 +89,28 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertIn("Potential Duplicate", records[1]["Review Notes"])
         self.assertIn("Low confidence", records[0]["Review Notes"])
 
+    def test_adds_blank_rows_for_missing_boxes(self):
+        first = make_box(box_id="shelf:001")
+        third = make_box(box_id="shelf:003")
+        records = catalogue_records(
+            [
+                make_result(
+                    BoxResult(
+                        first, make_transcription(first, identifiers=("1974.0056",), typed=("1974.0056", "Unit 1"), unit="1")
+                    ),
+                    BoxResult(
+                        third, make_transcription(third, identifiers=("1974.0056",), typed=("1974.0056", "Unit 3"), unit="3")
+                    ),
+                )
+            ]
+        )
+
+        missing = records[2]
+        self.assertEqual(missing["Node Title"], "1974.0056 Unit 0002")
+        self.assertEqual(missing["Review Notes"], "Missing Box")
+        self.assertEqual(missing["Node Type"], "")
+        self.assertEqual(missing["Crop Image"], "")
+
     def test_low_confidence_threshold_is_strict(self):
         box = make_box()
         result = make_result(BoxResult(box, make_transcription(box, confidence=70)))

@@ -12,6 +12,7 @@ OUTPUT_COLUMNS = [
 ]
 
 DUPLICATE_FLAG = "Potential Duplicate"
+MISSING_BOX_FLAG = "Missing Box"
 
 LOW_CONFIDENCE_FLAG = "Low confidence"
 
