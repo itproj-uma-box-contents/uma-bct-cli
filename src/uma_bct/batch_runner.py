@@ -7,13 +7,19 @@ the terminal only gets a short summary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import signal
 import sys
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .adapters.ollama_client import timeout_from_environment
+from .atomic import rename_new_file
 from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import check_path
@@ -22,20 +28,53 @@ from .run_artifacts import (
     CatalogueLock,
     backup_existing_results,
     failed_manifest_path,
-    rollback_catalogue,
+    regular_file_sha256,
+    replace_backed_file,
+    rollback_owned_file,
     run_directory,
     write_json_atomic,
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class ExportState:
     record_count: int = 0
     catalogue_output: str | None = None
     previous_results: tuple[Path, ...] = ()
     previous_catalogue: Path | None = None
+    previous_manifest: Path | None = None
+    catalogue_digest: str | None = None
     replace_manifest: bool = False
     wrote_catalogue: bool = False
+
+
+@contextmanager
+def direct_termination_handlers() -> Iterator[None]:
+    """Turn termination signals into cleanup-aware exit codes."""
+
+    watched: list[tuple[signal.Signals, Any]] = []
+
+    def terminate(signum: int, _frame: Any) -> None:
+        if signum == getattr(signal, "SIGTERM", object()):
+            raise SystemExit(143)
+        if signum == getattr(signal, "SIGHUP", object()):
+            raise SystemExit(129)
+        raise KeyboardInterrupt
+
+    for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            previous = signal.signal(signum, terminate)
+        except (OSError, ValueError):
+            continue
+        watched.append((signum, previous))
+    try:
+        yield
+    finally:
+        for signum, previous in watched:
+            signal.signal(signum, previous)
 
 
 def configuration(
@@ -73,6 +112,9 @@ def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, s
 
 def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
     images = summary["images"]
+    failed_results = sum(item["status"] == "failed" for item in images)
+    source_failures = sum("source_image" in item for item in summary["failures"])
+    stage_failures = sum("source_image" not in item for item in summary["failures"])
     result = {
         "schema_version": summary["schema_version"],
         "status": summary["status"],
@@ -83,7 +125,7 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
         "images_failed": image_count - sum(item["status"] in {"complete", "partial"} for item in images),
         "catalogue_output": summary["catalogue_output"],
         "catalogue_records": summary["catalogue_records"],
-        "failure_count": len(summary["failures"]),
+        "failure_count": failed_results + source_failures + stage_failures,
         "model": model_name,
         "run_manifest": summary["run_manifest"],
         "previous_results": summary["previous_results"],
@@ -122,11 +164,26 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
 
 def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
                    manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
+    return export_results_into(
+        arguments, results, output_path, manifest_path, failures, ExportState()
+    )
+
+
+def export_results_into(
+    arguments: argparse.Namespace,
+    results: list[ImageResult],
+    output_path: Path,
+    manifest_path: Path,
+    failures: list[dict[str, str]],
+    state: ExportState,
+) -> ExportState:
                    
     if not sum(len(result.records) for result in results):
-        failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
-        return ExportState()
+        return state
     previous: tuple[Path, ...] = ()
+    previous_catalogue: Path | None = None
+    staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}.csv")
+    publication_started = False
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
@@ -134,21 +191,56 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
-        previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
-        previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
-        replace_manifest = any(path.name.endswith(".run.json") for path in previous)
         records = export_catalogue(
             results,
-            output_path,
+            staging,
             minimum_confidence=arguments.min_transcription_confidence,
-            replace_existing=previous_catalogue is not None,
+            replace_existing=False,
         )
-        return ExportState(len(records), str(output_path), previous, previous_catalogue, replace_manifest, True)
-    except Exception as error:
+        previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
+        previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
+        previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
+        replace_manifest = previous_manifest is not None
+        state.previous_results = previous
+        state.previous_catalogue = previous_catalogue
+        state.previous_manifest = previous_manifest
+        state.replace_manifest = replace_manifest
+        publication_started = True
+        state.record_count = len(records)
+        state.catalogue_output = str(output_path)
+        state.wrote_catalogue = True
+        state.catalogue_digest = regular_file_sha256(staging, "Staged catalogue output")
+        if previous_catalogue is not None:
+            replace_backed_file(staging, output_path, previous_catalogue, "Catalogue output")
+        else:
+            rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
+        staging = None
+        return state
+    except BaseException as error:
+        published_or_uncertain = publication_started and (staging is None or not staging.exists())
+        if published_or_uncertain:
+            try:
+                rollback_exported_catalogue(output_path, state)
+                state.record_count = 0
+                state.catalogue_output = None
+                state.wrote_catalogue = False
+            except Exception as rollback_error:
+                print(
+                    f"Export rollback failed: {warning_text(rollback_error)}. Review {previous_catalogue or output_path}.",
+                    file=sys.stderr,
+                )
+        if not isinstance(error, Exception):
+            raise
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
         print(f"Export failed: {message}", file=sys.stderr)
-        return ExportState(previous_results=previous)
+        state.record_count = 0
+        state.catalogue_output = None
+        state.wrote_catalogue = False
+        return state
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
 
 
 def write_manifest(
@@ -164,6 +256,50 @@ def write_manifest(
         print(f"Manifest write failed: {message}", file=sys.stderr)
         return False
     return True
+
+
+def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
+    if not state.wrote_catalogue or state.catalogue_digest is None:
+        return
+    rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
+
+
+def write_backed_manifest(
+    manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]
+) -> bool:
+    staging = manifest.with_name(f".uma-bct-json-publish-{uuid.uuid4().hex}.tmp")
+    try:
+        write_json_atomic(staging, summary, replace_existing=False)
+        replace_backed_file(staging, manifest, backup, "Run manifest")
+    except BaseException as error:
+        if not isinstance(error, Exception):
+            raise
+        message = warning_text(error)
+        failures.append({"stage": "manifest", "error": message})
+        summary["status"] = "partial" if summary["catalogue_output"] else "failed"
+        summary["run_manifest"] = None
+        print(f"Manifest write failed: {message}", file=sys.stderr)
+        return False
+    finally:
+        staging.unlink(missing_ok=True)
+    return True
+
+
+def summary_digest(summary: dict[str, Any]) -> str:
+    content = (json.dumps(summary, indent=2, ensure_ascii=False) + "\n").encode()
+    return hashlib.sha256(content).hexdigest()
+
+
+def replace_manifest_if_unchanged(path: Path, previous: dict[str, Any], updated: dict[str, Any]) -> None:
+    expected = path.with_name(f".uma-bct-json-expected-{uuid.uuid4().hex}.tmp")
+    staging = path.with_name(f".uma-bct-json-publish-{uuid.uuid4().hex}.tmp")
+    try:
+        write_json_atomic(expected, previous, replace_existing=False)
+        write_json_atomic(staging, updated, replace_existing=False)
+        replace_backed_file(staging, path, expected, "Run manifest")
+    finally:
+        expected.unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
 
 
 def emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
@@ -194,7 +330,7 @@ def recover_manifest_failure(
     failures: list[dict[str, str]],
 ) -> None:
     try:
-        rollback_catalogue(output_path, export_state.previous_catalogue)
+        rollback_exported_catalogue(output_path, export_state)
     except Exception as error:
         message = warning_text(error)
         recovery_path = export_state.previous_catalogue or output_path
@@ -223,33 +359,61 @@ def locked_batch_summary(
     failures: list[dict[str, str]] = []
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
     results = process_images(pipeline, images, failures) if pipeline else []
-    export_state = (
-        export_results(arguments, results, output_path, normal_manifest_path, failures) if pipeline else ExportState()
-    )
+    export_state = ExportState()
+    manifest: Path | None = None
+    summary: dict[str, Any] | None = None
+    try:
+        if pipeline:
+            export_results_into(arguments, results, output_path, normal_manifest_path, failures, export_state)
 
-    incomplete = any(result.status != "complete" for result in results)
-    status = "complete"
-    if failures or incomplete:
-        status = "partial" if export_state.record_count else "failed"
+        incomplete = any(result.status != "complete" for result in results)
+        status = "complete"
+        if failures or incomplete:
+            status = "partial" if export_state.record_count else "failed"
 
-    manifest = (
-        failed_manifest_path(output_path)
-        if preserve_existing_manifest_on_failure and not export_state.record_count
-        else normal_manifest_path
-    )
-    summary = {
-        "schema_version": 1,
-        "status": status,
-        "configuration": configuration(arguments, work_directory, request_timeout),
-        "model": model_metadata,
-        "images": [result.to_dict() for result in results],
-        "failures": failures,
-        "catalogue_output": export_state.catalogue_output,
-        "catalogue_records": export_state.record_count,
-        "run_manifest": str(manifest),
-        "previous_results": [str(path) for path in export_state.previous_results],
-    }
-    manifest_written = write_manifest(manifest, summary, failures, replace_existing=export_state.replace_manifest)
+        manifest = (
+            failed_manifest_path(output_path)
+            if preserve_existing_manifest_on_failure and not export_state.record_count
+            else normal_manifest_path
+        )
+        summary = {
+            "schema_version": 1,
+            "status": status,
+            "configuration": configuration(arguments, work_directory, request_timeout),
+            "model": model_metadata,
+            "images": [result.to_dict() for result in results],
+            "failures": failures,
+            "catalogue_output": export_state.catalogue_output,
+            "catalogue_records": export_state.record_count,
+            "run_manifest": str(manifest),
+            "previous_results": [str(path) for path in export_state.previous_results],
+        }
+        if export_state.previous_manifest is not None:
+            manifest_written = write_backed_manifest(
+                manifest, summary, export_state.previous_manifest, failures
+            )
+        else:
+            manifest_written = write_manifest(manifest, summary, failures, replace_existing=export_state.replace_manifest)
+    except BaseException:
+        if export_state.wrote_catalogue:
+            try:
+                rollback_exported_catalogue(output_path, export_state)
+            except Exception as error:
+                print(
+                    f"Rollback after interruption failed: {warning_text(error)}. "
+                    f"Review {export_state.previous_catalogue or output_path}.",
+                    file=sys.stderr,
+                )
+        if manifest is not None and summary is not None:
+            previous_manifest = export_state.previous_manifest if manifest == normal_manifest_path else None
+            try:
+                rollback_owned_file(manifest, summary_digest(summary), previous_manifest, "run manifest")
+            except Exception as error:
+                print(
+                    f"Manifest rollback after interruption failed: {warning_text(error)}. Review {manifest}.",
+                    file=sys.stderr,
+                )
+        raise
     if not manifest_written and export_state.wrote_catalogue:
         recover_manifest_failure(output_path, summary, export_state, failures)
     return summary, pipeline is not None
@@ -269,13 +433,14 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
 
     release_error: str | None = None
     try:
-        summary, pipeline_ready = locked_batch_summary(
-            arguments,
-            images,
-            output_path,
-            normal_manifest_path,
-            preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
-        )
+        with direct_termination_handlers():
+            summary, pipeline_ready = locked_batch_summary(
+                arguments,
+                images,
+                output_path,
+                normal_manifest_path,
+                preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
+            )
     finally:
         try:
             lock.release()
@@ -283,12 +448,19 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
             release_error = warning_text(error)
 
     if release_error is not None:
+        previous_summary = json.loads(json.dumps(summary))
         summary["failures"].append({"stage": "lock_cleanup", "error": release_error})
         summary["status"] = "partial" if summary["catalogue_output"] else "failed"
         print(f"Lock cleanup failed: {release_error}", file=sys.stderr)
-        recovery_manifest = failed_manifest_path(output_path)
-        summary["run_manifest"] = str(recovery_manifest)
-        write_manifest(recovery_manifest, summary, summary["failures"], replace_existing=False)
+        authoritative_manifest = Path(summary["run_manifest"]) if summary.get("run_manifest") else None
+        if authoritative_manifest is not None:
+            try:
+                replace_manifest_if_unchanged(authoritative_manifest, previous_summary, summary)
+            except Exception as error:
+                message = warning_text(error)
+                summary["failures"].append({"stage": "manifest", "error": message})
+                summary["run_manifest"] = None
+                print(f"Manifest was not updated after lock cleanup failed: {message}", file=sys.stderr)
 
     emit_summary(summary, len(images), arguments.model)
     if release_error is not None:

@@ -1,6 +1,6 @@
 # UMA BCT developer guide
 
-The supported client delivery is `uma-bct-client.zip`. It contains the wheel
+The supported client delivery is `archive-box-transcription.zip`. It contains the wheel
 and platform launchers, so the client does not need to install Python packages
 manually.
 
@@ -72,6 +72,13 @@ explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
 1. The transcription review threshold uses `-c` or
 `--min-transcription-confidence` and accepts an integer from 0 to 100.
 
+The additive managed workflow is selected with `--results-directory`. It owns
+readable `Batch YYYY-MM-DD HH-MM-SS` folders, checkpoints each source photo,
+and resumes the one unfinished batch under that results root. It conflicts with
+explicit `-o`, `-b`, and `--force`; `--reprocess` is valid only with this mode.
+Use `uma-bct setup --path-to-inputs PATH --results-directory PATH` to prepare
+custom managed locations.
+
 ## API documentation
 
 `pdoc` builds a browsable API doc site from the package's docstrings. To
@@ -92,7 +99,7 @@ Open `dist/api-docs/uma_bct.html` in a browser to view it.
 
 ## Client bundle
 
-The launchers create `inputs/`, `outputs/`, and a private
+New launchers use `Add Photos Here/`, `Results/`, and a private
 `.uma-bct-runtime/` directory. On the first run they:
 
 1. Verify the supplied wheel and hash-pinned dependency file.
@@ -101,16 +108,18 @@ The launchers create `inputs/`, `outputs/`, and a private
 4. Validate the Ollama executable and its `llama-server` companion.
 5. Start an owned Ollama child on an OS-selected numeric loopback port.
 6. Download and load-probe the pinned model with the production context size.
-7. Open `inputs/`, process the photos, and open `outputs/`.
+7. Open `Add Photos Here/`, process or resume the photos, and open `Results/`.
 
 Downloads finish before the launcher asks the user to add private photographs.
-Later runs reuse the runtime, input, and output folders in place and can run
+Later runs reuse the runtime, input, and result folders in place and can run
 offline. The owned Ollama process is stopped and reaped on every exit path;
 services from other folders and anything already using port 11434 are neither
 reused nor terminated. Startup is retried on fresh loopback ports, and failures
 point to `.uma-bct-runtime/ollama.log`. An incomplete runtime is repaired only
-when `inputs` and `outputs` are empty. Windows uses the checksum-pinned portable
-Ollama archive and verifies the Authenticode signatures on both required
+when the selected photo and result folders are empty. A legacy bundle with data
+only in `inputs/` and `outputs/` continues to use them in place. Data in both
+directory pairs is an error and is never merged. Windows uses the
+checksum-pinned portable Ollama archive and verifies the Authenticode signatures on both required
 executables; it does not run the desktop installer or alter foreign services.
 
 `client-constraints.txt` is generated from `uv.lock`; do not edit it by
@@ -128,35 +137,41 @@ local file/model preflight
   -> Qwen transcription
   -> one full-image recovery when localization or all crops fail
   -> conservative catalogue mapping
-  -> atomic CSV and compact run manifest
+  -> per-photo atomic managed checkpoint
+  -> recoverable CSV and final-details publication
 ```
 
-The manifest keeps the model identity and actual per-run loopback endpoint,
-detector route, final box readings, warnings, and failures. It deliberately does
-not contain per-attempt timing or proposal telemetry. Direct CLI use continues
+Managed progress/details keep input SHA-256 fingerprints, the model identity
+and actual per-run loopback endpoint, detector route, final box readings,
+warnings, and failures. They deliberately do not contain per-attempt timing or
+proposal telemetry. Direct CLI use continues
 to default to `127.0.0.1:11434`; only the client launchers select an isolated
 port.
 
-Setup and batch processing hold an exclusive `.uma-bct.lock` beside the
-catalogue before model work starts. The lock records its PID, is never silently
-stolen when stale, and is removed only when it is still the same filesystem
-object created by that run. A stale-lock error tells the operator how to verify
-and remove the exact reservation safely.
+Managed processing holds an OS-backed `.uma-bct.lock` in the results root.
+Exclusive acquisition safely recovers a well-formed lock left by a dead
+process; malformed, linked, non-regular, or racing locks remain blocked. Direct
+mode retains its existing catalogue-lock semantics.
 
-CSV and manifest publication is recovery-aware. Forced runs retain timestamped
-prior files. If the manifest commit fails after CSV replacement, the prior CSV
-is restored atomically or a newly created CSV is removed, then a uniquely named
-failed-run manifest is attempted. A rollback failure produces partial status
-and reports the retained recovery path.
+Managed batches do not publish a catalogue while photos are unattempted. After
+all photos become terminal, sources and crop hashes are revalidated, a hidden
+CSV is staged, and its digest is checkpointed before no-clobber publication.
+`Run Progress.json` is then promoted to `Run Details.json`. Forced direct runs
+retain timestamped prior files. If the manifest commit fails after CSV
+replacement, the prior CSV is restored atomically or a newly created CSV is
+removed, then a uniquely named failed-run manifest is attempted. A rollback
+failure produces partial status and reports the retained recovery path.
 
 Only numeric loopback Ollama is allowed by default. The bundled Compose service
 opts into its exact `ollama` hostname. An approved managed endpoint requires
 `UMA_BCT_ALLOW_REMOTE_OLLAMA=1` and HTTPS because image pixels leave the
-workstation.
+workstation. Native launchers and Compose set `OLLAMA_NO_CLOUD=1`; cloud-tagged
+models are unsupported. A separately managed local Ollama used by the direct
+CLI must have cloud features disabled as well.
 
 Never commit, package, upload, or place in a Docker context:
 
-- `Archive box photos/`, `add_repository_photos/`, or `inputs/`
+- `Archive box photos/`, `add_repository_photos/`, `Add Photos Here/`, or `inputs/`
 - generated outputs and run manifests
 - Ollama state, model weights, or private regression expectations
 
@@ -192,9 +207,9 @@ uv run python scripts/check_release_artifacts.py dist
 ```
 
 The final check must report that the release artifact privacy check passed.
-The finished file is `dist/uma-bct-client.zip`. Send only that ZIP to the
-client through the approved private file-sharing method; the client can then
-download it, unzip it, and run the launcher. Do not send the wheel, source
+The finished file is `dist/archive-box-transcription.zip`. Send only that ZIP
+to the client through the approved private file-sharing method; the client can
+then download it, unzip it, and run the launcher. Do not send the wheel, source
 archive, repository, private photographs, or generated catalogue outputs.
 
 `build/` and `dist/` are generated, ignored directories. The three scripts
@@ -210,3 +225,13 @@ Launcher changes also require the deterministic ownership fixtures in
 `tests/test_client_delivery.py`. They cover foreign port-11434 services,
 dynamic port selection, missing companions, bind retries, startup failure,
 exit-code propagation, and owned-process cleanup without using a real model.
+Managed-batch changes require interruption/resume, input and crop integrity,
+publication recovery, formula-safety, naming-collision, and zero-row tests.
+
+Before release, manually import dummy managed catalogues in Excel on Windows
+and macOS, Numbers, and LibreOffice and confirm each relative crop link opens
+after moving the whole batch folder. Google Sheets is not supported for local
+private-file links. The private real-model gate remains local and covers all 21
+`add_repository_photos/` images plus the 11 named JPEGs listed in `AGENTS.md`;
+its photos, expectations, notes, and output must remain in ignored private
+directories.

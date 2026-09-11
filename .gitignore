@@ -15,6 +15,7 @@ htmlcov/
 .pyre/
 .ruff_cache/
 .uma-bct-runtime/
+.uma-bct-launcher.lock
 
 build/
 dist/
@@ -25,20 +26,42 @@ dist/
 # Private source photographs must remain local.
 /Archive box photos/
 /add_repository_photos/
+/Add Photos Here/
+**/Add Photos Here/
 /inputs/
 **/inputs/
+**/*.[Aa][Vv][Ii][Ff]
+**/*.[Bb][Mm][Pp]
+**/*.[Gg][Ii][Ff]
+**/*.[Hh][Ee][Ii][Cc]
+**/*.[Hh][Ee][Ii][Ff]
+**/*.[Jj][Pp][Ee][Gg]
+**/*.[Jj][Pp][Gg]
+**/*.[Pp][Nn][Gg]
+**/*.[Tt][Ii][Ff]
+**/*.[Tt][Ii][Ff][Ff]
+**/*.[Ww][Ee][Bb][Pp]
 
 # Generated catalogues and review artefacts at the repository root.
 /*.csv
 /*.xlsx
 *.run.json
+**/Run Progress.json
+**/Run Details.json
+**/Catalogue.csv
+**/Box Images/
+**/.working/
+**/Batch ????-??-?? ??-??-??*/
 *.uma-bct.lock
 .uma-bct-json-*.tmp
 .uma-bct-catalogue-*
 .uma-bct-lock-release-*
 .uma-bct-rollback-*
+.uma-bct-backup-*
 /outputs/
 **/outputs/
+/Results/
+**/Results/
 
 # Local model storage and weights.
 /.ollama/
@@ -48,3 +71,8 @@ dist/
 *.pt
 *.pth
 *.safetensors
+*.[Gg][Gg][Uu][Ff]
+*.[Oo][Nn][Nn][Xx]
+*.[Pp][Tt]
+*.[Pp][Tt][Hh]
+*.[Ss][Aa][Ff][Ee][Tt][Ee][Nn][Ss][Oo][Rr][Ss]

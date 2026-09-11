@@ -21,7 +21,8 @@ from .pipeline import ImageResult
 
 
 def catalogue_records(
-    results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None
+    results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None,
+    trusted_crop_links: bool = False
 ) -> list[dict[str, str | int]]:
     """Build catalogue rows and keep the physical box order."""
 
@@ -40,6 +41,7 @@ def catalogue_records(
                     box_result.box.image_file_path,
                     catalogue_path=catalogue_path,
                     additional_flags=(FALLBACK_USED_FLAG,) if used_fallback else (),
+                    trusted_crop_link=trusted_crop_links,
                 )
             )
 
@@ -49,18 +51,19 @@ def catalogue_records(
     )
     for record in records:
         title = str(record["Node Title"]).strip()
-        flags = str(record["Review Notes"])
+        flags = str(record["Review Flags"])
         if title and title_counts[title.casefold()] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
-        if int(record["Transcription Confidence (0-100)"]) < minimum_confidence:
+        if int(record["Transcription Confidence (%)"]) < minimum_confidence:
             flags = append_flag(flags, LOW_CONFIDENCE_FLAG)
-        record["Review Notes"] = flags
+        record["Review Flags"] = flags
 
     return records
 
 
 def export_catalogue(
-    results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80, replace_existing: bool = True
+    results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80,
+    replace_existing: bool = True, trusted_crop_links: bool = False
 ) -> list[dict[str, str | int]]:
     """Safely write the UTF-8 CSV and return its rows."""
 
@@ -68,7 +71,12 @@ def export_catalogue(
     if destination.suffix.casefold() != ".csv":
         raise ValueError("Catalogue output must end in .csv.")
 
-    records = catalogue_records(results, minimum_confidence=minimum_confidence, catalogue_path=destination)
+    records = catalogue_records(
+        results,
+        minimum_confidence=minimum_confidence,
+        catalogue_path=destination,
+        trusted_crop_links=trusted_crop_links,
+    )
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
         raise FileExistsError(f"Catalogue output already exists: {destination}")
@@ -100,7 +108,7 @@ def export_catalogue(
         else:
             rename_new_file(temporary_path, destination, existing_message=f"Catalogue output already exists: {destination}")
             temporary_path = None
-    except Exception:
+    except BaseException:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise

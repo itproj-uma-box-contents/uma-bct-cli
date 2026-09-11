@@ -2,8 +2,12 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Inputs = Join-Path $Root "inputs"
-$Outputs = Join-Path $Root "outputs"
+$FriendlyInputs = Join-Path $Root "Add Photos Here"
+$FriendlyOutputs = Join-Path $Root "Results"
+$LegacyInputs = Join-Path $Root "inputs"
+$LegacyOutputs = Join-Path $Root "outputs"
+$Inputs = $null
+$Outputs = $null
 $Runtime = Join-Path $Root ".uma-bct-runtime"
 $Constraints = Join-Path $Root "client-constraints.txt"
 $AppEnvironment = Join-Path $Runtime "app"
@@ -17,10 +21,128 @@ $MinimumOllamaVersion = [version] $OllamaVersion
 $OllamaArchiveUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/ollama-windows-amd64.zip"
 $OllamaArchiveSha256 = "c2d26d97e698027329c252629d7113bbc05d874b49960cbb03e93a39ae9fd95c"
 $OllamaDirectory = Join-Path $Runtime "ollama"
+$OllamaPrevious = Join-Path $Runtime "ollama-previous"
 $OllamaLog = Join-Path $Runtime "ollama.log"
 $OllamaOutputLog = Join-Path $Runtime "ollama.stdout.log"
 $OllamaProcess = $null
+$AppProcess = $null
+$LaunchLockPath = Join-Path $Root ".uma-bct-launcher.lock"
+$LaunchLockStream = $null
 $SupportedExtensions = @(".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp")
+
+function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
+    if ($Item.Name -ne ".uma-bct.lock" -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+    $LinkType = $Item.PSObject.Properties["LinkType"]
+    if ($null -eq $LinkType -or -not [string]::IsNullOrEmpty("$($LinkType.Value)")) {
+        return $false
+    }
+    try {
+        $Raw = Get-Content -LiteralPath $Item.FullName -Raw -Encoding UTF8
+        return $Raw -cmatch '^\{"schema_version": 1, "pid": [1-9][0-9]*\}\r?\n?$'
+    } catch {
+        return $false
+    }
+}
+
+function Test-DirectoryData([string] $Path) {
+    try {
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $false
+    } catch {
+        throw "$Path could not be inspected safely: $($_.Exception.Message)"
+    }
+    if (-not $Item.PSIsContainer -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Path must be a directory and not a symbolic link or junction."
+    }
+    foreach ($Entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+        if ($Entry -is [IO.FileInfo] -and (Test-VerifiedResultsLock $Entry)) {
+            continue
+        }
+        return $true
+    }
+    return $false
+}
+
+function Select-DataDirectories {
+    $FriendlyData = (Test-DirectoryData $FriendlyInputs) -or
+        (Test-DirectoryData $FriendlyOutputs)
+    $LegacyData = (Test-DirectoryData $LegacyInputs) -or
+        (Test-DirectoryData $LegacyOutputs)
+    if ($FriendlyData -and $LegacyData) {
+        throw "Private data exists in both '$FriendlyInputs' / '$FriendlyOutputs' and " +
+            "'$LegacyInputs' / '$LegacyOutputs'. Keep only one layout; files were not merged or moved."
+    }
+    if ($LegacyData) {
+        $script:Inputs = $LegacyInputs
+        $script:Outputs = $LegacyOutputs
+    } else {
+        $script:Inputs = $FriendlyInputs
+        $script:Outputs = $FriendlyOutputs
+    }
+}
+
+function Reserve-Bundle {
+    $Created = $false
+    try {
+        $script:LaunchLockStream = [IO.File]::Open(
+            $LaunchLockPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+        $Created = $true
+    } catch [IO.IOException] {
+        $Item = Get-Item -LiteralPath $LaunchLockPath -Force -ErrorAction Stop
+        $LinkType = $Item.PSObject.Properties["LinkType"]
+        if ($Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($null -ne $LinkType -and -not [string]::IsNullOrEmpty("$($LinkType.Value)"))) {
+            throw "The launcher reservation must be a regular file and not a link: $LaunchLockPath"
+        }
+        try {
+            $script:LaunchLockStream = [IO.File]::Open(
+                $LaunchLockPath,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None
+            )
+        } catch [IO.IOException] {
+            throw "This extracted UMA BCT folder is already running. Wait for the other launcher to finish: $Root"
+        }
+    }
+    try {
+        if (-not $Created) {
+            if ($script:LaunchLockStream.Length -gt 64) {
+                throw "The launcher reservation is malformed and was not recovered: $LaunchLockPath"
+            }
+            $ExistingBytes = [byte[]]::new([int] $script:LaunchLockStream.Length)
+            [void] $script:LaunchLockStream.Read($ExistingBytes, 0, $ExistingBytes.Length)
+            $ExistingOwner = [Text.Encoding]::UTF8.GetString($ExistingBytes)
+            if ($ExistingOwner -cnotmatch '^[1-9][0-9]*\r?\n$') {
+                throw "The launcher reservation is malformed and was not recovered: $LaunchLockPath"
+            }
+        }
+        $Owner = [Text.Encoding]::UTF8.GetBytes("$PID`n")
+        $script:LaunchLockStream.SetLength(0)
+        $script:LaunchLockStream.Write($Owner, 0, $Owner.Length)
+        $script:LaunchLockStream.Flush($true)
+    } catch {
+        Release-Bundle
+        throw
+    }
+}
+
+function Release-Bundle {
+    if ($null -ne $script:LaunchLockStream) {
+        $script:LaunchLockStream.Dispose()
+        $script:LaunchLockStream = $null
+    }
+}
 
 function Get-InputImages {
     @(Get-ChildItem -LiteralPath $Inputs -File -ErrorAction SilentlyContinue |
@@ -28,9 +150,8 @@ function Get-InputImages {
 }
 
 function Test-PrivateData {
-    foreach ($Directory in @($Inputs, $Outputs)) {
-        if ($null -ne (Get-ChildItem -LiteralPath $Directory -Force |
-            Select-Object -First 1)) {
+    foreach ($Directory in @($FriendlyInputs, $FriendlyOutputs, $LegacyInputs, $LegacyOutputs)) {
+        if (Test-DirectoryData $Directory) {
             return $true
         }
     }
@@ -192,6 +313,41 @@ function Stop-OwnedOllama {
         if (-not $OwnedProcess.HasExited) {
             $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
             try {
+                & $TaskKill /PID $OwnedProcess.Id /T *> $null
+            } catch {
+                # The verified child may not own a window; use the bounded fallback below.
+            }
+            if (-not $OwnedProcess.WaitForExit(5000)) {
+                try {
+                    & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
+                } catch {
+                    # Fall through to the exact-process fallback below.
+                }
+            }
+            $OwnedProcess.Refresh()
+            if (-not $OwnedProcess.HasExited) {
+                Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+        [void] $OwnedProcess.WaitForExit(5000)
+    } catch {
+        # The exact child may already have exited and been reaped.
+    } finally {
+        $OwnedProcess.Dispose()
+    }
+}
+
+function Stop-OwnedApp {
+    if ($null -eq $script:AppProcess) {
+        return
+    }
+    $OwnedProcess = $script:AppProcess
+    $script:AppProcess = $null
+    try {
+        $OwnedProcess.Refresh()
+        if (-not $OwnedProcess.HasExited -and -not $OwnedProcess.WaitForExit(5000)) {
+            $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+            try {
                 & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
             } catch {
                 # Fall through to the exact-process fallback below.
@@ -201,11 +357,38 @@ function Stop-OwnedOllama {
                 Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
             }
         }
-        $OwnedProcess.WaitForExit()
+        [void] $OwnedProcess.WaitForExit(5000)
     } catch {
-        # The exact child may already have exited and been reaped.
+        # The verified foreground child may already have exited and been reaped.
     } finally {
         $OwnedProcess.Dispose()
+    }
+}
+
+function Quote-NativeArgument([string] $Value) {
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
+    $StartArguments = @{
+        FilePath = $AppCli
+        ArgumentList = $Arguments
+        NoNewWindow = $true
+        PassThru = $true
+    }
+    if (-not [string]::IsNullOrEmpty($OutputPath)) {
+        $StartArguments["RedirectStandardOutput"] = $OutputPath
+    }
+    $script:AppProcess = Start-Process @StartArguments
+    try {
+        $script:AppProcess.WaitForExit()
+        $Status = $script:AppProcess.ExitCode
+        if ($Status -eq -1073741510) {
+            return 130
+        }
+        return $Status
+    } finally {
+        Stop-OwnedApp
     }
 }
 
@@ -258,6 +441,7 @@ function Install-Ollama {
     Assert-NoPrivateData
     $OllamaArchive = Join-Path $Runtime "ollama-windows-amd64.zip"
     $OllamaStaging = Join-Path $Runtime "ollama-install"
+    $Promoted = $false
     try {
         Invoke-WebRequest -Uri $OllamaArchiveUrl -OutFile $OllamaArchive -UseBasicParsing
         Assert-InstallerHash $OllamaArchive $OllamaArchiveSha256
@@ -272,23 +456,52 @@ function Install-Ollama {
         }
         Assert-OllamaSignature $StagedOllama
         Assert-OllamaSignature $StagedLlamaServer
-        Remove-Item -LiteralPath $OllamaDirectory -Recurse -Force -ErrorAction SilentlyContinue
-        Move-Item -LiteralPath $OllamaStaging -Destination $OllamaDirectory
+        if (-not (Test-OllamaVersion $StagedOllama)) {
+            throw "The verified Ollama archive has an unsupported executable version."
+        }
+        Remove-Item -LiteralPath $OllamaPrevious -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $OllamaDirectory) {
+            Move-Item -LiteralPath $OllamaDirectory -Destination $OllamaPrevious
+        }
+        try {
+            Move-Item -LiteralPath $OllamaStaging -Destination $OllamaDirectory
+            $Promoted = $true
+            Remove-Item -LiteralPath $OllamaPrevious -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            if (-not (Test-Path -LiteralPath $OllamaDirectory) -and
+                (Test-Path -LiteralPath $OllamaPrevious -PathType Container)) {
+                Move-Item -LiteralPath $OllamaPrevious -Destination $OllamaDirectory
+            }
+            throw
+        }
     } finally {
         Remove-Item -LiteralPath $OllamaArchive -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
+        if ($Promoted) {
+            Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Recover-OllamaPromotion {
+    if (-not (Test-Path -LiteralPath $OllamaDirectory) -and
+        (Test-Path -LiteralPath $OllamaPrevious -PathType Container)) {
+        Move-Item -LiteralPath $OllamaPrevious -Destination $OllamaDirectory
     }
 }
 
 function Assert-LocalDirectory([string] $Path) {
-    if (Test-Path -LiteralPath $Path) {
-        $Item = Get-Item -LiteralPath $Path -Force
-        if (-not $Item.PSIsContainer) {
-            throw "$Path must be a directory."
-        }
-        if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "$Path must not be a symbolic link or junction."
-        }
+    try {
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return
+    } catch {
+        throw "$Path could not be inspected safely: $($_.Exception.Message)"
+    }
+    if (-not $Item.PSIsContainer) {
+        throw "$Path must be a directory."
+    }
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Path must not be a symbolic link or junction."
     }
 }
 
@@ -313,6 +526,8 @@ try {
         throw "UMA BCT requires Windows 10 22H2 or newer."
     }
     Assert-NoReparseAncestor $Root
+    Select-DataDirectories
+    Reserve-Bundle
     Assert-LocalDirectory $Inputs
     Assert-LocalDirectory $Outputs
     Assert-LocalDirectory $Runtime
@@ -322,6 +537,7 @@ try {
     Assert-LocalDirectory $AppEnvironment
     Assert-LocalDirectory $OllamaDirectory
     Assert-LocalDirectory (Join-Path $Runtime "ollama-install")
+    Assert-LocalDirectory $OllamaPrevious
     New-Item -ItemType Directory -Force -Path $Inputs, $Outputs, $Runtime | Out-Null
     $PrivateDataPresent = Test-PrivateData
 
@@ -359,7 +575,7 @@ try {
     }
     if (-not (Test-UvVersion $Uv)) {
         if ($PrivateDataPresent) {
-            throw "Move private files out of inputs and outputs before repairing the local runtime."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the local runtime."
         }
         Assert-NoPrivateData
         Write-Host "Preparing the private local Python runtime..."
@@ -391,11 +607,12 @@ try {
     Remove-Item Env:UMA_BCT_ALLOW_REMOTE_OLLAMA -ErrorAction SilentlyContinue
     Remove-Item Env:UMA_BCT_ALLOW_CONTAINER_OLLAMA -ErrorAction SilentlyContinue
 
+    Recover-OllamaPromotion
     $Ollama = Find-Ollama
     $LlamaServer = Find-LlamaServer $Ollama
     if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama) -or $null -eq $LlamaServer) {
         if ($PrivateDataPresent) {
-            throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of inputs and outputs, then run this launcher again to repair it. Runtime log: $OllamaLog"
+            throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of '$Inputs' and '$Outputs', then run this launcher again to repair it. Runtime log: $OllamaLog"
         }
         Install-Ollama
         $Ollama = Find-Ollama
@@ -431,12 +648,12 @@ try {
     } else {
         if (-not (Test-Path -LiteralPath $AppPython -PathType Leaf) -or
             -not (Test-Path -LiteralPath $AppCli -PathType Leaf)) {
-            throw "Move private files out of inputs and outputs before repairing the application environment."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
         & $Uv pip install --no-config --offline --no-deps --reinstall `
             --python $AppPython $Wheels[0].FullName
         if ($LASTEXITCODE -ne 0) {
-            throw "Move private files out of inputs and outputs before repairing the application environment."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
     }
     if (-not (Test-Path -LiteralPath $AppCli -PathType Leaf)) {
@@ -451,9 +668,10 @@ try {
             Assert-NoPrivateData
             Write-Host "Checking the application and model. The first model download is large..."
             $SetupLog = Join-Path $Runtime "setup.json"
-            & $AppCli setup |
-                Set-Content -LiteralPath $SetupLog -Encoding UTF8
-            if ($LASTEXITCODE -ne 0) {
+            $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
+                " --results-directory " + (Quote-NativeArgument $Outputs)
+            $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
+            if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
             }
         }
@@ -470,28 +688,34 @@ try {
         }
 
         Write-Host "Transcribing the photos..."
-        & $AppCli --force
-        $RunStatus = $LASTEXITCODE
+        $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
+            " --results-directory " + (Quote-NativeArgument $Outputs)
+        $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location
     }
 
     if ($RunStatus -eq 0) {
         Open-LocalFolder $Outputs
-        Write-Host "`nFinished. Review $Outputs\catalogue.csv"
+        Write-Host "`nFinished. Review the newest Batch folder in $Outputs"
     } elseif ($RunStatus -eq 1) {
         Open-LocalFolder $Outputs
         [Console]::Error.WriteLine(
-            "`nProcessing was incomplete. Review the newest run manifest in $Outputs."
+            "`nProcessing was incomplete. Review the newest Batch folder in $Outputs."
         )
         [Console]::Error.WriteLine(
-            "The catalogue may be partial, absent, or retained from the previous run."
+            "Its Catalogue may be partial or absent; Run Details records every outcome."
         )
     }
+} catch [Management.Automation.PipelineStoppedException] {
+    [Console]::Error.WriteLine("`nUMA BCT was interrupted.")
+    $RunStatus = 130
 } catch {
     [Console]::Error.WriteLine("`nUMA BCT could not continue: $($_.Exception.Message)")
     $RunStatus = 2
 } finally {
+    Stop-OwnedApp
     Stop-OwnedOllama
+    Release-Bundle
 }
 exit $RunStatus

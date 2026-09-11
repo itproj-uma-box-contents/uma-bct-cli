@@ -1,9 +1,11 @@
+import hashlib
 import os
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -11,7 +13,14 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from scripts.build_client_bundle import BUNDLE_ROOT, CLIENT_FILES, build_client_bundle, verify_client_bundle
+from scripts.build_client_bundle import (
+    BUNDLE_ROOT,
+    CLIENT_FILES,
+    FRIENDLY_INPUT_DIRECTORY,
+    FRIENDLY_RESULTS_DIRECTORY,
+    build_client_bundle,
+    verify_client_bundle,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,6 +133,20 @@ def prepare_posix_launcher(root: Path, *, companion: bool = True) -> tuple[Path,
         runtime / "app/bin/uma-bct",
         '#!/bin/sh\nprintf \'%s\\n\' "$OLLAMA_HOST" >"$UMA_BCT_FAKE_APP_HOST"\n'
         'if [ "${UMA_BCT_FAKE_INTERRUPT:-}" = "1" ]; then kill -TERM "$PPID"; fi\n'
+        'if [ "${UMA_BCT_FAKE_APP_WAIT:-}" = "1" ]; then\n'
+        '  exec "$UMA_BCT_FAKE_SYSTEM_PYTHON" -c \'import os, signal, time\n'
+        'path = os.environ["UMA_BCT_FAKE_APP_SIGNALS"]\n'
+        'def stop(name, code):\n'
+        '    def handler(_signum, _frame):\n'
+        '        with open(path, "a", encoding="utf-8") as output: output.write(name + "\\n")\n'
+        '        raise SystemExit(code)\n'
+        '    return handler\n'
+        'signal.signal(signal.SIGINT, stop("INT", 130))\n'
+        'signal.signal(signal.SIGTERM, stop("TERM", 143))\n'
+        'signal.signal(signal.SIGHUP, stop("HUP", 129))\n'
+        'open(os.environ["UMA_BCT_FAKE_APP_READY"], "w", encoding="utf-8").write("ready\\n")\n'
+        'while True: time.sleep(1)\'\n'
+        'fi\n'
         'exit "${UMA_BCT_FAKE_APP_EXIT:-0}"\n',
     )
     ollama = runtime / "ollama/ollama"
@@ -140,6 +163,10 @@ def prepare_posix_launcher(root: Path, *, companion: bool = True) -> tuple[Path,
     environment.update(
         UMA_BCT_NO_OPEN="1",
         UMA_BCT_FAKE_APP_HOST=str(root / "app-host.txt"),
+        UMA_BCT_FAKE_APP_PID=str(root / "app-pid.txt"),
+        UMA_BCT_FAKE_APP_SIGNALS=str(root / "app-signals.txt"),
+        UMA_BCT_FAKE_APP_READY=str(root / "app-ready.txt"),
+        UMA_BCT_FAKE_SYSTEM_PYTHON=sys.executable,
         UMA_BCT_FAKE_OLLAMA_EVENTS=str(events),
         UMA_BCT_FAKE_OLLAMA_COUNTER=str(root / "ollama-counter.txt"),
     )
@@ -180,6 +207,8 @@ def prepare_windows_launcher(
         ProgramFiles=str(root / "program-files"),
         UMA_BCT_NO_OPEN="1",
         UMA_BCT_FAKE_APP_HOST=str(root / "app-host.txt"),
+        UMA_BCT_FAKE_APP_PID=str(root / "app-pid.txt"),
+        UMA_BCT_FAKE_APP_SIGNALS=str(root / "app-signals.txt"),
         UMA_BCT_FAKE_OLLAMA_EVENTS=str(events),
         UMA_BCT_FAKE_OLLAMA_COUNTER=str(root / "ollama-counter.txt"),
     )
@@ -220,13 +249,88 @@ class ClientDeliveryTest(unittest.TestCase):
                 path.write_text(name, encoding="utf-8")
 
             bundle = build_client_bundle(dist, source_root=root)
+            self.assertEqual(bundle.name, "archive-box-transcription.zip")
+            self.assertEqual(BUNDLE_ROOT, "Archive Box Transcription")
             with zipfile.ZipFile(bundle) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
-                    {*(f"{BUNDLE_ROOT}/{Path(name).name}" for name in CLIENT_FILES), f"{BUNDLE_ROOT}/{wheel.name}"},
+                    {
+                        *(f"{BUNDLE_ROOT}/{Path(name).name}" for name in CLIENT_FILES),
+                        f"{BUNDLE_ROOT}/{wheel.name}",
+                        f"{BUNDLE_ROOT}/{FRIENDLY_INPUT_DIRECTORY}/",
+                        f"{BUNDLE_ROOT}/{FRIENDLY_RESULTS_DIRECTORY}/",
+                    },
                 )
             bundle.write_bytes(b"not a zip")
             with self.assertRaisesRegex(ValueError, "verify"):
+                verify_client_bundle(dist, source_root=root)
+
+    def test_bundle_rejects_a_linked_source_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            (dist / "uma_bct_cli-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+            private = root / "private-transcript.txt"
+            private.write_bytes(b"private archive transcription")
+            for name in CLIENT_FILES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if name == "README.md":
+                    try:
+                        path.symlink_to(private)
+                    except OSError as error:
+                        self.skipTest(str(error))
+                else:
+                    path.write_text(name, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unlinked regular file"):
+                build_client_bundle(dist, source_root=root)
+
+    def test_bundle_verifier_rejects_duplicate_member_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            wheel = dist / "uma_bct_cli-0.1.0-py3-none-any.whl"
+            wheel.write_bytes(b"wheel")
+            for name in CLIENT_FILES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name, encoding="utf-8")
+            bundle = build_client_bundle(dist, source_root=root)
+            with zipfile.ZipFile(bundle) as source:
+                entries = [(item, source.read(item)) for item in source.infolist()]
+            duplicate_name = f"{BUNDLE_ROOT}/README.md"
+            with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(duplicate_name, b"private earlier duplicate")
+                for item, content in entries:
+                    archive.writestr(item, content)
+
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                verify_client_bundle(dist, source_root=root)
+
+    def test_bundle_verifier_rejects_link_metadata_even_when_bytes_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            (dist / "uma_bct_cli-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+            for name in CLIENT_FILES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name, encoding="utf-8")
+            bundle = build_client_bundle(dist, source_root=root)
+            with zipfile.ZipFile(bundle) as source:
+                entries = [(item, source.read(item)) for item in source.infolist()]
+            with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+                for item, content in entries:
+                    if item.filename == f"{BUNDLE_ROOT}/README.md":
+                        item.create_system = 3
+                        item.external_attr = (0o120777 << 16)
+                    archive.writestr(item, content)
+
+            with self.assertRaisesRegex(ValueError, "link or special"):
                 verify_client_bundle(dist, source_root=root)
 
     def test_dependency_lock_is_generated_and_excludes_deferred_exporters(self):
@@ -236,6 +340,10 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertNotIn("pandas==", constraints)
         self.assertNotIn("openpyxl==", constraints)
 
+    def test_compose_disables_ollama_cloud_for_every_service(self):
+        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        self.assertEqual(compose.count('OLLAMA_NO_CLOUD: "1"'), 3)
+
     def test_launchers_pin_downloads_and_prepare_before_accepting_photos(self):
         posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
         windows = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
@@ -244,8 +352,12 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("0.30.8", launcher)
             self.assertIn("127.0.0.1", launcher)
             self.assertIn("client-constraints.txt", launcher)
-        self.assertLess(posix.index('setup >"$RUNTIME/setup.json"'), posix.index("Press Enter after"))
-        self.assertLess(windows.index("& $AppCli setup"), windows.index("Read-Host"))
+            self.assertIn("Add Photos Here", launcher)
+            self.assertIn("Results", launcher)
+            self.assertIn("--results-directory", launcher)
+            self.assertIn(".uma-bct-launcher.lock", launcher)
+        self.assertLess(posix.index("setup --path-to-inputs"), posix.index("Press Enter after"))
+        self.assertLess(windows.index('"setup --path-to-inputs "'), windows.index("Read-Host"))
         self.assertIn("Get-AuthenticodeSignature", windows)
         self.assertIn("ollama-windows-amd64.zip", windows)
         self.assertNotIn("OllamaSetup.exe", windows)
@@ -317,12 +429,14 @@ class ClientDeliveryTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 launcher, environment, events = prepare_posix_launcher(root)
+                environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
                 result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 selected_host = (root / "app-host.txt").read_text(encoding="utf-8").strip()
                 self.assertRegex(selected_host, r"^http://127\.0\.0\.1:\d+$")
                 self.assertNotEqual(selected_host, "http://127.0.0.1:11434")
+                self.assertNotEqual(selected_host, "http://127.0.0.1:1")
                 event_lines = events.read_text(encoding="utf-8").splitlines()
                 self.assertEqual([line.split()[0] for line in event_lines], ["started", "stopped"])
                 child_pid = int(event_lines[0].split()[-1])
@@ -400,6 +514,97 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("incomplete or unsupported", result.stderr)
             self.assertFalse(events.exists())
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS staged-extraction fixture")
+    def test_posix_interrupted_ollama_extraction_repairs_cleanly_on_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            (root / "inputs/shelf.jpg").unlink()
+            shutil.rmtree(root / ".uma-bct-runtime/ollama")
+
+            archive_content = root / "archive-content"
+            ollama = archive_content / "ollama"
+            helper = archive_content / "llama-server"
+            write_executable(ollama, FAKE_OLLAMA)
+            write_executable(helper, "#!/bin/sh\nexit 0\n")
+            archive = root / "fake-ollama.tgz"
+            with tarfile.open(archive, "w:gz") as output:
+                output.add(ollama, arcname="ollama")
+                output.add(helper, arcname="llama-server")
+            archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+            fake_bin = root / "fake-bin"
+            write_executable(
+                fake_bin / "curl",
+                "#!/bin/sh\ndestination=\"\"\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"-o\" ]; then shift; destination=$1; fi\n"
+                "  shift\n"
+                "done\n"
+                "/bin/cp \"$UMA_BCT_FAKE_OLLAMA_ARCHIVE\" \"$destination\"\n",
+            )
+            write_executable(
+                fake_bin / "tar",
+                "#!/bin/sh\n"
+                "if [ \"${UMA_BCT_FAKE_EXTRACT_STALL:-}\" = \"1\" ]; then\n"
+                "  : >\"$UMA_BCT_FAKE_EXTRACT_MARKER\"\n"
+                "  while :; do sleep 1; done\n"
+                "fi\n"
+                "exec /usr/bin/tar \"$@\"\n",
+            )
+            launcher_text = launcher.read_text(encoding="utf-8")
+            launcher_text = launcher_text.replace(
+                'PATH="/usr/bin:/bin:/usr/sbin:/sbin"',
+                f'PATH="{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"',
+            )
+            launcher_text = launcher_text.replace(
+                "52acbca4e89c53db9abc586a22b5633fd101db293177264b9a0fe5d64a42a064",
+                archive_digest,
+            )
+            launcher.write_text(launcher_text, encoding="utf-8")
+            marker = root / "extract-started.txt"
+            environment.update(
+                UMA_BCT_FAKE_OLLAMA_ARCHIVE=str(archive),
+                UMA_BCT_FAKE_EXTRACT_MARKER=str(marker),
+                UMA_BCT_FAKE_EXTRACT_STALL="1",
+            )
+            first = subprocess.Popen(
+                ["sh", str(launcher)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and not marker.exists():
+                    if first.poll() is not None:
+                        self.fail("Launcher exited before staged extraction started")
+                    time.sleep(0.1)
+                self.assertTrue(marker.exists())
+                os.killpg(first.pid, signal.SIGKILL)
+                first.communicate(timeout=10)
+            finally:
+                if first.poll() is None:
+                    os.killpg(first.pid, signal.SIGKILL)
+                    first.communicate()
+            self.assertTrue((root / ".uma-bct-runtime/ollama-install").is_dir())
+
+            environment.pop("UMA_BCT_FAKE_EXTRACT_STALL")
+            result = subprocess.run(
+                ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=25
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("No supported photos", result.stderr)
+            self.assertTrue((root / ".uma-bct-runtime/ollama/ollama").is_file())
+            self.assertTrue((root / ".uma-bct-runtime/ollama/llama-server").is_file())
+            self.assertFalse((root / ".uma-bct-runtime/ollama-install").exists())
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started", "stopped"]
+            )
+
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_cleans_up_when_interrupted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -412,6 +617,340 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(
                 [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started", "stopped"]
             )
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_launcher_uses_friendly_layout_and_rejects_mixed_private_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            (root / "inputs").rename(root / "Add Photos Here")
+            (root / "outputs").rename(root / "Results")
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(events.is_file())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            friendly = root / "Add Photos Here"
+            friendly.mkdir()
+            (friendly / "other.jpg").write_bytes(b"other private photo")
+            (root / "Results").mkdir()
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("both", result.stderr)
+            self.assertIn("Add Photos Here", result.stderr)
+            self.assertIn("inputs", result.stderr)
+            self.assertFalse(events.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_layout_inspection_rejects_unreadable_and_noncanonical_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            inputs = root / "inputs"
+            inputs.chmod(0)
+            try:
+                result = subprocess.run(
+                    ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10
+                )
+            finally:
+                inputs.chmod(0o700)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("inspected safely", result.stderr)
+            self.assertFalse(events.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            try:
+                (root / "Add Photos Here").symlink_to(root / "missing-friendly-directory")
+            except OSError as error:
+                self.skipTest(str(error))
+            result = subprocess.run(
+                ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("symbolic link", result.stderr)
+            self.assertFalse(events.exists())
+
+        for malformed in ("multiline", "case", "hardlink"):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher, environment, events = prepare_posix_launcher(root)
+                results = root / "Results"
+                results.mkdir()
+                lock = results / ".uma-bct.lock"
+                if malformed == "hardlink":
+                    source = root / "lock-source"
+                    source.write_text('{"schema_version": 1, "pid": 1}\n', encoding="utf-8")
+                    try:
+                        os.link(source, lock)
+                    except OSError as error:
+                        self.skipTest(str(error))
+                elif malformed == "case":
+                    lock.write_text('{"Schema_version": 1, "pid": 1}\n', encoding="utf-8")
+                else:
+                    lock.write_text('{"schema_version": 1, "pid": 1}\nextra\n', encoding="utf-8")
+
+                result = subprocess.run(
+                    ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10
+                )
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("both", result.stderr)
+                self.assertFalse(events.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_layout_ignores_only_a_canonical_unlinked_results_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            results = root / "Results"
+            results.mkdir()
+            (results / ".uma-bct.lock").write_text(
+                '{"schema_version": 1, "pid": 1}\n', encoding="utf-8"
+            )
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(events.is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_launcher_supports_bundle_paths_with_spaces_and_unicode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Archive Client ü"
+            root.mkdir()
+            launcher, environment, events = prepare_posix_launcher(root)
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started", "stopped"]
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_two_starts_of_one_posix_bundle_are_exclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            first = subprocess.Popen(
+                ["sh", str(launcher)], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if events.exists() and (root / "app-host.txt").exists():
+                        break
+                    if first.poll() is not None:
+                        self.fail("First launcher exited before its app became ready")
+                    time.sleep(0.1)
+                second = subprocess.run(
+                    ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10
+                )
+                self.assertEqual(second.returncode, 2)
+                self.assertIn("already running", second.stderr)
+                self.assertEqual(
+                    [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started"]
+                )
+            finally:
+                if first.poll() is None:
+                    first.terminate()
+                first.communicate(timeout=10)
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_launcher_recovers_a_well_formed_dead_owner_reservation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            reservation = root / ".uma-bct-launcher.lock"
+            reservation.mkdir(mode=0o700)
+            (reservation / "pid").write_text("999999999\n", encoding="utf-8")
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(reservation.exists())
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started", "stopped"]
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            (root / ".uma-bct-launcher.lock").mkdir(mode=0o700)
+
+            result = subprocess.run(["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=15)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("malformed", result.stderr)
+            self.assertFalse(events.exists())
+
+        for malformed in ("multiline", "nul", "hardlink"):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher, environment, events = prepare_posix_launcher(root)
+                reservation = root / ".uma-bct-launcher.lock"
+                reservation.mkdir(mode=0o700)
+                owner = reservation / "pid"
+                if malformed == "multiline":
+                    owner.write_text("999999999\ndo-not-delete\n", encoding="utf-8")
+                elif malformed == "nul":
+                    owner.write_bytes(b"999999999\x00\n")
+                else:
+                    sentinel = root / "owner-sentinel.txt"
+                    sentinel.write_text("999999999\n", encoding="utf-8")
+                    try:
+                        os.link(sentinel, owner)
+                    except OSError as error:
+                        self.skipTest(str(error))
+
+                result = subprocess.run(
+                    ["sh", str(launcher)], env=environment, capture_output=True, text=True, timeout=10
+                )
+
+                self.assertEqual(result.returncode, 2)
+                self.assertTrue(reservation.is_dir())
+                self.assertTrue(owner.is_file())
+                self.assertFalse(events.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_two_posix_recoverers_cannot_steal_the_winners_new_reservation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_posix_launcher(root)
+            reservation = root / ".uma-bct-launcher.lock"
+            reservation.mkdir(mode=0o700)
+            (reservation / "pid").write_text("999999999\n", encoding="utf-8")
+            environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            processes = [
+                subprocess.Popen(
+                    ["sh", str(launcher)],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _index in range(2)
+            ]
+            try:
+                deadline = time.monotonic() + 12
+                while time.monotonic() < deadline:
+                    exited = [process for process in processes if process.poll() is not None]
+                    running = [process for process in processes if process.poll() is None]
+                    if len(exited) == 1 and len(running) == 1 and (root / "app-ready.txt").exists():
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail("Concurrent reservation recovery did not select one winner")
+                self.assertEqual(exited[0].returncode, 2)
+                self.assertTrue(reservation.is_dir())
+                self.assertEqual(len(list(reservation.iterdir())), 1)
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.communicate(timeout=10)
+
+            self.assertEqual(
+                [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()], ["started", "stopped"]
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_two_posix_bundles_use_independent_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            first_root = parent / "Client One"
+            second_root = parent / "Client Two ü"
+            first_root.mkdir()
+            second_root.mkdir()
+            first_launcher, first_environment, first_events = prepare_posix_launcher(first_root)
+            second_launcher, second_environment, second_events = prepare_posix_launcher(second_root)
+            first_environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            second_environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            first = subprocess.Popen(
+                ["sh", str(first_launcher)],
+                env=first_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            second = subprocess.Popen(
+                ["sh", str(second_launcher)],
+                env=second_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 12
+                while time.monotonic() < deadline:
+                    if (first_root / "app-host.txt").exists() and (second_root / "app-host.txt").exists():
+                        break
+                    if first.poll() is not None or second.poll() is not None:
+                        self.fail("A concurrent launcher exited before both apps became ready")
+                    time.sleep(0.1)
+                first_host = (first_root / "app-host.txt").read_text(encoding="utf-8").strip()
+                second_host = (second_root / "app-host.txt").read_text(encoding="utf-8").strip()
+                self.assertNotEqual(first_host, second_host)
+
+                first.terminate()
+                first.communicate(timeout=10)
+                self.assertIsNone(second.poll())
+                second_port = int(second_host.rsplit(":", 1)[1])
+                with socket.create_connection(("127.0.0.1", second_port), timeout=1) as connection:
+                    connection.sendall(b"GET /api/version HTTP/1.0\r\n\r\n")
+                    self.assertIn(b"200 OK", connection.recv(128))
+            finally:
+                for process in (first, second):
+                    if process.poll() is None:
+                        process.terminate()
+                    process.communicate(timeout=10)
+
+            self.assertEqual([line.split()[0] for line in first_events.read_text().splitlines()], ["started", "stopped"])
+            self.assertEqual(
+                [line.split()[0] for line in second_events.read_text().splitlines()], ["started", "stopped"]
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_launcher_forwards_real_interrupts_to_a_blocked_cli(self):
+        for sent_signal, expected_status in ((signal.SIGINT, 130), (signal.SIGHUP, 129)):
+            with self.subTest(sent_signal=sent_signal), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher, environment, events = prepare_posix_launcher(root)
+                environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+                process = subprocess.Popen(
+                    ["sh", str(launcher)], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                try:
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if events.exists() and (root / "app-ready.txt").exists():
+                            break
+                        if process.poll() is not None:
+                            self.fail("Launcher exited before the blocked CLI was ready")
+                        time.sleep(0.1)
+                    process.send_signal(sent_signal)
+                    process.communicate(timeout=10)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+
+                self.assertEqual(process.returncode, expected_status)
+                expected_name = "INT" if sent_signal == signal.SIGINT else "HUP"
+                self.assertEqual((root / "app-signals.txt").read_text(encoding="utf-8").splitlines(), [expected_name])
+                self.assertEqual(
+                    [line.split()[0] for line in events.read_text(encoding="utf-8").splitlines()],
+                    ["started", "stopped"],
+                )
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher test")
     def test_windows_launcher_has_valid_powershell_syntax(self):
@@ -439,6 +978,7 @@ class ClientDeliveryTest(unittest.TestCase):
                 root = Path(directory)
                 launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
                 environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "1"
+                environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
                 result = subprocess.run(
                     ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
                     env=environment,
@@ -450,6 +990,7 @@ class ClientDeliveryTest(unittest.TestCase):
                 selected_host = (root / "app-host.txt").read_text(encoding="utf-8").strip()
                 self.assertRegex(selected_host, r"^http://127\.0\.0\.1:\d+$")
                 self.assertNotEqual(selected_host, "http://127.0.0.1:11434")
+                self.assertNotEqual(selected_host, "http://127.0.0.1:1")
                 event_lines = events.read_text(encoding="utf-8").splitlines()
                 self.assertEqual([line.split()[0] for line in event_lines], ["bind-failed", "runner-started", "started"])
                 for line in event_lines[-2:]:
@@ -461,6 +1002,155 @@ class ClientDeliveryTest(unittest.TestCase):
         finally:
             if owns_listener:
                 listener.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_cmd_entrypoint_runs_the_powershell_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            command = root / "Run UMA BCT.cmd"
+            shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
+
+            result = subprocess.run(
+                ["cmd.exe", "/d", "/c", str(command)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(events.is_file())
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_cmd_entrypoint_propagates_ctrl_break_as_130(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+            command = root / "Run UMA BCT.cmd"
+            shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
+            environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            process = subprocess.Popen(
+                ["cmd.exe", "/d", "/c", str(command)],
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and not (root / "app-host.txt").exists():
+                    if process.poll() is not None:
+                        self.fail("CMD launcher exited before the interruption fixture was ready")
+                    time.sleep(0.1)
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                process.communicate(timeout=20)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+            self.assertEqual(process.returncode, 130)
+            self.assertEqual(
+                (root / "app-signals.txt").read_text(encoding="utf-8").splitlines(), ["ControlBreak"]
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_uses_friendly_unicode_layout_and_rejects_mixed_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Archive Client ü"
+            root.mkdir()
+            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            (root / "inputs").rename(root / "Add Photos Here")
+            (root / "outputs").rename(root / "Results")
+
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(events.is_file())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            friendly = root / "Add Photos Here"
+            friendly.mkdir()
+            (friendly / "other.jpg").write_bytes(b"other private photo")
+            (root / "Results").mkdir()
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("both", result.stderr)
+            self.assertFalse(events.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_two_starts_of_one_windows_bundle_are_exclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+            environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
+            first = subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and not (root / "app-pid.txt").exists():
+                    if first.poll() is not None:
+                        self.fail("First Windows launcher exited before its app was ready")
+                    time.sleep(0.1)
+                second = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(second.returncode, 2)
+                self.assertIn("already running", second.stderr)
+            finally:
+                if first.poll() is None:
+                    first.send_signal(signal.CTRL_BREAK_EVENT)
+                first.communicate(timeout=20)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_rejects_a_hardlinked_bundle_reservation_without_modifying_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+            sentinel = root / "reservation-sentinel.txt"
+            sentinel.write_bytes(b"do not overwrite")
+            try:
+                os.link(sentinel, root / ".uma-bct-launcher.lock")
+            except OSError as error:
+                self.skipTest(str(error))
+
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(sentinel.read_bytes(), b"do not overwrite")
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_rejects_missing_companion_and_propagates_exit_codes(self):
@@ -574,6 +1264,7 @@ class ClientDeliveryTest(unittest.TestCase):
                     self.fail("Windows interruption fixture did not become ready")
 
                 event_lines = events.read_text(encoding="utf-8").splitlines()
+                app_pid = int((root / "app-pid.txt").read_text(encoding="utf-8"))
                 process.send_signal(signal.CTRL_BREAK_EVENT)
                 process.communicate(timeout=10)
             finally:
@@ -582,6 +1273,12 @@ class ClientDeliveryTest(unittest.TestCase):
                     process.communicate()
 
             self.assertEqual([line.split()[0] for line in event_lines], ["runner-started", "started"])
+            self.assertEqual(process.returncode, 130)
+            self.assertEqual(
+                (root / "app-signals.txt").read_text(encoding="utf-8").splitlines(), ["ControlBreak"]
+            )
+            with self.assertRaises(OSError):
+                os.kill(app_pid, 0)
             for line in event_lines:
                 with self.assertRaises(OSError):
                     os.kill(int(line.split()[-1]), 0)

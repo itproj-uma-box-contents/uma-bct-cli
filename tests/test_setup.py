@@ -25,6 +25,20 @@ class SetupTest(unittest.TestCase):
             model.ensure_model.assert_called_once()
             self.assertFalse(catalogue_lock_path(root / "outputs/catalogue.csv").exists())
 
+    def test_prepares_custom_friendly_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "Add Photos Here"
+            results = root / "Results"
+            with patch("uma_bct.setup_command.OllamaVisionModel"), contextlib.redirect_stdout(io.StringIO()):
+                status = run_setup(input_directory=inputs, results_directory=results)
+                repeated_status = run_setup(input_directory=inputs, results_directory=results)
+            self.assertEqual(status, 0)
+            self.assertEqual(repeated_status, 0)
+            self.assertTrue(inputs.is_dir())
+            self.assertTrue(results.is_dir())
+            self.assertTrue((results / ".uma-bct.lock").is_file())
+
     def test_setup_failure_is_json_and_stderr(self):
         with tempfile.TemporaryDirectory() as directory:
             stdout, stderr = io.StringIO(), io.StringIO()

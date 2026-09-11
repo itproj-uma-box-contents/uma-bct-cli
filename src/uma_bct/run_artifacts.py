@@ -6,6 +6,7 @@ keep the old files, and failed publication can restore the prior catalogue.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -20,6 +21,187 @@ from .atomic import rename_new_file
 from .path_safety import check_path
 
 LOCK_FILE_NAME = ".uma-bct.lock"
+
+
+def regular_file_sha256(path: Path, purpose: str) -> str:
+    """Hash an unlinked regular file while checking its identity."""
+
+    check_path(path, purpose)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise ValueError(f"{purpose} must be one unlinked regular file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    digest = hashlib.sha256()
+    try:
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity or opened.st_nlink != 1:
+            raise ValueError(f"{purpose} changed while it was opened: {path}")
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after_open = os.fstat(descriptor)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    after_path = path.lstat()
+    if (
+        (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != identity
+        or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != identity
+        or after_path.st_nlink != 1
+    ):
+        raise ValueError(f"{purpose} changed while it was being hashed: {path}")
+    return digest.hexdigest()
+
+
+def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
+    try:
+        return regular_file_sha256(first, purpose) == regular_file_sha256(second, purpose)
+    except (OSError, ValueError):
+        return False
+
+
+def path_entry_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose: str) -> None:
+    """Replace a backed-up file without overwriting a racing unbacked edit."""
+
+    check_path(staging, f"Staged {purpose}")
+    check_path(destination, purpose)
+    check_path(backup, f"Backed-up {purpose}")
+    new_digest = regular_file_sha256(staging, f"Staged {purpose}")
+    quarantine = destination.with_name(f".uma-bct-rollback-{uuid.uuid4().hex}.tmp")
+    check_path(quarantine, f"{purpose} publication quarantine")
+    try:
+        os.replace(destination, quarantine)
+        if not same_regular_file_content(quarantine, backup, f"{purpose} publication source"):
+            rename_new_file(
+                quarantine,
+                destination,
+                existing_message=f"{purpose} changed again while its unbacked edit was restored: {destination}",
+            )
+            quarantine = None
+            raise RuntimeError(f"{purpose} changed after its backup and was not overwritten: {destination}")
+        rename_new_file(staging, destination, existing_message=f"{purpose} appeared during publication: {destination}")
+        quarantine.unlink()
+        quarantine = None
+    except BaseException as original_error:
+        if quarantine is not None and path_entry_exists(quarantine):
+            try:
+                if not path_entry_exists(destination):
+                    rename_new_file(
+                        quarantine,
+                        destination,
+                        existing_message=f"{purpose} appeared during rollback: {destination}",
+                    )
+                    quarantine = None
+                elif regular_file_sha256(destination, purpose) == new_digest:
+                    os.replace(quarantine, destination)
+                    quarantine = None
+                elif same_regular_file_content(quarantine, backup, f"Backed-up {purpose}"):
+                    quarantine.unlink()
+                    quarantine = None
+            except (OSError, ValueError):
+                pass
+        if quarantine is not None and path_entry_exists(quarantine):
+            raise RuntimeError(
+                f"{purpose} changed during publication; recovery data was retained at {quarantine}."
+            ) from original_error
+        raise
+
+
+def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> None:
+    temporary_path: Path | None = None
+    source_descriptor: int | None = None
+    try:
+        check_path(backup, f"Backed-up {purpose}")
+        before = backup.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError(f"Backed-up {purpose} must be one unlinked regular file: {backup}")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        source_descriptor = os.open(backup, flags)
+        opened = os.fstat(source_descriptor)
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity or opened.st_nlink != 1:
+            raise ValueError(f"Backed-up {purpose} changed while it was opened: {backup}")
+        source = os.fdopen(source_descriptor, "rb")
+        source_descriptor = None
+        with source, tempfile.NamedTemporaryFile(
+            mode="w+b", dir=destination.parent, prefix=".uma-bct-rollback-", suffix=".tmp", delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            shutil.copyfileobj(source, temporary)
+            after_open = os.fstat(source.fileno())
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        after_path = backup.lstat()
+        if (
+            (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != identity
+            or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != identity
+            or after_path.st_nlink != 1
+        ):
+            raise ValueError(f"Backed-up {purpose} changed while it was being restored: {backup}")
+        rename_new_file(
+            temporary_path,
+            destination,
+            existing_message=f"{purpose} appeared during rollback: {destination}",
+        )
+        temporary_path = None
+    finally:
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def rollback_owned_file(destination: Path, expected_digest: str, backup: Path | None, purpose: str) -> None:
+    """Atomically displace and verify an owned publication before rollback."""
+
+    quarantine: Path | None = destination.with_name(f".uma-bct-rollback-{uuid.uuid4().hex}.tmp")
+    try:
+        os.replace(destination, quarantine)
+        if regular_file_sha256(quarantine, f"Published {purpose}") != expected_digest:
+            rename_new_file(
+                quarantine,
+                destination,
+                existing_message=f"{purpose} changed again while it was restored: {destination}",
+            )
+            quarantine = None
+            raise RuntimeError(f"{purpose} changed after publication and was not rolled back: {destination}")
+        if backup is not None:
+            restore_backup_no_clobber(backup, destination, purpose)
+        quarantine.unlink()
+        quarantine = None
+    except BaseException as original_error:
+        if quarantine is not None and path_entry_exists(quarantine):
+            try:
+                quarantine_digest = regular_file_sha256(quarantine, f"Rollback {purpose}")
+                if quarantine_digest != expected_digest and not path_entry_exists(destination):
+                    rename_new_file(
+                        quarantine,
+                        destination,
+                        existing_message=f"{purpose} appeared while an unknown edit was restored: {destination}",
+                    )
+                    quarantine = None
+                elif quarantine_digest == expected_digest:
+                    if backup is not None and not path_entry_exists(destination):
+                        restore_backup_no_clobber(backup, destination, purpose)
+                    quarantine.unlink()
+                    quarantine = None
+            except (OSError, ValueError):
+                pass
+        if quarantine is not None and path_entry_exists(quarantine):
+            raise RuntimeError(f"{purpose} rollback data was retained at {quarantine}.") from original_error
+        raise
 
 
 def new_run_id() -> str:
@@ -99,7 +281,7 @@ class CatalogueLock:
                     raise OSError("Could not write the catalogue lock.")
                 written += count
             os.fsync(descriptor)
-        except Exception:
+        except BaseException:
             self.release()
             raise
         if os.name == "nt":
@@ -167,10 +349,48 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
         check_path(path, "Existing result")
         if not path.exists():
             continue
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError(f"Existing result must be one unlinked regular file: {path}")
         backup = previous_result_path(path, run_id)
         check_path(backup, "Previous result")
-        shutil.copy2(path, backup)
-        backups.append(backup)
+        temporary_path: Path | None = None
+        source_descriptor: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            source_descriptor = os.open(path, flags)
+            opened = os.fstat(source_descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise ValueError(f"Existing result changed while it was opened: {path}")
+            source = os.fdopen(source_descriptor, "rb")
+            source_descriptor = None
+            with source, tempfile.NamedTemporaryFile(
+                mode="w+b", dir=path.parent, prefix=".uma-bct-backup-", suffix=".tmp", delete=False
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                shutil.copyfileobj(source, temporary_file)
+                after_open = os.fstat(source.fileno())
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            after_path = path.lstat()
+            before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if (
+                (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != before_identity
+                or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != before_identity
+                or after_path.st_nlink != 1
+            ):
+                raise ValueError(f"Existing result changed while it was being backed up: {path}")
+            temporary_path.chmod(stat.S_IMODE(before.st_mode))
+            os.utime(temporary_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            rename_new_file(temporary_path, backup, existing_message=f"Previous result already exists: {backup}")
+            temporary_path = None
+            backups.append(backup)
+        except BaseException:
+            if source_descriptor is not None:
+                os.close(source_descriptor)
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
     return tuple(backups)
 
 
@@ -194,7 +414,7 @@ def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> No
             os.fsync(restored.fileno())
         check_path(destination, "Catalogue rollback")
         temporary_path.replace(destination)
-    except Exception:
+    except BaseException:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise
@@ -225,7 +445,7 @@ def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_exist
         else:
             rename_new_file(temporary_path, destination, existing_message=f"Run manifest already exists: {destination}")
             temporary_path = None
-    except Exception:
+    except BaseException:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise

@@ -5,10 +5,40 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from uma_bct.run_artifacts import CatalogueLock, catalogue_lock_path
+from uma_bct.run_artifacts import CatalogueLock, catalogue_lock_path, replace_backed_file
 
 
 class CatalogueLockTest(unittest.TestCase):
+    def test_backed_replacement_restores_destination_when_interrupted_after_quarantine_rename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "catalogue.csv"
+            backup = root / "catalogue.previous.csv"
+            staging = root / ".uma-bct-catalogue-staging.csv"
+            destination.write_bytes(b"old")
+            backup.write_bytes(b"old")
+            staging.write_bytes(b"new")
+            real_replace = os.replace
+            interrupted = False
+
+            def interrupt_after_replace(source, target):
+                nonlocal interrupted
+                result = real_replace(source, target)
+                if Path(source) == destination and not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt
+                return result
+
+            with (
+                patch("uma_bct.run_artifacts.os.replace", side_effect=interrupt_after_replace),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                replace_backed_file(staging, destination, backup, "Catalogue output")
+
+            self.assertEqual(destination.read_bytes(), b"old")
+            self.assertEqual(staging.read_bytes(), b"new")
+            self.assertEqual(tuple(root.glob(".uma-bct-rollback-*")), ())
+
     def test_lock_is_exclusive_and_records_the_owner_pid(self):
         with tempfile.TemporaryDirectory() as directory:
             catalogue = Path(directory) / "outputs/catalogue.csv"

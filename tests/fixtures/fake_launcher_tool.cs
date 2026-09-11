@@ -50,6 +50,24 @@ public static class FakeLauncherTool
 
     private static int RunApplication()
     {
+        if (Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_WAIT") == "1")
+        {
+            Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs arguments)
+            {
+                arguments.Cancel = true;
+                string signalPath = Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_SIGNALS");
+                if (!String.IsNullOrEmpty(signalPath))
+                {
+                    File.AppendAllText(signalPath, arguments.SpecialKey.ToString() + Environment.NewLine);
+                }
+                Environment.Exit(130);
+            };
+        }
+        string pidPath = Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_PID");
+        if (!String.IsNullOrEmpty(pidPath))
+        {
+            File.WriteAllText(pidPath, Process.GetCurrentProcess().Id.ToString());
+        }
         File.WriteAllText(
             Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_HOST"),
             Environment.GetEnvironmentVariable("OLLAMA_HOST") + Environment.NewLine
