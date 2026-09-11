@@ -59,7 +59,7 @@ class ManagedBatchError(RuntimeError):
 class ManagedBatchSelectionError(ManagedBatchError):
     """An error tied to one unfinished batch selected from the results root."""
 
-    def __init__(self, batch_directory: Path, message: str) -> None:
+    def _init__(self, batch_directory: Path, message: str) -> None:
         super().__init__(message)
         self.batch_directory = batch_directory
 
@@ -67,12 +67,12 @@ class ManagedBatchSelectionError(ManagedBatchError):
 class ManagedInterruption(KeyboardInterrupt):
     """An operating-system interruption with the intended process exit code."""
 
-    def __init__(self, exit_code: int) -> None:
+    def _init__(self, exit_code: int) -> None:
         super().__init__(exit_code)
         self.exit_code = exit_code
 
 
-def _lock_descriptor(descriptor: int) -> None:
+def lock_descriptor(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
 
@@ -90,7 +90,7 @@ def _lock_descriptor(descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def _unlock_descriptor(descriptor: int) -> None:
+def unlock_descriptor(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
 
@@ -122,7 +122,7 @@ def fingerprint_file(path: Path, purpose: str) -> dict[str, int | str]:
     try:
         digest = hashlib.sha256()
         byte_count = 0
-        with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, _metadata):
+        with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, metadata):
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
                 byte_count += len(chunk)
@@ -222,7 +222,7 @@ def semantic_configuration(arguments: argparse.Namespace, request_timeout: float
     }
 
 
-def _truncate_utf8(value: str, maximum_bytes: int) -> str:
+def truncate_utf8(value: str, maximum_bytes: int) -> str:
     encoded = value.encode("utf-8")
     if len(encoded) <= maximum_bytes:
         return value
@@ -250,7 +250,7 @@ def sanitize_source_name(filename: str) -> str:
     cleaned = cleaned or "Photo"
     if cleaned.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
         cleaned = f"Photo {cleaned}"
-    return _truncate_utf8(cleaned, 150) or "Photo"
+    return truncate_utf8(cleaned, 150) or "Photo"
 
 
 def allocate_source_names(snapshot: list[dict[str, Any]]) -> None:
@@ -261,7 +261,7 @@ def allocate_source_names(snapshot: list[dict[str, Any]]) -> None:
         suffix = 2
         while unicodedata.normalize("NFC", candidate).casefold() in used:
             marker = f" ({suffix})"
-            candidate = f"{_truncate_utf8(base, 150 - len(marker))}{marker}"
+            candidate = f"{truncate_utf8(base, 150 - len(marker))}{marker}"
             suffix += 1
         used.add(unicodedata.normalize("NFC", candidate).casefold())
         item["readable_source_name"] = candidate
@@ -291,7 +291,7 @@ def create_batch_directory(results_root: Path, moment: datetime | None = None) -
         return destination
 
 
-def _read_json_file(path: Path, purpose: str) -> dict[str, Any]:
+def read_json_file(path: Path, purpose: str) -> dict[str, Any]:
     try:
         with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, metadata):
             if metadata.st_size > 32 * 1024 * 1024:
@@ -317,7 +317,7 @@ class ResultsRootLock:
     a later process may recover it.
     """
 
-    def __init__(self, results_root: Path) -> None:
+    def _init__(self, results_root: Path) -> None:
         self.results_root = results_root
         self.path = results_root / LOCK_FILE_NAME
         self._descriptor: int | None = None
@@ -326,7 +326,7 @@ class ResultsRootLock:
         self._guard_identity: tuple[Path, int, int] | None = None
         self._guard_name: str | None = None
 
-    def _verify_lock(self) -> None:
+    def verify_lock(self) -> None:
         identity = self._identity
         if identity is None:
             return
@@ -342,7 +342,7 @@ class ResultsRootLock:
         ):
             raise ManagedBatchError(f"Results lock changed while it was held: {self.path}")
 
-    def _acquire_guard(self) -> None:
+    def acquire_guard(self) -> None:
         self.results_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         check_path(self.results_root.parent, "Results parent directory")
         normalized = canonical_lock_name(self.results_root)
@@ -363,7 +363,7 @@ class ResultsRootLock:
             if os.name == "nt":
                 if normalized in ACTIVE_WINDOWS_GUARDS:
                     raise BlockingIOError
-            _lock_descriptor(descriptor)
+            lock_descriptor(descriptor)
             if os.name == "nt":
                 ACTIVE_WINDOWS_GUARDS.add(normalized)
         except BaseException:
@@ -374,7 +374,7 @@ class ResultsRootLock:
         self._guard_name = normalized
         self.results_root.mkdir(mode=0o700, exist_ok=True)
 
-    def _release_guard(self) -> None:
+    def release_guard(self) -> None:
         descriptor = self._guard_descriptor
         identity = self._guard_identity
         name = self._guard_name
@@ -393,7 +393,7 @@ class ResultsRootLock:
             except OSError as caught:
                 error = caught
         try:
-            _unlock_descriptor(descriptor)
+            unlock_descriptor(descriptor)
         except OSError as caught:
             error = error or caught
         finally:
@@ -405,18 +405,18 @@ class ResultsRootLock:
 
     def acquire(self) -> None:
         try:
-            self._acquire_guard()
-            self._write_lock()
+            self.acquire_guard()
+            self.write_lock()
         except BlockingIOError:
-            self._release_guard()
+            self.release_guard()
             raise ManagedBatchError(
                 f"Another UMA BCT run is already using this Results directory: {self.results_root}"
             ) from None
         except BaseException:
-            self._release_guard()
+            self.release_guard()
             raise
 
-    def _write_lock(self) -> None:
+    def write_lock(self) -> None:
         check_path(self.results_root, "Results directory")
         self.results_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         check_path(self.results_root, "Results directory")
@@ -440,7 +440,7 @@ class ResultsRootLock:
             current = self.path.lstat()
             if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
                 raise ManagedBatchError(f"Results lock changed while it was opened: {self.path}")
-            _lock_descriptor(descriptor)
+            lock_descriptor(descriptor)
             current = self.path.lstat()
             if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
                 raise ManagedBatchError(f"Results lock changed while it was locked: {self.path}")
@@ -473,7 +473,7 @@ class ResultsRootLock:
         finally:
             if descriptor is not None:
                 try:
-                    _unlock_descriptor(descriptor)
+                    unlock_descriptor(descriptor)
                 except OSError:
                     pass
                 os.close(descriptor)
@@ -482,7 +482,7 @@ class ResultsRootLock:
         descriptor = self._descriptor
         self._descriptor = None
         try:
-            self._verify_lock()
+            self.verify_lock()
             if descriptor is not None:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 expected = (json.dumps({"schema_version": 1, "pid": os.getpid()}) + "\n").encode()
@@ -493,14 +493,14 @@ class ResultsRootLock:
             try:
                 if descriptor is not None:
                     try:
-                        _unlock_descriptor(descriptor)
+                        unlock_descriptor(descriptor)
                     finally:
                         os.close(descriptor)
             finally:
-                self._release_guard()
+                self.release_guard()
 
 
-def _managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, dict[str, Any]]]]:
+def managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, dict[str, Any]]]]:
     unfinished: list[tuple[Path, dict[str, Any]]] = []
     completed: list[tuple[Path, dict[str, Any]]] = []
     try:
@@ -517,24 +517,20 @@ def _managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any
             raise ManagedBatchError(f"Managed batch entry must be a directory: {child}")
         progress_path = child / PROGRESS_FILE_NAME
         details_path = child / DETAILS_FILE_NAME
-        if _path_entry_exists(progress_path) and _path_entry_exists(details_path):
+        if path_entry_exists(progress_path) and path_entry_exists(details_path):
             raise ManagedBatchError(f"Batch has contradictory progress and details files: {child}")
-        if _path_entry_exists(progress_path):
-            unfinished.append((child, _read_json_file(progress_path, "Run progress")))
-        elif _path_entry_exists(details_path):
-            completed.append((child, _read_json_file(details_path, "Run details")))
+        if path_entry_exists(progress_path):
+            unfinished.append((child, read_json_file(progress_path, "Run progress")))
+        elif path_entry_exists(details_path):
+            completed.append((child, read_json_file(details_path, "Run details")))
     if len(unfinished) > 1:
-        names = ", ".join(str(path) for path, _value in unfinished)
+        names = ", ".join(str(path) for path, value in unfinished)
         raise ManagedBatchError(f"More than one unfinished batch exists; move all but the intended batch elsewhere: {names}")
     return unfinished, completed
 
 
-def _initial_progress(
-    arguments: argparse.Namespace,
-    batch_directory: Path,
-    snapshot: list[dict[str, Any]],
-    request_timeout: float | None,
-) -> dict[str, Any]:
+def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
+    snapshot: list[dict[str, Any]], request_timeout: float | None) -> dict[str, Any]:
     inputs = []
     for item in snapshot:
         inputs.append({**item, "state": "pending", "attempts": 0})
@@ -556,7 +552,7 @@ def _initial_progress(
     }
 
 
-def _validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> None:
+def validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> None:
     if progress.get("schema_version") != MANAGED_SCHEMA_VERSION:
         raise ManagedBatchError(f"Unsupported Run Progress schema in {batch_directory}")
     stored_batch = progress.get("batch_directory")
@@ -573,11 +569,11 @@ def _validate_progress_shape(progress: dict[str, Any], batch_directory: Path) ->
         raise ManagedBatchError(f"Run Progress contains an invalid publication phase: {batch_directory}")
 
 
-def _same_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> bool:
+def same_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> bool:
     return expected == snapshot_signature(actual)
 
 
-def _latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
+def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
     if not completed:
         return None
 
@@ -590,18 +586,16 @@ def _latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Pat
     return max(completed, key=order)
 
 
-def select_batch(
-    arguments: argparse.Namespace,
-    results_root: Path,
-    snapshot: list[dict[str, Any]],
-    request_timeout: float | None,
-) -> tuple[Path | None, dict[str, Any] | None, bool, tuple[Path, dict[str, Any]] | None]:
-    unfinished, completed = _managed_batches(results_root)
+def select_batch(arguments: argparse.Namespace, results_root: Path,
+    snapshot: list[dict[str, Any]], request_timeout: float | None,
+    ) -> tuple[Path | None, dict[str, Any] | None, bool, tuple[Path, dict[str, Any]] | None]:
+
+    unfinished, completed = managed_batches(results_root)
     if unfinished:
         batch_directory, progress = unfinished[0]
-        _validate_progress_shape(progress, batch_directory)
+        validate_progress_shape(progress, batch_directory)
         expected_snapshot = progress.get("input_snapshot")
-        if not isinstance(expected_snapshot, list) or not _same_snapshot(expected_snapshot, snapshot):
+        if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, snapshot):
             details = describe_snapshot_change(expected_snapshot if isinstance(expected_snapshot, list) else [], snapshot)
             raise ManagedBatchSelectionError(
                 batch_directory,
@@ -626,13 +620,13 @@ def select_batch(
         progress["input_directory"] = str(arguments.path_to_inputs)
         return batch_directory, progress, True, None
 
-    latest = _latest_completed(completed)
-    if latest is not None and _same_snapshot(latest[1].get("input_snapshot", []), snapshot) and not arguments.reprocess:
+    latest = latest_completed(completed)
+    if latest is not None and same_snapshot(latest[1].get("input_snapshot", []), snapshot) and not arguments.reprocess:
         return None, None, False, latest
 
     batch_directory = create_batch_directory(results_root).absolute()
     allocate_source_names(snapshot)
-    progress = _initial_progress(arguments, batch_directory, snapshot, request_timeout)
+    progress = initial_progress(arguments, batch_directory, snapshot, request_timeout)
     try:
         write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress, replace_existing=False)
     except BaseException:
@@ -645,25 +639,25 @@ def select_batch(
     return batch_directory, progress, False, None
 
 
-def _safe_relative_batch_path(batch_directory: Path, value: str, purpose: str) -> Path:
+def safe_relative_batch_path(batch_directory: Path, value: str, purpose: str) -> Path:
     relative = PurePosixPath(value)
     if relative.is_absolute() or ".." in relative.parts or not relative.parts or "\\" in value or ":" in value:
         raise ManagedBatchError(f"{purpose} has an unsafe path in {batch_directory}: {value!r}")
     return batch_directory.joinpath(*relative.parts)
 
 
-def _crop_evidence_path(batch_directory: Path, evidence: dict[str, Any]) -> Path:
+def crop_evidence_path(batch_directory: Path, evidence: dict[str, Any]) -> Path:
     relative = evidence.get("relative_path")
     if not isinstance(relative, str):
         raise ManagedBatchError(f"Crop evidence has no valid relative path in {batch_directory}")
     pure = PurePosixPath(relative)
     if len(pure.parts) != 2 or pure.parts[0] != BOX_IMAGES_DIRECTORY_NAME:
         raise ManagedBatchError(f"Crop evidence is outside Box Images in {batch_directory}: {relative!r}")
-    return _safe_relative_batch_path(batch_directory, relative, "Crop evidence")
+    return safe_relative_batch_path(batch_directory, relative, "Crop evidence")
 
 
 def validate_crop_evidence(batch_directory: Path, evidence: dict[str, Any]) -> None:
-    path = _crop_evidence_path(batch_directory, evidence)
+    path = crop_evidence_path(batch_directory, evidence)
     actual = fingerprint_file(path, "Crop evidence")
     if actual.get("size") == 0:
         raise ManagedBatchError(f"Crop evidence is empty: {path}")
@@ -671,7 +665,7 @@ def validate_crop_evidence(batch_directory: Path, evidence: dict[str, Any]) -> N
         raise ManagedBatchError(f"Crop evidence changed after it was committed: {path}")
 
 
-def _active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     crop = {"size": evidence.get("size"), "sha256": evidence.get("sha256")}
     reservation = {
         "size": evidence.get("reservation_size"),
@@ -680,7 +674,7 @@ def _active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict
     return crop, reservation
 
 
-def _open_cleanup_descriptor(path: Path) -> int:
+def open_cleanup_descriptor(path: Path) -> int:
     if os.name != "nt":
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         return os.open(path, flags)
@@ -717,13 +711,13 @@ def _open_cleanup_descriptor(path: Path) -> int:
         raise
 
 
-def _dispose_or_restore_quarantine(
+def dispose_or_restore_quarantine(
     quarantine: Path, target: Path, allowed: tuple[dict[str, Any], ...], purpose: str
 ) -> None:
     fingerprint_file(quarantine, purpose)
     descriptor: int | None = None
     try:
-        descriptor = _open_cleanup_descriptor(quarantine)
+        descriptor = open_cleanup_descriptor(quarantine)
         opened = os.fstat(descriptor)
         current = quarantine.lstat()
         if (
@@ -746,7 +740,7 @@ def _dispose_or_restore_quarantine(
             restore_unlinked_crop_content(quarantine, target, after_content, purpose)
             raise ManagedBatchError(f"{purpose} changed during cleanup and was restored: {target}")
     except ManagedBatchError:
-        if _path_entry_exists(quarantine) and not _path_entry_exists(target):
+        if path_entry_exists(quarantine) and not path_entry_exists(target):
             rename_new_file(
                 quarantine,
                 target,
@@ -768,7 +762,7 @@ def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes
             os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    if not _path_entry_exists(target):
+    if not path_entry_exists(target):
         rename_new_file(
             quarantine,
             target,
@@ -778,25 +772,25 @@ def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes
     raise ManagedBatchError(f"Changed {purpose.lower()} content was retained for recovery: {quarantine}")
 
 
-def _quarantine_active_file(
+def quarantine_active_file(
     path: Path,
     quarantine: Path,
     target: Path,
     allowed: tuple[dict[str, Any], ...],
     purpose: str,
 ) -> None:
-    if _path_entry_exists(quarantine):
-        _dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
-    if not _path_entry_exists(path):
+    if path_entry_exists(quarantine):
+        dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
+    if not path_entry_exists(path):
         return
     rename_new_file(path, quarantine, existing_message=f"{purpose} quarantine already exists: {quarantine}")
-    _dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
+    dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
 
 
 def remove_interrupted_crop(batch_directory: Path, path: Path, evidence: dict[str, Any]) -> None:
     """Remove only a target proven to come from this interrupted publication."""
 
-    crop, reservation = _active_crop_digests(evidence)
+    crop, reservation = active_crop_digests(evidence)
     state = evidence.get("publication_state")
     if state == "unreserved":
         allowed = (reservation,)
@@ -811,8 +805,8 @@ def remove_interrupted_crop(batch_directory: Path, path: Path, evidence: dict[st
         raise ManagedBatchError(f"Interrupted crop has no cleanup path: {path}")
     if not PurePosixPath(cleanup_value).parts or PurePosixPath(cleanup_value).parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Interrupted crop cleanup is outside the working directory: {cleanup_value!r}")
-    cleanup = _safe_relative_batch_path(batch_directory, cleanup_value, "Interrupted crop cleanup")
-    _quarantine_active_file(path, cleanup, path, allowed, "Interrupted crop publication")
+    cleanup = safe_relative_batch_path(batch_directory, cleanup_value, "Interrupted crop cleanup")
+    quarantine_active_file(path, cleanup, path, allowed, "Interrupted crop publication")
 
 
 def recover_displaced_crop_target(batch_directory: Path, target: Path, evidence: dict[str, Any]) -> None:
@@ -822,21 +816,21 @@ def recover_displaced_crop_target(batch_directory: Path, target: Path, evidence:
     pure = PurePosixPath(relative)
     if not pure.parts or pure.parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Displaced crop reservation is outside the working directory: {relative!r}")
-    displaced = _safe_relative_batch_path(batch_directory, relative, "Displaced crop reservation")
+    displaced = safe_relative_batch_path(batch_directory, relative, "Displaced crop reservation")
     cleanup_value = evidence.get("displaced_cleanup_path")
     if not isinstance(cleanup_value, str):
         raise ManagedBatchError(f"Displaced crop reservation has no cleanup path: {relative!r}")
     if not PurePosixPath(cleanup_value).parts or PurePosixPath(cleanup_value).parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Displaced crop cleanup is outside the working directory: {cleanup_value!r}")
-    cleanup = _safe_relative_batch_path(batch_directory, cleanup_value, "Displaced crop cleanup")
-    _crop, reservation = _active_crop_digests(evidence)
-    _quarantine_active_file(displaced, cleanup, target, (reservation,), "Displaced crop reservation")
+    cleanup = safe_relative_batch_path(batch_directory, cleanup_value, "Displaced crop cleanup")
+    crop, reservation = active_crop_digests(evidence)
+    quarantine_active_file(displaced, cleanup, target, (reservation,), "Displaced crop reservation")
 
 
-def _remove_working_directory(batch_directory: Path, relative_value: str | None) -> None:
+def remove_working_directory(batch_directory: Path, relative_value: str | None) -> None:
     if not relative_value:
         return
-    working = _safe_relative_batch_path(batch_directory, relative_value, "Working directory")
+    working = safe_relative_batch_path(batch_directory, relative_value, "Working directory")
     relative = PurePosixPath(relative_value)
     if len(relative.parts) != 2 or relative.parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Working directory is outside the managed work root: {relative_value!r}")
@@ -890,28 +884,28 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
             item_paths: set[Path] = set()
             for evidence in item.get("crop_evidence", []):
                 validate_crop_evidence(batch_directory, evidence)
-                evidence_path = _crop_evidence_path(batch_directory, evidence)
+                evidence_path = crop_evidence_path(batch_directory, evidence)
                 item_paths.add(evidence_path)
                 committed_paths.add(evidence_path)
             result_value = item.get("result")
             if isinstance(result_value, dict):
-                result = _deserialize_result(result_value, batch_directory)
+                result = deserialize_result(result_value, batch_directory)
                 if result.status != state:
                     raise ManagedBatchError(f"Committed photo status disagrees with its result in {batch_directory}")
                 if {record.box.image_file_path for record in result.records} != item_paths:
                     raise ManagedBatchError(f"Committed result and crop evidence disagree in {batch_directory}")
             elif state != "failed" or not isinstance(item.get("error"), str):
                 raise ManagedBatchError(f"Committed photo result is missing in {batch_directory}")
-            _remove_working_directory(batch_directory, item.get("working_directory"))
+            remove_working_directory(batch_directory, item.get("working_directory"))
             item.pop("working_directory", None)
             reused += 1
             continue
         if state == "active":
             for evidence in item.get("crop_evidence", []):
-                path = _crop_evidence_path(batch_directory, evidence)
+                path = crop_evidence_path(batch_directory, evidence)
                 recover_displaced_crop_target(batch_directory, path, evidence)
                 remove_interrupted_crop(batch_directory, path, evidence)
-            _remove_working_directory(batch_directory, item.get("working_directory"))
+            remove_working_directory(batch_directory, item.get("working_directory"))
             item["state"] = "pending"
             item.pop("result", None)
             item.pop("error", None)
@@ -927,7 +921,7 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     return reused
 
 
-def _endpoint_identity(host: str) -> dict[str, str]:
+def endpoint_identity(host: str) -> dict[str, str]:
     endpoint = urlsplit(host)
     hostname = endpoint.hostname or ""
     loopback = hostname == "::1" or hostname.startswith("127.")
@@ -951,8 +945,8 @@ def validate_model_resume(progress: dict[str, Any], current: dict[str, str], bat
     if previous_host and not current_host:
         raise ManagedBatchError(f"Cannot resume {batch_directory}: the Ollama endpoint identity is missing.")
     if previous_host and current_host:
-        previous_endpoint = _endpoint_identity(previous_host)
-        current_endpoint = _endpoint_identity(current_host)
+        previous_endpoint = endpoint_identity(previous_host)
+        current_endpoint = endpoint_identity(current_host)
         if previous_endpoint["class"] != current_endpoint["class"]:
             raise ManagedBatchError(f"Cannot resume {batch_directory}: the Ollama endpoint class changed.")
         if previous_endpoint["class"] != "numeric_loopback" and previous_endpoint["origin"] != current_endpoint["origin"]:
@@ -980,7 +974,7 @@ def build_managed_pipeline(
     return pipeline, metadata
 
 
-def _serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, Any]:
+def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for record in result.records:
         try:
@@ -1016,14 +1010,14 @@ def _serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, A
     }
 
 
-def _deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageResult:
+def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageResult:
     image_value = value["input_image"]
     image = InputImage(Path(image_value["file_path"]), int(image_value["width"]), int(image_value["height"]))
     records: list[BoxResult] = []
     for item in value["records"]:
         box_value = item["box"]
         x, y, width, height = (int(number) for number in box_value["bbox"])
-        crop_path = _safe_relative_batch_path(batch_directory, box_value["image"], "Committed crop")
+        crop_path = safe_relative_batch_path(batch_directory, box_value["image"], "Committed crop")
         box = Box(
             box_id=box_value["box_id"],
             source_image=image,
@@ -1058,11 +1052,11 @@ def _deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRe
     )
 
 
-def _is_full_photo(record: BoxResult) -> bool:
+def is_full_photo(record: BoxResult) -> bool:
     return record.box.image_file_path.name == "full_image.png" or record.box.box_id.endswith(":full-image")
 
 
-def _within_directory(path: Path, directory: Path) -> bool:
+def within_directory(path: Path, directory: Path) -> bool:
     try:
         return os.path.commonpath((str(path.absolute()), str(directory.absolute()))) == str(directory.absolute())
     except ValueError:
@@ -1085,12 +1079,12 @@ def prepare_crop_publication(
         source = record.box.image_file_path
         if source not in published_by_source:
             check_path(source, "Generated crop")
-            if not _within_directory(source, working_directory):
+            if not within_directory(source, working_directory):
                 raise ManagedBatchError(f"Generated crop is outside the active photo work directory: {source}")
             crop_fingerprint = fingerprint_file(source, "Generated crop")
             if crop_fingerprint["size"] == 0:
                 raise ManagedBatchError(f"Generated crop is empty: {source}")
-            if _is_full_photo(record):
+            if is_full_photo(record):
                 full_number += 1
                 suffix = "Full Photo" if full_number == 1 else f"Full Photo ({full_number})"
             else:
@@ -1098,7 +1092,7 @@ def prepare_crop_publication(
                 suffix = f"Box {box_number:02d}"
             target = box_images / f"{source_label} - {suffix}.png"
             check_path(target, "Readable crop")
-            if _path_entry_exists(target):
+            if path_entry_exists(target):
                 raise ManagedBatchError(f"Readable crop already exists and was not overwritten: {target}")
             published_by_source[source] = target
             reservation = f"UMA BCT crop reservation {uuid.uuid4().hex}\n"
@@ -1151,7 +1145,7 @@ def reserve_crop_target(source: Path, target: Path, evidence: dict[str, Any]) ->
 
 
 def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) -> None:
-    displaced = _safe_relative_batch_path(target.parent.parent, evidence["displaced_path"], "Displaced reservation")
+    displaced = safe_relative_batch_path(target.parent.parent, evidence["displaced_path"], "Displaced reservation")
     check_path(displaced, "Displaced crop-name reservation")
     expected_reservation = {
         "size": evidence["reservation_size"],
@@ -1175,11 +1169,11 @@ def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) 
     displaced.unlink()
 
 
-def _write_progress(batch_directory: Path, progress: dict[str, Any]) -> None:
+def write_progress(batch_directory: Path, progress: dict[str, Any]) -> None:
     write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress)
 
 
-def _path_entry_exists(path: Path) -> bool:
+def path_entry_exists(path: Path) -> bool:
     try:
         path.lstat()
     except FileNotFoundError:
@@ -1189,36 +1183,36 @@ def _path_entry_exists(path: Path) -> bool:
     return True
 
 
-def _can_write_progress(batch_directory: Path) -> bool:
+def can_write_progress(batch_directory: Path) -> bool:
     """Never recreate progress after the authoritative details rename."""
 
-    return not _path_entry_exists(batch_directory / DETAILS_FILE_NAME)
+    return not path_entry_exists(batch_directory / DETAILS_FILE_NAME)
 
 
-def _current_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
+def current_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
     fingerprint = fingerprint_file(Path(item["source_path"]), "Input image")
     return {"relative_name": item["relative_name"], **fingerprint}
 
 
-def _expected_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
+def expected_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
     return {"relative_name": item["relative_name"], "size": item["size"], "sha256": item["sha256"]}
 
 
-def _verify_source_unchanged(item: dict[str, Any]) -> None:
-    if _current_snapshot_entry(item) != _expected_snapshot_entry(item):
+def verify_source_unchanged(item: dict[str, Any]) -> None:
+    if current_snapshot_entry(item) != expected_snapshot_entry(item):
         raise ManagedBatchError(f"Input image changed during processing: {item['source_path']}")
 
 
-def _attempt_working_directory(batch_directory: Path, image_index: int, attempt: int) -> tuple[str, Path]:
+def attempt_working_directory(batch_directory: Path, image_index: int, attempt: int) -> tuple[str, Path]:
     relative = f"{WORKING_DIRECTORY_NAME}/image-{image_index + 1:04d}-attempt-{attempt:03d}-{uuid.uuid4().hex[:8]}"
     return relative, batch_directory.joinpath(*PurePosixPath(relative).parts)
 
 
-def _cleanup_committed_work(progress: dict[str, Any], batch_directory: Path, item: dict[str, Any]) -> None:
-    _remove_working_directory(batch_directory, item.get("working_directory"))
+def cleanup_committed_work(progress: dict[str, Any], batch_directory: Path, item: dict[str, Any]) -> None:
+    remove_working_directory(batch_directory, item.get("working_directory"))
     if "working_directory" in item:
         item.pop("working_directory", None)
-        _write_progress(batch_directory, progress)
+        write_progress(batch_directory, progress)
 
 
 def process_pending_images(
@@ -1233,65 +1227,65 @@ def process_pending_images(
         if item["state"] in TERMINAL_IMAGE_STATES:
             continue
         attempt = int(item.get("attempts", 0)) + 1
-        working_relative, working_directory = _attempt_working_directory(batch_directory, index, attempt)
+        working_relative, working_directory = attempt_working_directory(batch_directory, index, attempt)
         item.update(state="active", attempts=attempt, working_directory=working_relative)
         item.pop("error", None)
         item.pop("result", None)
         item.pop("crop_evidence", None)
         progress["phase"] = "processing"
-        _write_progress(batch_directory, progress)
+        write_progress(batch_directory, progress)
         check_path(working_directory, "Photo work directory")
         working_directory.mkdir(mode=0o700, parents=True)
         pipeline.work_directory = working_directory
-        _verify_source_unchanged(item)
+        verify_source_unchanged(item)
         print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
         try:
             result = pipeline.process(image_path)
         except Exception as error:
-            _verify_source_unchanged(item)
+            verify_source_unchanged(item)
             message = warning_text(error)
             item.update(state="failed", error=message)
-            _write_progress(batch_directory, progress)
-            _cleanup_committed_work(progress, batch_directory, item)
+            write_progress(batch_directory, progress)
+            cleanup_committed_work(progress, batch_directory, item)
             print(f"Failed {ascii(str(image_path))}: {message}", file=sys.stderr)
             processed += 1
             continue
 
-        _verify_source_unchanged(item)
+        verify_source_unchanged(item)
         updated, evidence, moves = prepare_crop_publication(result, item, batch_directory, working_directory)
-        item["result"] = _serialize_result(updated, batch_directory)
+        item["result"] = serialize_result(updated, batch_directory)
         item["crop_evidence"] = evidence
-        _write_progress(batch_directory, progress)
+        write_progress(batch_directory, progress)
         for source, target, crop_evidence in moves:
             reserve_crop_target(source, target, crop_evidence)
         for crop_evidence in evidence:
             crop_evidence["publication_state"] = "reserved"
-        _write_progress(batch_directory, progress)
+        write_progress(batch_directory, progress)
         for source, target, crop_evidence in moves:
             publish_reserved_crop(source, target, crop_evidence)
             crop_evidence["publication_state"] = "published"
-            _write_progress(batch_directory, progress)
+            write_progress(batch_directory, progress)
         for crop in evidence:
             validate_crop_evidence(batch_directory, crop)
         item["state"] = updated.status
-        _write_progress(batch_directory, progress)
+        write_progress(batch_directory, progress)
         item["crop_evidence"] = [
             {field: crop[field] for field in ("relative_path", "size", "sha256")} for crop in evidence
         ]
-        _write_progress(batch_directory, progress)
-        _cleanup_committed_work(progress, batch_directory, item)
+        write_progress(batch_directory, progress)
+        cleanup_committed_work(progress, batch_directory, item)
         for warning in updated.warnings:
             print(f"Warning for {ascii(str(image_path))}: {warning_text(warning)}", file=sys.stderr)
         processed += 1
     return processed
 
 
-def _all_results(progress: dict[str, Any], batch_directory: Path) -> list[ImageResult]:
+def all_results(progress: dict[str, Any], batch_directory: Path) -> list[ImageResult]:
     results: list[ImageResult] = []
     for item in progress["inputs"]:
         value = item.get("result")
         if isinstance(value, dict):
-            results.append(_deserialize_result(value, batch_directory))
+            results.append(deserialize_result(value, batch_directory))
     return results
 
 
@@ -1304,12 +1298,12 @@ def validate_sources_and_crops(progress: dict[str, Any], batch_directory: Path, 
         item_paths: set[Path] = set()
         for evidence in item.get("crop_evidence", []):
             validate_crop_evidence(batch_directory, evidence)
-            evidence_path = _crop_evidence_path(batch_directory, evidence)
+            evidence_path = crop_evidence_path(batch_directory, evidence)
             item_paths.add(evidence_path)
             expected_paths.add(evidence_path)
         result_value = item.get("result")
         if isinstance(result_value, dict):
-            result = _deserialize_result(result_value, batch_directory)
+            result = deserialize_result(result_value, batch_directory)
             if result.status != item.get("state"):
                 raise ManagedBatchError(f"Committed photo status disagrees with its result in {batch_directory}")
             record_paths = {record.box.image_file_path for record in result.records}
@@ -1337,10 +1331,10 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         raise ManagedBatchError(f"Run Details has invalid catalogue publication metadata: {batch_directory}")
     catalogue = batch_directory / CATALOGUE_FILE_NAME
     pending = batch_directory / PENDING_CATALOGUE_NAME
-    if _path_entry_exists(pending):
+    if path_entry_exists(pending):
         raise ManagedBatchError(f"Completed batch still contains a pending catalogue: {pending}")
     if record_count == 0:
-        if _path_entry_exists(catalogue):
+        if path_entry_exists(catalogue):
             raise ManagedBatchError(f"Zero-row completed batch unexpectedly contains a catalogue: {catalogue}")
         if publication.get("phase") != "not_published" or publication.get("record_count") != 0:
             raise ManagedBatchError(f"Zero-row publication metadata is invalid in {batch_directory}")
@@ -1358,11 +1352,11 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         raise ManagedBatchError(f"Published catalogue changed after completion: {catalogue}")
 
 
-def _file_digest(path: Path, purpose: str) -> str:
+def file_digest(path: Path, purpose: str) -> str:
     return str(fingerprint_file(path, purpose)["sha256"])
 
 
-def _stage_catalogue(
+def stage_catalogue(
     arguments: argparse.Namespace,
     progress: dict[str, Any],
     batch_directory: Path,
@@ -1372,9 +1366,9 @@ def _stage_catalogue(
     publication = progress.setdefault("publication", {})
     publication.update(phase="staging", pending_csv=PENDING_CATALOGUE_NAME)
     progress["phase"] = "staging"
-    _write_progress(batch_directory, progress)
+    write_progress(batch_directory, progress)
 
-    if _path_entry_exists(pending):
+    if path_entry_exists(pending):
         check_path(pending, "Pending catalogue")
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}.csv"
         try:
@@ -1385,7 +1379,7 @@ def _stage_catalogue(
                 replace_existing=False,
                 trusted_crop_links=True,
             )
-            if _file_digest(verification, "Expected pending catalogue") != _file_digest(pending, "Pending catalogue"):
+            if file_digest(verification, "Expected pending catalogue") != file_digest(pending, "Pending catalogue"):
                 raise ManagedBatchError(f"Pending catalogue does not match the committed results: {pending}")
         finally:
             try:
@@ -1400,36 +1394,36 @@ def _stage_catalogue(
             replace_existing=False,
             trusted_crop_links=True,
         )
-    digest = _file_digest(pending, "Pending catalogue")
+    digest = file_digest(pending, "Pending catalogue")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
-    _write_progress(batch_directory, progress)
+    write_progress(batch_directory, progress)
     return pending, len(records), digest
 
 
-def _publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) -> tuple[int, str]:
+def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) -> tuple[int, str]:
     publication = progress.get("publication", {})
     pending_name = publication.get("pending_csv")
     digest = publication.get("sha256")
     record_count = publication.get("record_count")
     if not isinstance(pending_name, str) or not isinstance(digest, str) or not isinstance(record_count, int):
         raise ManagedBatchError(f"Publishing checkpoint is incomplete in {batch_directory}")
-    pending = _safe_relative_batch_path(batch_directory, pending_name, "Pending catalogue")
+    pending = safe_relative_batch_path(batch_directory, pending_name, "Pending catalogue")
     if pending.parent != batch_directory or not pending.name.startswith(".uma-bct-catalogue-"):
         raise ManagedBatchError(f"Pending catalogue path is invalid in {batch_directory}")
     catalogue = batch_directory / CATALOGUE_FILE_NAME
-    if _path_entry_exists(catalogue):
-        if _file_digest(catalogue, "Published catalogue") != digest:
+    if path_entry_exists(catalogue):
+        if file_digest(catalogue, "Published catalogue") != digest:
             raise ManagedBatchError(f"Published catalogue does not match its checkpoint: {catalogue}")
-        if _path_entry_exists(pending):
-            if _file_digest(pending, "Pending catalogue") != digest:
+        if path_entry_exists(pending):
+            if file_digest(pending, "Pending catalogue") != digest:
                 raise ManagedBatchError(f"Pending catalogue does not match its checkpoint: {pending}")
             pending.unlink()
     else:
-        if not _path_entry_exists(pending) or _file_digest(pending, "Pending catalogue") != digest:
+        if not path_entry_exists(pending) or file_digest(pending, "Pending catalogue") != digest:
             raise ManagedBatchError(f"The recorded pending catalogue is missing or changed: {pending}")
         rename_new_file(pending, catalogue, existing_message=f"Catalogue already exists: {catalogue}")
-    if _file_digest(catalogue, "Published catalogue") != digest:
+    if file_digest(catalogue, "Published catalogue") != digest:
         raise ManagedBatchError(f"Published catalogue changed during publication: {catalogue}")
     return record_count, digest
 
@@ -1450,7 +1444,7 @@ def committed_record_count(value: dict[str, Any]) -> int:
     )
 
 
-def _final_status(progress: dict[str, Any], record_count: int) -> str:
+def final_status(progress: dict[str, Any], record_count: int) -> str:
     states = [item["state"] for item in progress["inputs"]]
     imperfect = any(state != "complete" for state in states) or bool(progress.get("run_failures"))
     if record_count == 0:
@@ -1458,14 +1452,14 @@ def _final_status(progress: dict[str, Any], record_count: int) -> str:
     return "partial" if imperfect else "complete"
 
 
-def _details_payload(
+def details_payload(
     arguments: argparse.Namespace,
     progress: dict[str, Any],
     batch_directory: Path,
     record_count: int,
 ) -> dict[str, Any]:
-    results = _all_results(progress, batch_directory)
-    status = _final_status(progress, record_count)
+    results = all_results(progress, batch_directory)
+    status = final_status(progress, record_count)
     catalogue = batch_directory / CATALOGUE_FILE_NAME
     failures: list[dict[str, str]] = list(progress.get("run_failures", []))
     for item in progress["inputs"]:
@@ -1513,50 +1507,48 @@ def _details_payload(
     }
 
 
-def _promote_details(batch_directory: Path, details: dict[str, Any]) -> None:
+def promote_details(batch_directory: Path, details: dict[str, Any]) -> None:
     progress_path = batch_directory / PROGRESS_FILE_NAME
     details_path = batch_directory / DETAILS_FILE_NAME
-    if _path_entry_exists(details_path):
+    if path_entry_exists(details_path):
         raise ManagedBatchError(f"Run Details already exists and was not overwritten: {details_path}")
     write_json_atomic(progress_path, details)
     rename_new_file(progress_path, details_path, existing_message=f"Run Details already exists: {details_path}")
 
 
-def finalize_batch(
-    arguments: argparse.Namespace,
-    progress: dict[str, Any],
-    batch_directory: Path,
-) -> dict[str, Any]:
+def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
+    batch_directory: Path) -> dict[str, Any]:
+
     if any(item["state"] not in TERMINAL_IMAGE_STATES for item in progress["inputs"]):
         raise ManagedBatchError(f"Cannot publish {batch_directory} while photos remain unattempted.")
     current_snapshot = rediscover_input_snapshot(Path(progress["input_directory"]))
     validate_sources_and_crops(progress, batch_directory, current_snapshot)
-    results = _all_results(progress, batch_directory)
+    results = all_results(progress, batch_directory)
     record_count = sum(len(result.records) for result in results)
 
     if record_count:
         if progress.get("phase") in {"publishing", "finalizing", "final"}:
-            record_count, _digest = _publish_recorded_catalogue(progress, batch_directory)
+            record_count, digest = publish_recorded_catalogue(progress, batch_directory)
         else:
-            _pending, record_count, _digest = _stage_catalogue(arguments, progress, batch_directory, results)
-            record_count, _digest = _publish_recorded_catalogue(progress, batch_directory)
+            pending, record_count, digest = stage_catalogue(arguments, progress, batch_directory, results)
+            record_count, digest = publish_recorded_catalogue(progress, batch_directory)
         progress["publication"].update(phase="published", catalogue=CATALOGUE_FILE_NAME)
         progress["catalogue_output"] = str(batch_directory / CATALOGUE_FILE_NAME)
         progress["catalogue_records"] = record_count
     else:
         catalogue = batch_directory / CATALOGUE_FILE_NAME
         pending = batch_directory / PENDING_CATALOGUE_NAME
-        if _path_entry_exists(pending):
+        if path_entry_exists(pending):
             raise ManagedBatchError(f"A zero-row batch has an unexpected pending catalogue: {pending}")
-        if _path_entry_exists(catalogue):
+        if path_entry_exists(catalogue):
             raise ManagedBatchError(f"A zero-row batch has an unexpected catalogue: {catalogue}")
         progress["publication"] = {"phase": "not_published", "record_count": 0}
         progress["catalogue_output"] = None
         progress["catalogue_records"] = 0
 
     progress["phase"] = "finalizing"
-    _write_progress(batch_directory, progress)
-    details = _details_payload(arguments, progress, batch_directory, record_count)
+    write_progress(batch_directory, progress)
+    details = details_payload(arguments, progress, batch_directory, record_count)
     working_root = batch_directory / WORKING_DIRECTORY_NAME
     try:
         working_root.rmdir()
@@ -1564,27 +1556,21 @@ def finalize_batch(
         pass
     except OSError as error:
         raise ManagedBatchError(f"Managed work directory could not be cleaned: {warning_text(error)}") from error
-    _promote_details(batch_directory, details)
+    promote_details(batch_directory, details)
     return details
 
 
-def _append_stage_failure(progress: dict[str, Any], stage: str, error: Exception | str) -> None:
+def append_stage_failure(progress: dict[str, Any], stage: str, error: Exception | str) -> None:
     failure = {"stage": stage, "error": warning_text(error)}
     failures = progress.setdefault("run_failures", [])
     if failure not in failures:
         failures.append(failure)
 
 
-def managed_public_summary(
-    value: dict[str, Any],
-    *,
-    batch_directory: Path | None,
-    resumed: bool,
-    images_reused: int,
-    images_processed_this_start: int,
-    status: str | None = None,
-    trust_catalogue_output: bool = True,
-) -> dict[str, Any]:
+def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | None, resumed: bool,
+    images_reused: int, images_processed_this_start: int, status: str | None = None,
+    trust_catalogue_output: bool = True) -> dict[str, Any]:
+
     inputs = value.get("inputs", [])
     states = [item.get("state") for item in inputs if isinstance(item, dict)]
     record_count = value.get("catalogue_records")
@@ -1597,7 +1583,7 @@ def managed_public_summary(
     progress_path = batch_directory / PROGRESS_FILE_NAME if batch_directory else None
     manifest = value.get("run_manifest")
     if batch_directory:
-        manifest = str(details_path if details_path and _path_entry_exists(details_path) else progress_path)
+        manifest = str(details_path if details_path and path_entry_exists(details_path) else progress_path)
     catalogue_output = value.get("catalogue_output") if trust_catalogue_output else None
     return {
         "schema_version": MANAGED_SCHEMA_VERSION,
@@ -1624,7 +1610,7 @@ def managed_public_summary(
 def managed_interruption_handlers() -> Iterator[None]:
     watched: list[tuple[signal.Signals, Any]] = []
 
-    def interrupted(signum: int, _frame: Any) -> None:
+    def interrupted(signum: int, frame: Any) -> None:
         if signum == getattr(signal, "SIGTERM", object()):
             raise ManagedInterruption(143)
         if signum == getattr(signal, "SIGHUP", object()):
@@ -1647,7 +1633,7 @@ def managed_interruption_handlers() -> Iterator[None]:
             signal.signal(signum, previous)
 
 
-def _already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str, Any]:
+def already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str, Any]:
     summary = managed_public_summary(
         details,
         batch_directory=batch,
@@ -1659,33 +1645,27 @@ def _already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str,
     return summary
 
 
-def _processed_since_start(progress: dict[str, Any] | None, processed: int, reused: int) -> int:
+def processed_since_start(progress: dict[str, Any] | None, processed: int, reused: int) -> int:
     if progress is None:
         return processed
     terminal = sum(item.get("state") in TERMINAL_IMAGE_STATES for item in progress.get("inputs", []))
     return max(processed, terminal - reused)
 
 
-def _interrupted_summary(
-    arguments: argparse.Namespace,
-    images: list[Path],
-    progress: dict[str, Any] | None,
-    batch_directory: Path | None,
-    resumed: bool,
-    reused: int,
-    processed: int,
-) -> dict[str, Any]:
+def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progress: dict[str, Any] | None,
+    batch_directory: Path | None, resumed: bool, reused: int, processed: int) -> dict[str, Any]:
+
     if progress is not None and batch_directory is not None:
         progress["interrupted_phase"] = progress.get("phase", "processing")
         progress["phase"] = "interrupted"
-        if _can_write_progress(batch_directory):
+        if can_write_progress(batch_directory):
             try:
-                _write_progress(batch_directory, progress)
+                write_progress(batch_directory, progress)
             except Exception as error:
                 print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
     value = progress or {
         "model": {"model": arguments.model},
-        "inputs": [{"state": "pending"} for _image in images],
+        "inputs": [{"state": "pending"} for image in images],
     }
     return managed_public_summary(
         value,
@@ -1732,7 +1712,7 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
                 "Use --reprocess to create another batch.",
                 file=sys.stderr,
             )
-            summary = _already_complete_summary(completed_details, completed_batch)
+            summary = already_complete_summary(completed_details, completed_batch)
             exit_code = 0 if completed_details.get("status") == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None
@@ -1741,13 +1721,13 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
                 progress["resume_count"] = int(progress.get("resume_count", 0)) + 1
                 if progress.get("phase") == "interrupted":
                     progress["phase"] = progress.pop("interrupted_phase", "processing")
-                _write_progress(batch_directory, progress)
+                write_progress(batch_directory, progress)
 
             pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
             validate_model_resume(progress, model_metadata, batch_directory)
             progress["model"] = model_metadata
             progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
-            _write_progress(batch_directory, progress)
+            write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
                 processed = process_pending_images(arguments, images, progress, batch_directory, pipeline)
@@ -1762,25 +1742,25 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             exit_code = 0 if details["status"] == "complete" else 1
     except (ManagedInterruption, KeyboardInterrupt) as interruption:
         exit_code = interruption.exit_code if isinstance(interruption, ManagedInterruption) else 130
-        processed = _processed_since_start(progress, processed, reused)
-        summary = _interrupted_summary(
+        processed = processed_since_start(progress, processed, reused)
+        summary = interrupted_summary(
             arguments, images, progress, batch_directory, resumed, reused, processed
         )
     except Exception as error:
         if batch_directory is None and isinstance(error, ManagedBatchSelectionError):
             batch_directory = error.batch_directory
-        processed = _processed_since_start(progress, processed, reused)
+        processed = processed_since_start(progress, processed, reused)
         message = warning_text(error)
         print(f"Managed batch failed: {message}", file=sys.stderr)
-        if progress is not None and batch_directory is not None and _can_write_progress(batch_directory):
-            _append_stage_failure(progress, "managed_batch", error)
+        if progress is not None and batch_directory is not None and can_write_progress(batch_directory):
+            append_stage_failure(progress, "managed_batch", error)
             try:
-                _write_progress(batch_directory, progress)
+                write_progress(batch_directory, progress)
             except Exception as checkpoint_error:
                 print(f"Checkpoint write failed: {warning_text(checkpoint_error)}", file=sys.stderr)
         summary_value = progress or {
             "model": {"model": arguments.model},
-            "inputs": [{"state": "pending"} for _image in images],
+            "inputs": [{"state": "pending"} for image in images],
             "run_failures": [{"stage": "managed_batch", "error": message}],
         }
         summary = managed_public_summary(

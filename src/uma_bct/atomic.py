@@ -24,13 +24,8 @@ def file_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
 
 
 @contextmanager
-def open_stable_file(
-    path: Path,
-    purpose: str,
-    *,
-    validator: Callable[[Path], os.stat_result] | None = None,
-    error_type: type[Exception] = ValueError,
-) -> Iterator[tuple[BinaryIO, os.stat_result]]:
+def open_stable_file(path: Path, purpose: str, *, validator: Callable[[Path], os.stat_result] | None = None,
+    error_type: type[Exception] = ValueError) -> Iterator[tuple[BinaryIO, os.stat_result]]:
     """Open one regular file and reject links or changes during the read."""
 
     def inspect() -> os.stat_result:

@@ -60,10 +60,9 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
         raise RuntimeError("Setup input and results directories must be separate and non-nested.")
 
 
-def run_setup(
-    *, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
-    results_directory: Path | None = None
-) -> int:
+def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
+    results_directory: Path | None = None) -> int:
+    
     working_directory = (root or Path.cwd()).absolute()
     inputs = input_directory or working_directory / "inputs"
     outputs = results_directory or working_directory / "outputs"

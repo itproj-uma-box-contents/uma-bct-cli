@@ -86,9 +86,7 @@ class BoxTranscriptionPipeline:
             return list(regions)
         return [region for region in regions if region.confidence >= self.minimum_detector_confidence]
 
-    def detect_and_crop(
-        self, image: InputImage, detector: BoxDetector, warnings: list[str]
-    ) -> tuple[list[Box], str | None, bool]:
+    def detect_and_crop(self, image: InputImage, detector: BoxDetector, warnings: list[str]) -> tuple[list[Box], str | None, bool]:
         try:
             detected = detector.detect(image)
         except Exception as error:

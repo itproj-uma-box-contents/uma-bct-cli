@@ -23,7 +23,7 @@ from uma_bct.managed_batch import (
     DETAILS_FILE_NAME,
     PROGRESS_FILE_NAME,
     ResultsRootLock,
-    _read_json_file,
+    read_json_file,
     allocate_source_names,
     create_batch_directory,
     fingerprint_file,
@@ -146,7 +146,7 @@ class ManagedBatchTest(unittest.TestCase):
             patch("uma_bct.managed_batch.open_stable_file", side_effect=growing_file),
             self.assertRaisesRegex(RuntimeError, "unexpectedly large"),
         ):
-            _read_json_file(Path("progress.json"), "Run progress")
+            read_json_file(Path("progress.json"), "Run progress")
 
     @unittest.skipIf(os.name == "nt", "POSIX private-file mode")
     def test_retained_crop_recovery_is_private(self):

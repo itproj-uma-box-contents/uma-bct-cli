@@ -20,10 +20,8 @@ from .path_safety import check_path
 from .pipeline import ImageResult
 
 
-def catalogue_records(
-    results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None,
-    trusted_crop_links: bool = False
-) -> list[dict[str, str | int]]:
+def catalogue_records(results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None,
+    trusted_crop_links: bool = False) -> list[dict[str, str | int]]:
     """Build catalogue rows and keep the physical box order."""
 
     if not 0 <= minimum_confidence <= 100:
@@ -61,10 +59,8 @@ def catalogue_records(
     return records
 
 
-def export_catalogue(
-    results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80,
-    replace_existing: bool = True, trusted_crop_links: bool = False
-) -> list[dict[str, str | int]]:
+def export_catalogue(results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80,
+    replace_existing: bool = True, trusted_crop_links: bool = False) -> list[dict[str, str | int]]:
     """Safely write the UTF-8 CSV and return its rows."""
 
     destination = Path(output_path)

@@ -77,8 +77,7 @@ def direct_termination_handlers() -> Iterator[None]:
             signal.signal(signum, previous)
 
 
-def configuration(
-    arguments: argparse.Namespace, work_directory: Path | None, request_timeout_seconds: float | None
+def configuration(arguments: argparse.Namespace, work_directory: Path | None, request_timeout_seconds: float | None
 ) -> dict[str, Any]:
     return {
         "detector": arguments.detector,
@@ -155,6 +154,7 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         work_directory = run_directory(arguments.path_to_box_images)
         pipeline.work_directory = work_directory
         return pipeline, work_directory, request_timeout, metadata
+
     except Exception as error:
         message = warning_text(error)
         failures.append({"stage": "preflight", "error": message})
@@ -165,18 +165,11 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
 def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
                    manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
     return export_results_into(
-        arguments, results, output_path, manifest_path, failures, ExportState()
-    )
+        arguments, results, output_path, manifest_path, failures, ExportState())
 
 
-def export_results_into(
-    arguments: argparse.Namespace,
-    results: list[ImageResult],
-    output_path: Path,
-    manifest_path: Path,
-    failures: list[dict[str, str]],
-    state: ExportState,
-) -> ExportState:
+def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
+    manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
                    
     if not sum(len(result.records) for result in results):
         return state
@@ -216,6 +209,7 @@ def export_results_into(
             rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
         staging = None
         return state
+    
     except BaseException as error:
         published_or_uncertain = publication_started and (staging is None or not staging.exists())
         if published_or_uncertain:
@@ -238,14 +232,13 @@ def export_results_into(
         state.catalogue_output = None
         state.wrote_catalogue = False
         return state
+    
     finally:
         if staging is not None:
             staging.unlink(missing_ok=True)
 
 
-def write_manifest(
-    manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]], *, replace_existing: bool
-) -> bool:
+def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]], *, replace_existing: bool) -> bool:
     try:
         write_json_atomic(manifest, summary, replace_existing=replace_existing)
     except Exception as error:
@@ -264,9 +257,7 @@ def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
     rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
 
 
-def write_backed_manifest(
-    manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]
-) -> bool:
+def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
     staging = manifest.with_name(f".uma-bct-json-publish-{uuid.uuid4().hex}.tmp")
     try:
         write_json_atomic(staging, summary, replace_existing=False)
@@ -323,12 +314,8 @@ def lock_failure_summary(arguments: argparse.Namespace, error: Exception) -> dic
     }
 
 
-def recover_manifest_failure(
-    output_path: Path,
-    summary: dict[str, Any],
-    export_state: ExportState,
-    failures: list[dict[str, str]],
-) -> None:
+def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_state: ExportState,
+    failures: list[dict[str, str]]) -> None:
     try:
         rollback_exported_catalogue(output_path, export_state)
     except Exception as error:
@@ -348,14 +335,10 @@ def recover_manifest_failure(
     write_manifest(recovery_manifest, summary, failures, replace_existing=False)
 
 
-def locked_batch_summary(
-    arguments: argparse.Namespace,
-    images: list[Path],
-    output_path: Path,
-    normal_manifest_path: Path,
-    *,
-    preserve_existing_manifest_on_failure: bool,
-) -> tuple[dict[str, Any], bool]:
+def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
+    output_path: Path, normal_manifest_path: Path, *,
+    preserve_existing_manifest_on_failure: bool) -> tuple[dict[str, Any], bool]:
+
     failures: list[dict[str, str]] = []
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
     results = process_images(pipeline, images, failures) if pipeline else []
