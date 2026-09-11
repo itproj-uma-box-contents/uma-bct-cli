@@ -19,26 +19,30 @@ from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, 
 from .path_safety import check_path
 from .pipeline import ImageResult
 
-NODE_TITLE = re.compile(r"^(.+) Unit (\d{4})$")
-
+NODE_TITLE = re.compile(r"\bUnit\s*#?\s*(\d+)\b", re.IGNORECASE)
 
 def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str]]:
-    """Return blank review rows for gaps between recorded box titles."""
+    """Return blank review rows for gaps between recorded unit numbers."""
 
-    units_by_identifier: dict[str, set[int]] = {}
+    units: set[int] = set()
+
     for record in records:
-        match = NODE_TITLE.fullmatch(str(record["Node Title"]).strip())
+        match = NODE_TITLE.search(str(record["Node Title"]).strip())
         if match:
-            units_by_identifier.setdefault(match.group(1), set()).add(int(match.group(2)))
+            units.add(int(match.group(1)))
+
+    if not units:
+        return []
 
     missing: list[dict[str, str]] = []
-    for identifier, units in units_by_identifier.items():
-        for unit in range(min(units), max(units) + 1):
-            if unit not in units:
-                row = {column: "" for column in OUTPUT_COLUMNS}
-                row["Node Title"] = f"{identifier} Unit {unit:04d}"
-                row["Review Notes"] = MISSING_BOX_FLAG
-                missing.append(row)
+
+    for unit in range(min(units), max(units) + 1):
+        if unit not in units:
+            row = {column: "" for column in OUTPUT_COLUMNS}
+            row["Node Title"] = f"Unit {unit:04d}"
+            row["Review Notes"] = MISSING_BOX_FLAG
+            missing.append(row)
+
     return missing
 
 
