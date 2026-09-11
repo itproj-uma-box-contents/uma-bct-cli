@@ -59,7 +59,7 @@ class ManagedBatchError(RuntimeError):
 class ManagedBatchSelectionError(ManagedBatchError):
     """An error tied to one unfinished batch selected from the results root."""
 
-    def _init__(self, batch_directory: Path, message: str) -> None:
+    def __init__(self, batch_directory: Path, message: str) -> None:
         super().__init__(message)
         self.batch_directory = batch_directory
 
@@ -67,7 +67,7 @@ class ManagedBatchSelectionError(ManagedBatchError):
 class ManagedInterruption(KeyboardInterrupt):
     """An operating-system interruption with the intended process exit code."""
 
-    def _init__(self, exit_code: int) -> None:
+    def __init__(self, exit_code: int) -> None:
         super().__init__(exit_code)
         self.exit_code = exit_code
 
@@ -317,7 +317,7 @@ class ResultsRootLock:
     a later process may recover it.
     """
 
-    def _init__(self, results_root: Path) -> None:
+    def __init__(self, results_root: Path) -> None:
         self.results_root = results_root
         self.path = results_root / LOCK_FILE_NAME
         self._descriptor: int | None = None

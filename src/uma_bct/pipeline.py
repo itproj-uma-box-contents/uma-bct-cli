@@ -118,7 +118,7 @@ class BoxTranscriptionPipeline:
 
     def full_image_localization(self, image: InputImage, warnings: list[str], detector: BoxDetector,
                                 failure: str | None, route: list[str], incomplete: bool) -> Localization:
-        
+
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{detector.name} localization failed ({failure}); full-image recovery is unavailable.")
             return Localization((), detector.name, tuple(route), incomplete=True)
@@ -186,10 +186,10 @@ class BoxTranscriptionPipeline:
 
     def recover_failed_crops(self, image: InputImage, localization: Localization, observations: list[ObservedBox],
                              unresolved: int, warnings: list[str]) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
-        
+
         route = list(localization.route)
         actual_detector = localization.actual_detector
-        
+
         # Retry the full image only when every crop failed.
         if localization.full_image or not localization.boxes or observations:
             return observations, unresolved, actual_detector, tuple(route)

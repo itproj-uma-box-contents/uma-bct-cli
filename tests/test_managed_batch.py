@@ -22,12 +22,13 @@ from uma_bct.managed_batch import (
     CATALOGUE_FILE_NAME,
     DETAILS_FILE_NAME,
     PROGRESS_FILE_NAME,
+    ManagedInterruption,
     ResultsRootLock,
-    read_json_file,
     allocate_source_names,
     create_batch_directory,
     fingerprint_file,
     publish_reserved_crop,
+    read_json_file,
     restore_unlinked_crop_content,
     run_managed_batch,
     sanitize_source_name,
@@ -96,6 +97,9 @@ class ManagedPipeline:
 
 
 class ManagedBatchTest(unittest.TestCase):
+    def test_managed_interruption_preserves_its_exit_code(self):
+        self.assertEqual(ManagedInterruption(143).exit_code, 143)
+
     def run_with(
         self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False, patches=()
     ):

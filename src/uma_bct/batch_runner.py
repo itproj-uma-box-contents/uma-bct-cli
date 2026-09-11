@@ -170,7 +170,7 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
 
 def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
     manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
-                   
+
     if not sum(len(result.records) for result in results):
         return state
     previous: tuple[Path, ...] = ()
@@ -209,7 +209,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
         staging = None
         return state
-    
+
     except BaseException as error:
         published_or_uncertain = publication_started and (staging is None or not staging.exists())
         if published_or_uncertain:
@@ -232,7 +232,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         state.catalogue_output = None
         state.wrote_catalogue = False
         return state
-    
+
     finally:
         if staging is not None:
             staging.unlink(missing_ok=True)

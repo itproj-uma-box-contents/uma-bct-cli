@@ -62,7 +62,7 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
 
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
     results_directory: Path | None = None) -> int:
-    
+
     working_directory = (root or Path.cwd()).absolute()
     inputs = input_directory or working_directory / "inputs"
     outputs = results_directory or working_directory / "outputs"
