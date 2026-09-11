@@ -12,6 +12,7 @@ import time
 import unittest
 import zipfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.build_client_bundle import (
@@ -245,6 +246,16 @@ def wait_until(process: subprocess.Popen[str], ready: Callable[[], bool], messag
     raise AssertionError(message)
 
 
+@contextmanager
+def launcher_fixture(prepare, *args, root_name: str | None = None, **kwargs):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        if root_name is not None:
+            root = root / root_name
+            root.mkdir()
+        yield (root, *prepare(root, *args, **kwargs))
+
+
 class ClientDeliveryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -441,9 +452,7 @@ class ClientDeliveryTest(unittest.TestCase):
             except OSError:
                 listener.close()
 
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                launcher, environment, events = prepare_posix_launcher(root)
+            with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
                 environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
                 result = run_launcher(launcher, environment)
 
@@ -466,17 +475,13 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_retries_a_failed_bind_and_propagates_all_app_exit_codes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "1"
             result = run_launcher(launcher, environment)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(event_names(events), ["bind-failed", "started", "stopped"])
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_STALL_STARTS"] = "1"
             result = run_launcher(launcher, environment)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -493,18 +498,14 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_rejects_missing_companion_and_bounded_startup_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root, companion=False)
+        with launcher_fixture(prepare_posix_launcher, companion=False) as (root, launcher, environment, events):
             result = run_launcher(launcher, environment, 10)
             self.assertEqual(result.returncode, 2)
             self.assertIn("llama-server", result.stderr)
             self.assertIn("ollama.log", result.stderr)
             self.assertFalse(events.exists())
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "3"
             result = run_launcher(launcher, environment, 10)
             self.assertEqual(result.returncode, 2)
@@ -512,9 +513,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("ollama.log", result.stderr)
             self.assertEqual(len(events.read_text(encoding="utf-8").splitlines()), 3)
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_STALL_VERSION"] = "1"
             result = run_launcher(launcher, environment, 8)
             self.assertEqual(result.returncode, 2)
@@ -523,9 +522,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS staged-extraction fixture")
     def test_posix_interrupted_ollama_extraction_repairs_cleanly_on_restart(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             (root / "inputs/shelf.jpg").unlink()
             shutil.rmtree(root / ".uma-bct-runtime/ollama")
 
@@ -598,9 +595,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_cleans_up_when_interrupted(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_INTERRUPT"] = "1"
             result = run_launcher(launcher, environment)
 
@@ -609,9 +604,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_uses_friendly_layout_and_rejects_mixed_private_data(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             (root / "inputs").rename(root / "Add Photos Here")
             (root / "outputs").rename(root / "Results")
 
@@ -620,9 +613,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(events.is_file())
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             friendly = root / "Add Photos Here"
             friendly.mkdir()
             (friendly / "other.jpg").write_bytes(b"other private photo")
@@ -638,9 +629,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_layout_inspection_rejects_unreadable_and_noncanonical_entries(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             inputs = root / "inputs"
             inputs.chmod(0)
             try:
@@ -651,9 +640,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("inspected safely", result.stderr)
             self.assertFalse(events.exists())
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             try:
                 (root / "Add Photos Here").symlink_to(root / "missing-friendly-directory")
             except OSError as error:
@@ -690,9 +677,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_layout_ignores_only_a_canonical_unlinked_results_lock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             results = root / "Results"
             results.mkdir()
             (results / ".uma-bct.lock").write_text(
@@ -706,10 +691,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_supports_bundle_paths_with_spaces_and_unicode(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "Archive Client ü"
-            root.mkdir()
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(
+            prepare_posix_launcher, root_name="Archive Client ü"
+        ) as (root, launcher, environment, events):
 
             result = run_launcher(launcher, environment)
 
@@ -718,9 +702,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_two_starts_of_one_posix_bundle_are_exclusive(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
             first = start_launcher(launcher, environment)
             try:
@@ -742,9 +724,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_recovers_a_well_formed_dead_owner_reservation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             reservation = root / ".uma-bct-launcher.lock"
             reservation.mkdir(mode=0o700)
             (reservation / "pid").write_text("999999999\n", encoding="utf-8")
@@ -755,9 +735,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertFalse(reservation.exists())
             self.assertEqual(event_names(events), ["started", "stopped"])
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             (root / ".uma-bct-launcher.lock").mkdir(mode=0o700)
 
             result = run_launcher(launcher, environment)
@@ -794,9 +772,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_two_posix_recoverers_cannot_steal_the_winners_new_reservation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_posix_launcher(root)
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, events):
             reservation = root / ".uma-bct-launcher.lock"
             reservation.mkdir(mode=0o700)
             (reservation / "pid").write_text("999999999\n", encoding="utf-8")
@@ -916,9 +892,9 @@ class ClientDeliveryTest(unittest.TestCase):
         except OSError:
             listener.close()
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+            with launcher_fixture(
+                prepare_windows_launcher, self.compiled_fixture
+            ) as (root, launcher, environment, events):
                 environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "1"
                 environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
                 result = run_launcher(launcher, environment, 20)
@@ -941,9 +917,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_cmd_entrypoint_runs_the_powershell_launcher(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture
+        ) as (root, _launcher, environment, events):
             command = root / "Run UMA BCT.cmd"
             shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
 
@@ -960,9 +936,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_cmd_entrypoint_propagates_ctrl_break_as_130(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture
+        ) as (root, _launcher, environment, _events):
             command = root / "Run UMA BCT.cmd"
             shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
             environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
@@ -995,10 +971,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_uses_friendly_unicode_layout_and_rejects_mixed_data(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "Archive Client ü"
-            root.mkdir()
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture, root_name="Archive Client ü"
+        ) as (root, launcher, environment, events):
             (root / "inputs").rename(root / "Add Photos Here")
             (root / "outputs").rename(root / "Results")
 
@@ -1007,9 +982,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(events.is_file())
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, events):
             friendly = root / "Add Photos Here"
             friendly.mkdir()
             (friendly / "other.jpg").write_bytes(b"other private photo")
@@ -1021,9 +994,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_two_starts_of_one_windows_bundle_are_exclusive(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture
+        ) as (root, launcher, environment, _events):
             environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
             first = start_launcher(
                 launcher, environment, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1050,9 +1023,9 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_rejects_a_hardlinked_bundle_reservation_without_modifying_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, _events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture
+        ) as (root, launcher, environment, _events):
             sentinel = root / "reservation-sentinel.txt"
             sentinel.write_bytes(b"do not overwrite")
             try:
@@ -1067,18 +1040,16 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_rejects_missing_companion_and_propagates_exit_codes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture, companion=False)
+        with launcher_fixture(
+            prepare_windows_launcher, self.compiled_fixture, companion=False
+        ) as (root, launcher, environment, events):
             result = run_launcher(launcher, environment, 10)
             self.assertEqual(result.returncode, 2)
             self.assertIn("llama-server.exe", result.stderr)
             self.assertIn("ollama.log", result.stderr)
             self.assertFalse(events.exists())
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_STALL_STARTS"] = "1"
             result = run_launcher(launcher, environment)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1087,18 +1058,14 @@ class ClientDeliveryTest(unittest.TestCase):
                 with self.assertRaises(OSError):
                     os.kill(int(line.split()[-1]), 0)
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_FAIL_STARTS"] = "3"
             result = run_launcher(launcher, environment)
             self.assertEqual(result.returncode, 2)
             self.assertIn("three attempts", result.stderr)
             self.assertEqual(len(events.read_text(encoding="utf-8").splitlines()), 3)
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_OLLAMA_STALL_VERSION"] = "1"
             result = run_launcher(launcher, environment, 10)
             self.assertEqual(result.returncode, 2)
@@ -1120,9 +1087,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_cleans_up_its_process_tree_on_ctrl_break(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            launcher, environment, events = prepare_windows_launcher(root, self.compiled_fixture)
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, events):
             environment["UMA_BCT_FAKE_APP_WAIT"] = "1"
             process = start_launcher(
                 launcher, environment, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP

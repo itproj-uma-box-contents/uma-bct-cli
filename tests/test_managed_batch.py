@@ -96,15 +96,18 @@ class ManagedPipeline:
 
 
 class ManagedBatchTest(unittest.TestCase):
-    def run_with(self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False):
+    def run_with(
+        self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False, patches=()
+    ):
         arguments = managed_arguments(root, reprocess=reprocess)
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
-        with (
-            patch("uma_bct.managed_batch.build_pipeline", return_value=pipeline),
-            contextlib.redirect_stdout(stdout),
-            contextlib.redirect_stderr(stderr),
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("uma_bct.managed_batch.build_pipeline", return_value=pipeline))
+            for fault in patches:
+                stack.enter_context(fault)
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
             status = run_managed_batch(arguments, images, arguments.results_directory)
         return status, json.loads(stdout.getvalue()), stderr.getvalue()
 
@@ -392,20 +395,13 @@ class ManagedBatchTest(unittest.TestCase):
                     raise OSError("details promotion stopped")
                 return rename_new_file(source, destination, existing_message=existing_message)
 
-            arguments = managed_arguments(root)
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with (
-                patch("uma_bct.managed_batch.build_pipeline", return_value=pipeline),
-                patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details_promotion),
-                contextlib.redirect_stdout(stdout),
-                contextlib.redirect_stderr(stderr),
-            ):
-                first_status = run_managed_batch(
-                    arguments, [arguments.path_to_inputs / "01.jpg"], arguments.results_directory
-                )
+            first_status, first_summary, _stderr = self.run_with(
+                root, pipeline,
+                patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details_promotion),),
+            )
 
             self.assertEqual(first_status, 2)
-            batch = Path(json.loads(stdout.getvalue())["batch_directory"])
+            batch = Path(first_summary["batch_directory"])
             self.assertTrue((batch / CATALOGUE_FILE_NAME).is_file())
             self.assertTrue((batch / PROGRESS_FILE_NAME).is_file())
 
@@ -426,20 +422,13 @@ class ManagedBatchTest(unittest.TestCase):
                 if destination.name == DETAILS_FILE_NAME:
                     raise KeyboardInterrupt
 
-            arguments = managed_arguments(root)
-            stdout = io.StringIO()
-            with (
-                patch("uma_bct.managed_batch.build_pipeline", return_value=ManagedPipeline()),
-                patch("uma_bct.managed_batch.rename_new_file", side_effect=interrupt_after_rename),
-                contextlib.redirect_stdout(stdout),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                status = run_managed_batch(
-                    arguments, [arguments.path_to_inputs / "01.jpg"], arguments.results_directory
-                )
+            status, first_summary, _stderr = self.run_with(
+                root, ManagedPipeline(),
+                patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=interrupt_after_rename),),
+            )
 
             self.assertEqual(status, 130)
-            batch = Path(json.loads(stdout.getvalue())["batch_directory"])
+            batch = Path(first_summary["batch_directory"])
             self.assertTrue((batch / DETAILS_FILE_NAME).is_file())
             self.assertFalse((batch / PROGRESS_FILE_NAME).exists())
 
@@ -461,19 +450,14 @@ class ManagedBatchTest(unittest.TestCase):
                     stopped = True
                     raise OSError("crop publication stopped")
 
-            arguments = managed_arguments(root)
-            stdout = io.StringIO()
-            with (
-                patch("uma_bct.managed_batch.build_pipeline", return_value=pipeline),
-                patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop_move),
-                contextlib.redirect_stdout(stdout),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                status = run_managed_batch(
-                    arguments, [arguments.path_to_inputs / "01.jpg"], arguments.results_directory
-                )
+            status, first_summary, _stderr = self.run_with(
+                root, pipeline,
+                patches=(
+                    patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop_move),
+                ),
+            )
             self.assertEqual(status, 2)
-            batch = Path(json.loads(stdout.getvalue())["batch_directory"])
+            batch = Path(first_summary["batch_directory"])
             self.assertEqual(len(list((batch / BOX_IMAGES_DIRECTORY_NAME).iterdir())), 1)
 
             resumed = ManagedPipeline(port=13000)
@@ -491,16 +475,10 @@ class ManagedBatchTest(unittest.TestCase):
                 publish_reserved_crop(source, destination, evidence)
                 raise OSError("stop after crop")
 
-            arguments = managed_arguments(root)
-            with (
-                patch("uma_bct.managed_batch.build_pipeline", return_value=ManagedPipeline()),
-                patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop),
-                contextlib.redirect_stdout(io.StringIO()),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                first_status = run_managed_batch(
-                    arguments, [arguments.path_to_inputs / "01.jpg"], arguments.results_directory
-                )
+            first_status, _summary, _stderr = self.run_with(
+                root, ManagedPipeline(),
+                patches=(patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop),),
+            )
             self.assertEqual(first_status, 2)
 
             changed = False
@@ -586,16 +564,11 @@ class ManagedBatchTest(unittest.TestCase):
                     raise OSError("stop before details")
                 return rename_new_file(source, destination, existing_message=existing_message)
 
-            arguments = managed_arguments(root)
-            stdout = io.StringIO()
-            with (
-                patch("uma_bct.managed_batch.build_pipeline", return_value=ManagedPipeline()),
-                patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details),
-                contextlib.redirect_stdout(stdout),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                run_managed_batch(arguments, [arguments.path_to_inputs / "01.jpg"], arguments.results_directory)
-            batch = Path(json.loads(stdout.getvalue())["batch_directory"])
+            _status, first_summary, _stderr = self.run_with(
+                root, ManagedPipeline(),
+                patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details),),
+            )
+            batch = Path(first_summary["batch_directory"])
             catalogue = batch / CATALOGUE_FILE_NAME
             catalogue.write_bytes(b"unknown replacement")
 
