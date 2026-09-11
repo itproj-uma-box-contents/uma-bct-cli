@@ -190,7 +190,7 @@ def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> No
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
         shutil.copy2(previous_catalogue, temporary_path)
-        with temporary_path.open("rb") as restored:
+        with temporary_path.open("r+b") as restored:
             os.fsync(restored.fileno())
         check_path(destination, "Catalogue rollback")
         temporary_path.replace(destination)
