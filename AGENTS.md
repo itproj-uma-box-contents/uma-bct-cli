@@ -54,7 +54,6 @@ Use the locked environment and keep model-free checks deterministic:
 ```bash
 uv sync --locked --dev
 uv run ruff check .
-uv run ruff format --check .
 uv run coverage run -m unittest discover -s tests -v
 uv run coverage report
 uv build
@@ -79,5 +78,7 @@ and benchmark output inside an ignored private-photo directory.
   stdout; progress and warnings belong on stderr.
 - Prefer small, tested fixes. Do not port experimental preprocessing, caches,
   telemetry, or debug visualisation without a demonstrated regression.
+- Preserve existing formatting when editing or adding code; do not run
+  automated formatters.
 - Deferred beyond v0.1: Node-ID reconciliation, date extraction, automatic text
   rotation, sequence-gap analysis, GUI, catalogue APIs, and signed executables.

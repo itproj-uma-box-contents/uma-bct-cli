@@ -191,7 +191,7 @@ class CsvExportTest(unittest.TestCase):
                 return rename_exclusive(source, destination)
 
             with (
-                patch("uma_bct.atomic._rename_exclusive", side_effect=late_destination),
+                patch("uma_bct.atomic.rename_exclusive", side_effect=late_destination),
                 self.assertRaisesRegex(FileExistsError, "already exists"),
             ):
                 export_catalogue([result], output, replace_existing=False)

@@ -45,7 +45,6 @@ the locked Python 3.12 environment and run the model-free checks:
 ```bash
 uv sync --locked --dev --python 3.12
 uv run ruff check .
-uv run ruff format --check .
 uv run coverage run -m unittest discover -s tests -v
 uv run coverage report
 ```

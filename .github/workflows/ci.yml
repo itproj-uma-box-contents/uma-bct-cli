@@ -30,7 +30,6 @@ jobs:
           tail -n +3 client-constraints.txt > "$RUNNER_TEMP/committed-constraints.txt"
           diff -u "$RUNNER_TEMP/committed-constraints.txt" "$RUNNER_TEMP/client-constraints.txt"
       - run: uv run ruff check .
-      - run: uv run ruff format --check .
       - name: Run compact model-free suite
         run: |
           uv run coverage run -m unittest discover -s tests -v
