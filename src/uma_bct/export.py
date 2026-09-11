@@ -21,6 +21,7 @@ from .pipeline import ImageResult
 
 NODE_TITLE = re.compile(r"\bUnit\s*#?\s*(\d+)\b", re.IGNORECASE)
 
+
 def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str]]:
     """Return blank review rows for gaps between recorded unit numbers."""
 
@@ -35,11 +36,7 @@ def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[st
         return []
 
     return [
-        {
-            **{column: "" for column in OUTPUT_COLUMNS},
-            "Node Title": f"Unit {unit:04d}",
-            "Review Notes": MISSING_BOX_FLAG,
-        }
+        {**{column: "" for column in OUTPUT_COLUMNS}, "Node Title": f"Unit {unit:04d}", "Review Notes": MISSING_BOX_FLAG}
         for unit in range(min(units), max(units) + 1)
         if unit not in units
     ]
