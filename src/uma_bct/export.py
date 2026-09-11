@@ -27,23 +27,22 @@ def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[st
     units: set[int] = set()
 
     for record in records:
-        match = NODE_TITLE.search(str(record["Node Title"]).strip())
+        match = NODE_TITLE.search(str(record["Node Title"]))
         if match:
             units.add(int(match.group(1)))
 
     if not units:
         return []
 
-    missing: list[dict[str, str]] = []
-
-    for unit in range(min(units), max(units) + 1):
-        if unit not in units:
-            row = {column: "" for column in OUTPUT_COLUMNS}
-            row["Node Title"] = f"Unit {unit:04d}"
-            row["Review Notes"] = MISSING_BOX_FLAG
-            missing.append(row)
-
-    return missing
+    return [
+        {
+            **{column: "" for column in OUTPUT_COLUMNS},
+            "Node Title": f"Unit {unit:04d}",
+            "Review Notes": MISSING_BOX_FLAG,
+        }
+        for unit in range(min(units), max(units) + 1)
+        if unit not in units
+    ]
 
 
 def catalogue_records(
