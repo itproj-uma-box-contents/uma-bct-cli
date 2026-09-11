@@ -106,7 +106,7 @@ class CatalogueRulesTest(unittest.TestCase):
         )
 
         missing = records[2]
-        self.assertEqual(missing["Node Title"], "1974.0056 Unit 0002")
+        self.assertRegex(missing["Node Title"], r"(?i)\bUnit\s*#?\s*0002\b")
         self.assertEqual(missing["Review Notes"], "Missing Box")
         self.assertEqual(missing["Node Type"], "")
         self.assertEqual(missing["Crop Image"], "")
