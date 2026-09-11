@@ -22,10 +22,8 @@ DETECTORS: dict[str, DetectorFactory] = {"opencv": lambda model_client: OpenCVBo
 TRANSCRIBERS: dict[str, TranscriberFactory] = {"qwen": QwenTextTranscriber}
 
 
-# fmt: off
 def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str, work_directory: Path,
                    minimum_detector_confidence: float, request_timeout_seconds: float | None = None) -> BoxTranscriptionPipeline:
-# fmt: on
     """Build the requested detector and transcriber."""
 
     try:

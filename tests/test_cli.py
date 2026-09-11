@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from helpers import make_box, make_image, make_result, make_transcription
 
-from uma_bct.atomic import _rename_exclusive
+from uma_bct.atomic import rename_exclusive
 from uma_bct.batch_runner import run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
 from uma_bct.domain import BoxResult
@@ -233,7 +233,7 @@ class CliTest(unittest.TestCase):
 
             def late_destination(source, destination):
                 destination.write_text('{"owner": "late process"}\n', encoding="utf-8")
-                return _rename_exclusive(source, destination)
+                return rename_exclusive(source, destination)
 
             with (
                 patch("uma_bct.atomic._rename_exclusive", side_effect=late_destination),

@@ -93,9 +93,9 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
     return result
 
 
-def prepare_pipeline(
-    arguments: argparse.Namespace, failures: list[dict[str, str]]
+def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str]]
 ) -> tuple[Any | None, Path | None, float | None, dict[str, str]]:
+
     request_timeout = arguments.request_timeout
     metadata = {"model": arguments.model}
     try:
@@ -120,10 +120,9 @@ def prepare_pipeline(
         return None, None, request_timeout, metadata
 
 
-# fmt: off
 def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
                    manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
-# fmt: on
+                   
     if not sum(len(result.records) for result in results):
         failures.append({"stage": "processing", "error": "No usable catalogue records were produced."})
         return ExportState()
@@ -256,10 +255,8 @@ def locked_batch_summary(
     return summary, pipeline is not None
 
 
-# fmt: off
 def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path, normal_manifest_path: Path, *,
               preserve_existing_manifest_on_failure: bool) -> int:
-# fmt: on
     """Process a batch, write its files, and print a JSON summary."""
 
     lock = CatalogueLock(output_path)

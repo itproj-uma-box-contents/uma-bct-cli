@@ -144,10 +144,8 @@ def description(transcription: BoxTranscription) -> str:
     return escape_spreadsheet_formula("; ".join(visible))
 
 
-# fmt: off
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = ()) -> dict[str, str | int]:
-# fmt: on
     """Build one catalogue row from a transcription."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)

@@ -13,12 +13,12 @@ LINUX_RENAME_NOREPLACE = 1
 MACOS_RENAME_EXCL = 0x00000004
 
 
-def _raise_rename_error(destination: Path) -> None:
+def raise_rename_error(destination: Path) -> None:
     error_number = ctypes.get_errno()
     raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
-def _rename_exclusive(source: Path, destination: Path) -> None:
+def rename_exclusive(source: Path, destination: Path) -> None:
     """Atomically move a file only when the destination does not exist."""
 
     if os.name == "nt":
@@ -41,13 +41,13 @@ def _rename_exclusive(source: Path, destination: Path) -> None:
     else:
         raise OSError(errno.ENOTSUP, "Atomic no-clobber publication is unsupported on this platform.")
     if result != 0:
-        _raise_rename_error(destination)
+        raise_rename_error(destination)
 
 
 def rename_new_file(source: Path, destination: Path, *, existing_message: str) -> None:
     """Publish a complete file without replacing a late-arriving destination."""
 
     try:
-        _rename_exclusive(source, destination)
+        rename_exclusive(source, destination)
     except FileExistsError:
         raise FileExistsError(existing_message) from None

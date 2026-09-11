@@ -118,10 +118,8 @@ def line_support(
     return sum((top, bottom, left, right)) / 4.0
 
 
-# fmt: off
 def candidate_confidence(contour: np.ndarray, bbox: tuple[int, int, int, int], image_shape: tuple[int, int],
                          horizontal_lines: list[tuple[int, ...]], vertical_lines: list[tuple[int, ...]]) -> float:
-# fmt: on
     _, _, width, height = bbox
     image_height, image_width = image_shape
     image_area = float(image_width * image_height)
