@@ -80,7 +80,11 @@ class Box:
 
 @dataclass(frozen=True)
 class BoxTranscription:
-    """Validated text visible on one physical archive box."""
+    """Validated text visible on one physical archive box.
+
+    ``confidence`` comes from the model's own token log-probabilities (see
+    ``adapters.qwen_transcriber``), not a value the model reports about itself.
+    """
 
     box_id: str
     position: str

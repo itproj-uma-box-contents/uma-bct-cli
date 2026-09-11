@@ -2,6 +2,9 @@
 
 Local addresses are used by default so photos stay on the computer. Responses
 are streamed, capped at 4 MiB, and checked in both content and thinking.
+Passing ``logprobs=True`` asks the server for each token's log-probability;
+those pairs pass through unchanged as ``ModelResponse.token_logprobs`` for a
+caller to score, matched to whichever of content or thinking actually won.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlsplit, urlunsplit
+
+from ..ports import ModelResponse
 
 DEFAULT_MODEL = "qwen3-vl:8b-instruct-q4_K_M"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -162,9 +167,23 @@ def json_from_text(raw: str) -> Any:
     return first if len(values) == 1 else values
 
 
-def collect_stream_text(stream: Any) -> tuple[str, str]:
+def chunk_token_logprobs(chunk: Any) -> list[tuple[str, float]]:
+    """Read the (token, logprob) pairs behind one streamed chunk, if any."""
+
+    pairs: list[tuple[str, float]] = []
+    for entry in response_field(chunk, "logprobs") or ():
+        token = response_field(entry, "token")
+        logprob = response_field(entry, "logprob")
+        if isinstance(token, str) and isinstance(logprob, (int, float)):
+            pairs.append((token, float(logprob)))
+    return pairs
+
+
+def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]]:
     content: list[str] = []
     thinking: list[str] = []
+    content_logprobs: list[tuple[str, float]] = []
+    thinking_logprobs: list[tuple[str, float]] = []
     characters = 0
     for number, chunk in enumerate(stream, start=1):
         chunk_content = message_text(chunk, "content")
@@ -174,9 +193,14 @@ def collect_stream_text(stream: Any) -> tuple[str, str]:
             raise ValueError("The model response exceeded the 4 MiB safety limit.")
         content.append(chunk_content)
         thinking.append(chunk_thinking)
+        # A chunk belongs to whichever channel it carried text for.
+        if chunk_content:
+            content_logprobs.extend(chunk_token_logprobs(chunk))
+        elif chunk_thinking:
+            thinking_logprobs.extend(chunk_token_logprobs(chunk))
         if number % 20 == 0:
             print(".", end="", file=sys.stderr, flush=True)
-    return "".join(content).strip(), "".join(thinking).strip()
+    return ("".join(content).strip(), "".join(thinking).strip(), tuple(content_logprobs), tuple(thinking_logprobs))
 
 
 def bounded_response_error(value: str) -> str:
@@ -189,10 +213,19 @@ def bounded_response_error(value: str) -> str:
     return f"{message[: MAX_MODEL_RESPONSE_ERROR_CHARACTERS - 3]}..."
 
 
-def parse_model_response(content: str, thinking: str, *, validator: Callable[[Any], object] | None = None) -> Any:
+def parse_model_response(
+    content: str,
+    thinking: str,
+    *,
+    content_logprobs: tuple[tuple[str, float], ...] = (),
+    thinking_logprobs: tuple[tuple[str, float], ...] = (),
+    validator: Callable[[Any], object] | None = None,
+) -> tuple[Any, tuple[tuple[str, float], ...]]:
     errors: list[str] = []
-    # Use content first, then thinking if parsing or validation fails.
-    for source, raw in (("content", content), ("thinking", thinking)):
+    # Use content first, then thinking if parsing or validation fails. The
+    # logprobs returned always match whichever channel actually won.
+    sources = (("content", content, content_logprobs), ("thinking", thinking, thinking_logprobs))
+    for source, raw, logprobs in sources:
         if not raw.strip():
             continue
         try:
@@ -206,7 +239,7 @@ def parse_model_response(content: str, thinking: str, *, validator: Callable[[An
             except (OverflowError, TypeError, ValueError) as error:
                 errors.append(f"{source}: parsed JSON failed semantic validation ({error.__class__.__name__})")
                 continue
-        return value
+        return value, logprobs
     if errors:
         raise ValueError(bounded_response_error("; ".join(errors)))
     raise ValueError("The model returned neither content nor thinking text.")
@@ -336,8 +369,14 @@ class OllamaVisionModel:
         return self.metadata(host, available)
 
     def query(
-        self, image_path: Path, prompt: str, schema: dict[str, Any], *, validator: Callable[[Any], object] | None = None
-    ) -> Any:
+        self,
+        image_path: Path,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        validator: Callable[[Any], object] | None = None,
+        logprobs: bool = False,
+    ) -> ModelResponse:
         try:
             with closing(self.client()) as client:
                 stream = client.chat(
@@ -347,8 +386,12 @@ class OllamaVisionModel:
                     think=DEFAULT_THINK,
                     options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length},
                     stream=True,
+                    logprobs=logprobs,
                 )
-                content, thinking = collect_stream_text(stream)
+                content, thinking, content_logprobs, thinking_logprobs = collect_stream_text(stream)
         except Exception as error:
             raise RuntimeError(f"Local Ollama request failed for model '{self.model}': {error}") from error
-        return parse_model_response(content, thinking, validator=validator)
+        value, token_logprobs = parse_model_response(
+            content, thinking, content_logprobs=content_logprobs, thinking_logprobs=thinking_logprobs, validator=validator
+        )
+        return ModelResponse(value=value, token_logprobs=token_logprobs)

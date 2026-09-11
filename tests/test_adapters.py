@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +19,7 @@ from uma_bct.adapters.ollama_client import (
     normalize_ollama_host,
 )
 from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, QwenBoxDetector, validate_grounding_proposals
-from uma_bct.adapters.qwen_response import wrap_boxes
+from uma_bct.adapters.qwen_response import box_object_spans, box_token_confidences, wrap_boxes
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
     MAX_TRANSCRIPTION_RECORDS,
@@ -28,18 +29,20 @@ from uma_bct.adapters.qwen_transcriber import (
     validate_transcription_result,
 )
 from uma_bct.bootstrap import build_pipeline
+from uma_bct.ports import ModelResponse
 
 
 class FakeVision:
-    def __init__(self, response):
+    def __init__(self, response, token_logprobs=()):
         self.response = response
+        self.token_logprobs = token_logprobs
         self.calls = []
 
-    def query(self, image_path, prompt, schema, *, validator=None):
-        self.calls.append((image_path, prompt, schema))
+    def query(self, image_path, prompt, schema, *, validator=None, logprobs=False):
+        self.calls.append((image_path, prompt, schema, logprobs))
         if validator is not None:
             validator(self.response)
-        return self.response
+        return ModelResponse(value=self.response, token_logprobs=self.token_logprobs if logprobs else ())
 
 
 def record(**changes):
@@ -50,10 +53,21 @@ def record(**changes):
         "typed": ["1960.0009", "Unit 4"],
         "handwritten": [],
         "auxiliary_annotations": [],
-        "transcription_confidence": 95,
     }
     value.update(changes)
     return value
+
+
+def confident_token_logprobs(response, low_confidence_characters=""):
+    """Build a realistic (token, logprob) stream for a JSON response.
+
+    One character per token keeps the offset arithmetic obvious; a real
+    Ollama stream instead groups several characters per token. Every
+    character is highly confident except the ones listed.
+    """
+
+    raw_text = json.dumps(response, separators=(",", ":"))
+    return tuple((character, -6.0 if character in low_confidence_characters else -0.0001) for character in raw_text)
 
 
 class QwenAdapterTest(unittest.TestCase):
@@ -113,18 +127,38 @@ class QwenAdapterTest(unittest.TestCase):
 
     def test_transcriber_maps_multiple_records_and_marks_uncertainty(self):
         box = make_box()
-        client = FakeVision({"boxes": [record(), record(unit="5", typed=["1960.0009", "Unit 5?"])]})
+        response = {"boxes": [record(), record(unit="5", typed=["1960.0009", "Unit 5?"])]}
+        client = FakeVision(response, token_logprobs=confident_token_logprobs(response))
         results = QwenTextTranscriber(client).transcribe(box)
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0].unit_number, "4")
-        self.assertTrue(results[1].needs_review)
+        self.assertGreater(results[0].confidence, 90)
+        self.assertFalse(results[0].needs_review)
+        self.assertTrue(results[1].needs_review, "a '?' hedge must still force review")
         self.assertIn("x=10, y=20, width=80, height=160", client.calls[0][1])
+        self.assertTrue(client.calls[0][3], "transcription requests must ask for logprobs")
 
-    def test_transcription_validator_rejects_bad_shape_or_confidence(self):
+    def test_transcriber_scores_confidence_from_the_least_confident_character(self):
+        box = make_box()
+        response = {"boxes": [record()]}
+        client = FakeVision(response, token_logprobs=confident_token_logprobs(response, low_confidence_characters="4"))
+        results = QwenTextTranscriber(client).transcribe(box)
+        self.assertEqual(results[0].confidence, round(100 * math.exp(-6.0)))
+        # A low score is caught later by the --min-transcription-confidence
+        # export threshold, not needs_review, which stays reserved for
+        # hedged/empty text and a totally unavailable score.
+        self.assertFalse(results[0].needs_review)
+
+    def test_transcriber_treats_unavailable_token_confidence_as_zero_and_flags_review(self):
+        box = make_box()
+        client = FakeVision({"boxes": [record()]})  # no logprobs supplied
+        results = QwenTextTranscriber(client).transcribe(box)
+        self.assertEqual(results[0].confidence, 0)
+        self.assertTrue(results[0].needs_review)
+
+    def test_transcription_validator_rejects_bad_shape(self):
         for response in (
             {"boxes": [{}]},
-            {"boxes": [record(transcription_confidence=True)]},
-            {"boxes": [record(transcription_confidence=101)]},
             {"boxes": [record(typed="not an array")]},
             {"boxes": [record(position="x" * (MAX_TEXT_CHARACTERS + 1))]},
             {"boxes": [record(typed=["x" * (MAX_TEXT_CHARACTERS + 1)])]},
@@ -199,16 +233,46 @@ class QwenAdapterTest(unittest.TestCase):
                 self.assertIn("exactly one JSON object", prompt)
                 self.assertIn('top-level "boxes" array', prompt)
 
+    def test_box_object_spans_ignores_braces_inside_string_content(self):
+        raw_text = '{"boxes":[{"typed":["a { b"]},{"unit":"9"}]}'
+        spans = box_object_spans(raw_text)
+        self.assertEqual(len(spans), 2)
+        self.assertEqual(raw_text[spans[0][0] : spans[0][1]], '{"typed":["a { b"]}')
+        self.assertEqual(raw_text[spans[1][0] : spans[1][1]], '{"unit":"9"}')
+
+    def test_box_object_spans_finds_nothing_in_a_noncanonical_reply(self):
+        # A bare array or adjacent objects (no {"boxes": [...]} wrapper) is
+        # tolerated by json_from_text/wrap_boxes but is not scored: there is
+        # no reliable brace depth to key spans off of.
+        self.assertEqual(box_object_spans('[{"unit":"1"},{"unit":"2"}]'), [])
+        self.assertEqual(box_object_spans('{"unit":"1"}\n{"unit":"2"}'), [])
+
+    def test_box_token_confidences_falls_back_to_none_on_span_mismatch(self):
+        self.assertEqual(box_token_confidences((), 2), [None, None])
+        mismatched = (("{", -0.1), ("}", -0.1))
+        self.assertEqual(box_token_confidences(mismatched, 2), [None, None])
+
 
 class OllamaClientTest(unittest.TestCase):
-    def query_response(self, content, *, thinking="", validator=None):
-        chunks = [{"message": {"content": content, "thinking": thinking}}]
+    def query_response(self, content, *, thinking="", validator=None, content_logprobs=None, thinking_logprobs=None):
+        # Real streams never carry content and thinking in the same chunk;
+        # split into up to two chunks so attached logprobs land unambiguously.
+        chunks = []
+        if thinking:
+            chunk = {"message": {"content": "", "thinking": thinking}}
+            if thinking_logprobs is not None:
+                chunk["logprobs"] = thinking_logprobs
+            chunks.append(chunk)
+        chunk = {"message": {"content": content, "thinking": ""}}
+        if content_logprobs is not None:
+            chunk["logprobs"] = content_logprobs
+        chunks.append(chunk)
+
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
         kwargs = {"validator": validator} if validator is not None else {}
         with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
-            result = OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"}, **kwargs)
-        return result
+            return OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"}, logprobs=True, **kwargs)
 
     def test_endpoint_policy_defaults_to_numeric_loopback(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -237,9 +301,36 @@ class OllamaClientTest(unittest.TestCase):
         factory = Mock(return_value=client)
         with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
             result = OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"})
-        self.assertEqual(result, {"boxes": []})
+        self.assertEqual(result.value, {"boxes": []})
+        self.assertEqual(result.token_logprobs, ())
         factory.assert_called_once_with(host=DEFAULT_OLLAMA_HOST, timeout=600.0, follow_redirects=False, trust_env=False)
         self.assertEqual(client.chat.call_args.kwargs["stream"], True)
+        self.assertEqual(client.chat.call_args.kwargs["logprobs"], False)
+
+    def test_query_requests_and_returns_content_logprobs(self):
+        chunks = [
+            {"message": {"content": '{"unit"'}, "logprobs": [{"token": '{"unit"', "logprob": -12.0}]},
+            {"message": {"content": ':"4"}'}, "logprobs": [{"token": ':"4"}', "logprob": -0.01}]},
+        ]
+        client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
+        factory = Mock(return_value=client)
+        with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
+            result = OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"}, logprobs=True)
+        self.assertEqual(result.value, {"unit": "4"})
+        self.assertEqual(result.token_logprobs, (('{"unit"', -12.0), (':"4"}', -0.01)))
+        self.assertEqual(client.chat.call_args.kwargs["logprobs"], True)
+
+    def test_query_returns_thinking_logprobs_when_thinking_wins(self):
+        expected = record(unit="8", typed=["1960.0009", "Unit 8"])
+        thinking_text = json.dumps({"boxes": [expected]})
+        result = self.query_response(
+            json.dumps({"status": "not the requested schema"}),
+            thinking=thinking_text,
+            validator=validate_transcription_result,
+            thinking_logprobs=[{"token": thinking_text, "logprob": -3.0}],
+        )
+        self.assertEqual(validate_transcription_result(result.value), [expected])
+        self.assertEqual(result.token_logprobs, ((thinking_text, -3.0),))
 
     def test_query_uses_valid_thinking_when_content_fails_the_validator(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
@@ -248,7 +339,7 @@ class OllamaClientTest(unittest.TestCase):
             thinking=json.dumps({"boxes": [expected]}),
             validator=validate_transcription_result,
         )
-        self.assertEqual(validate_transcription_result(result), [expected])
+        self.assertEqual(validate_transcription_result(result.value), [expected])
 
     def test_query_rejects_incomplete_noncanonical_detector_content(self):
         first = {"bbox_2d": [1, 2, 3, 4]}
@@ -263,7 +354,7 @@ class OllamaClientTest(unittest.TestCase):
         for content in incomplete_content:
             with self.subTest(content=content):
                 result = self.query_response(content, thinking=thinking, validator=validate_grounding_proposals)
-                boxes, warnings = validate_grounding_proposals(result)
+                boxes, warnings = validate_grounding_proposals(result.value)
                 self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
                 self.assertEqual(warnings, ())
 
@@ -274,7 +365,7 @@ class OllamaClientTest(unittest.TestCase):
         result = self.query_response(
             content, thinking=json.dumps({"boxes": [expected]}), validator=validate_grounding_proposals
         )
-        boxes, warnings = validate_grounding_proposals(result)
+        boxes, warnings = validate_grounding_proposals(result.value)
         self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
         self.assertEqual(warnings, ())
 
@@ -284,7 +375,7 @@ class OllamaClientTest(unittest.TestCase):
         result = self.query_response(
             json.dumps(expected), thinking=json.dumps({"boxes": [ignored]}), validator=validate_transcription_result
         )
-        self.assertEqual(validate_transcription_result(result), [expected])
+        self.assertEqual(validate_transcription_result(result.value), [expected])
 
     def test_query_reports_bounded_channel_errors_without_response_text(self):
         private_text = "private archive text " * 300

@@ -7,6 +7,7 @@ pipeline. Full-image transcription stays optional.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -42,9 +43,27 @@ class FullImageTextTranscriber(Protocol):
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]: ...
 
 
+@dataclass(frozen=True)
+class ModelResponse:
+    """A query's parsed value plus the token log-probabilities behind it.
+
+    ``token_logprobs`` is empty unless ``logprobs=True`` was requested and
+    returned; treat an empty tuple as "unavailable", not as "confident".
+    """
+
+    value: Any
+    token_logprobs: tuple[tuple[str, float], ...] = ()
+
+
 class VisionModelClient(Protocol):
     """Send one image request to the vision model."""
 
     def query(
-        self, image_path: Path, prompt: str, schema: dict[str, Any], *, validator: Callable[[Any], object] | None = None
-    ) -> Any: ...
+        self,
+        image_path: Path,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        validator: Callable[[Any], object] | None = None,
+        logprobs: bool = False,
+    ) -> ModelResponse: ...
