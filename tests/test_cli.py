@@ -403,6 +403,20 @@ class BatchRunnerTest(unittest.TestCase):
             )
         return status, json.loads(stdout.getvalue()), stderr.getvalue()
 
+    def prepare_outputs(
+        self, root: Path, *, catalogue_content: str | None = "old catalogue",
+        manifest_content: str | None = "old manifest"
+    ) -> tuple[Path, Path, Path]:
+        outputs = root / "outputs"
+        outputs.mkdir()
+        catalogue = outputs / "catalogue.csv"
+        manifest = outputs / "catalogue.run.json"
+        if catalogue_content is not None:
+            catalogue.write_text(catalogue_content, encoding="utf-8")
+        if manifest_content is not None:
+            manifest.write_text(manifest_content, encoding="utf-8")
+        return outputs, catalogue, manifest
+
     def test_writes_csv_manifest_and_clean_json_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -434,12 +448,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_empty_forced_run_preserves_previous_results(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             status, summary, progress = self.run_with(
                 root, FakeBatchPipeline(empty=True), [root / "empty.jpg"], force=True, preserve=True
             )
@@ -452,12 +461,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_forced_success_keeps_timestamped_previous_results(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            self.prepare_outputs(root)
             status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
             self.assertEqual(status, 0)
             self.assertEqual(len(summary["previous_results"]), 2)
@@ -521,12 +525,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_manifest_failure_restores_old_csv_and_writes_a_failed_run_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             real_writer = write_json_atomic
 
             def fail_normal_manifest(destination, value, *, replace_existing=True):
@@ -550,12 +549,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_manifest_interruption_restores_the_previous_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             args = arguments(root, force=True)
 
             with (
@@ -580,12 +574,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_interruption_after_csv_staging_does_not_cross_the_manifest_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            outputs, catalogue, manifest = self.prepare_outputs(root)
             args = arguments(root, force=True)
 
             def interrupt_after_staging(*call_args, **call_kwargs):
@@ -614,12 +603,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_interruption_after_export_return_uses_the_callers_transaction_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             args = arguments(root, force=True)
             def interrupt_after_return(*call_args, **call_kwargs):
                 export_results_into(*call_args, **call_kwargs)
@@ -646,12 +630,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_interruption_after_manifest_rename_restores_both_previous_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             args = arguments(root, force=True)
             def interrupt_after_manifest(staging, destination, backup, purpose):
                 replace_backed_file(staging, destination, backup, purpose)
@@ -680,12 +659,7 @@ class BatchRunnerTest(unittest.TestCase):
         for interrupted_name in ("catalogue.csv", "catalogue.run.json"):
             with self.subTest(interrupted_name=interrupted_name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
-                outputs = root / "outputs"
-                outputs.mkdir()
-                catalogue = outputs / "catalogue.csv"
-                manifest = outputs / "catalogue.run.json"
-                catalogue.write_text("old catalogue", encoding="utf-8")
-                manifest.write_text("old manifest", encoding="utf-8")
+                outputs, catalogue, manifest = self.prepare_outputs(root)
                 interrupted_path = outputs / interrupted_name
                 args = arguments(root, force=True)
                 real_replace = os.replace
@@ -743,12 +717,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_rollback_failure_reports_partial_and_retains_the_recovery_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             real_writer = write_json_atomic
 
             def fail_normal_manifest(destination, value, *, replace_existing=True):
@@ -793,10 +762,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_recovery_manifest_failure_keeps_stdout_valid_json(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            catalogue.write_text("old catalogue", encoding="utf-8")
+            _outputs, catalogue, _manifest = self.prepare_outputs(root, manifest_content=None)
 
             with patch("uma_bct.batch_runner.write_json_atomic", side_effect=OSError("manifest disk failure")):
                 status, summary, progress = self.run_with(root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True)
@@ -869,12 +835,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_forced_backup_race_does_not_restore_a_manifest_as_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             real_writer = write_json_atomic
 
             def catalogue_disappears(paths):
@@ -900,11 +861,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_forced_backup_race_restores_a_catalogue_that_appears(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root, catalogue_content=None)
             real_writer = write_json_atomic
 
             def catalogue_appears(paths):
@@ -928,11 +885,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_catalogue_appearing_after_backup_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, _manifest = self.prepare_outputs(root, catalogue_content=None)
 
             def appear_after_backup(paths):
                 backups = backup_existing_results(paths)
@@ -949,12 +902,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_existing_catalogue_changed_after_backup_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, _manifest = self.prepare_outputs(root)
 
             def edit_after_backup(paths):
                 backups = backup_existing_results(paths)
@@ -973,12 +921,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_interrupt_after_restoring_a_late_catalogue_edit_does_not_roll_it_back(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
 
             def edit_after_backup(paths):
                 backups = backup_existing_results(paths)
@@ -1014,12 +957,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_existing_catalogue_changed_at_publication_syscall_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, _manifest = self.prepare_outputs(root)
             raced = False
 
             def edit_after_quarantine_validation(first, second, purpose):
@@ -1045,12 +983,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_existing_manifest_changed_after_backup_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
 
             def edit_after_backup(paths):
                 backups = backup_existing_results(paths)
@@ -1070,12 +1003,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_existing_manifest_changed_at_publication_syscall_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, manifest = self.prepare_outputs(root)
             raced = False
 
             def edit_after_quarantine_validation(first, second, purpose):
@@ -1102,12 +1030,7 @@ class BatchRunnerTest(unittest.TestCase):
     def test_catalogue_changed_at_rollback_syscall_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
-            catalogue.write_text("old catalogue", encoding="utf-8")
-            manifest.write_text("old manifest", encoding="utf-8")
+            _outputs, catalogue, _manifest = self.prepare_outputs(root)
             real_writer = write_json_atomic
             raced = False
 
@@ -1140,10 +1063,9 @@ class BatchRunnerTest(unittest.TestCase):
     def test_manifest_appearing_after_backup_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            outputs = root / "outputs"
-            outputs.mkdir()
-            catalogue = outputs / "catalogue.csv"
-            manifest = outputs / "catalogue.run.json"
+            _outputs, catalogue, manifest = self.prepare_outputs(
+                root, catalogue_content=None, manifest_content=None
+            )
 
             def appear_after_backup(paths):
                 backups = backup_existing_results(paths)

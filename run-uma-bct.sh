@@ -70,6 +70,20 @@ path_identity() {
     stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1" 2>/dev/null
 }
 
+read_launcher_owner() {
+    owner_path=$1
+    [ -f "$owner_path" ] && [ ! -L "$owner_path" ] && [ -r "$owner_path" ] || return 1
+    owner_links=$({ stat -c '%h' "$owner_path" 2>/dev/null || stat -f '%l' "$owner_path" 2>/dev/null || true; })
+    [ "$owner_links" = "1" ] || return 1
+    owner_value=$(LC_ALL=C sed -n '1,$p' "$owner_path" 2>/dev/null) || return 1
+    case "$owner_value" in
+        ''|0*|*[!0-9]*) return 1 ;;
+    esac
+    [ "$(wc -l <"$owner_path" | awk '{print $1}')" = "1" ] || return 1
+    [ "$(wc -c <"$owner_path" | awk '{print $1}')" -eq "$((${#owner_value} + 1))" ] || return 1
+    printf '%s\n' "$owner_value"
+}
+
 select_data_directories() {
     friendly_data=0
     legacy_data=0
@@ -101,25 +115,10 @@ reserve_bundle() {
         entry_count=$(find "$LAUNCH_LOCK" -mindepth 1 -maxdepth 1 -print 2>/dev/null | wc -l | awk '{print $1}') || \
             fail "The launcher reservation could not be inspected: $LAUNCH_LOCK"
         [ "$entry_count" = "1" ] || fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
-        [ -f "$owner_file" ] && [ ! -L "$owner_file" ] && [ -r "$owner_file" ] || \
+        owner_pid=$(read_launcher_owner "$owner_file") || \
             fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
-        owner_link_count=$({ stat -c '%h' "$owner_file" 2>/dev/null || stat -f '%l' "$owner_file" 2>/dev/null || true; })
-        [ "$owner_link_count" = "1" ] || fail "The launcher reservation is linked and was not recovered: $LAUNCH_LOCK"
-        owner_line_count=$(wc -l <"$owner_file" | awk '{print $1}') || \
-            fail "The launcher reservation owner could not be inspected: $owner_file"
-        [ "$owner_line_count" = "1" ] || fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
-        owner_byte_count=$(wc -c <"$owner_file" | awk '{print $1}') || \
-            fail "The launcher reservation owner size could not be inspected: $owner_file"
-        owner_pid=$(LC_ALL=C sed -n '1,$p' "$owner_file" 2>/dev/null) || \
-            fail "The launcher reservation could not be inspected: $LAUNCH_LOCK"
         stale_owner_identity=$(path_identity "$owner_file") || \
             fail "The launcher reservation owner identity could not be inspected: $owner_file"
-        case "$owner_pid" in
-            ''|0*|*[!0-9]*) fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK" ;;
-        esac
-        expected_owner_bytes=$((${#owner_pid} + 1))
-        [ "$owner_byte_count" -eq "$expected_owner_bytes" ] || \
-            fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
         if kill -0 "$owner_pid" 2>/dev/null || ps -p "$owner_pid" >/dev/null 2>&1; then
             fail "This extracted UMA BCT folder is already running. Wait for the other launcher to finish: $ROOT"
         fi
@@ -131,14 +130,10 @@ reserve_bundle() {
         fi
         moved_lock_identity=$(path_identity "$recovery" 2>/dev/null || true)
         moved_owner_identity=$(path_identity "$recovery/pid" 2>/dev/null || true)
-        moved_owner=$(LC_ALL=C sed -n '1,$p' "$recovery/pid" 2>/dev/null || true)
-        moved_owner_lines=$(wc -l <"$recovery/pid" 2>/dev/null | awk '{print $1}')
-        moved_owner_bytes=$(wc -c <"$recovery/pid" 2>/dev/null | awk '{print $1}')
-        moved_owner_links=$({ stat -c '%h' "$recovery/pid" 2>/dev/null || stat -f '%l' "$recovery/pid" 2>/dev/null || true; })
+        moved_owner=$(read_launcher_owner "$recovery/pid" 2>/dev/null || true)
         if [ "$moved_lock_identity" != "$stale_lock_identity" ] || \
             [ "$moved_owner_identity" != "$stale_owner_identity" ] || \
-            [ "$moved_owner" != "$owner_pid" ] || [ "$moved_owner_lines" != "1" ] || \
-            [ "$moved_owner_bytes" != "$owner_byte_count" ] || [ "$moved_owner_links" != "1" ]
+            [ "$moved_owner" != "$owner_pid" ]
         then
             if [ ! -e "$LAUNCH_LOCK" ] && [ ! -L "$LAUNCH_LOCK" ]; then
                 mv "$recovery" "$LAUNCH_LOCK" 2>/dev/null || true

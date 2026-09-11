@@ -302,51 +302,22 @@ function Get-FreeLoopbackPort {
     }
 }
 
-function Stop-OwnedOllama {
-    if ($null -eq $script:OllamaProcess) {
-        return
-    }
-    $OwnedProcess = $script:OllamaProcess
-    $script:OllamaProcess = $null
+function Stop-OwnedProcess([Diagnostics.Process] $OwnedProcess, [bool] $RequestStop) {
     try {
         $OwnedProcess.Refresh()
+        $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
         if (-not $OwnedProcess.HasExited) {
-            $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
-            try {
-                & $TaskKill /PID $OwnedProcess.Id /T *> $null
-            } catch {
-                # The verified child may not own a window; use the bounded fallback below.
-            }
-            if (-not $OwnedProcess.WaitForExit(5000)) {
+            if ($RequestStop) {
                 try {
-                    & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
+                    & $TaskKill /PID $OwnedProcess.Id /T *> $null
                 } catch {
-                    # Fall through to the exact-process fallback below.
+                    # The verified child may not own a window.
                 }
             }
-            $OwnedProcess.Refresh()
-            if (-not $OwnedProcess.HasExited) {
-                Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
-            }
+            [void] $OwnedProcess.WaitForExit(5000)
         }
-        [void] $OwnedProcess.WaitForExit(5000)
-    } catch {
-        # The exact child may already have exited and been reaped.
-    } finally {
-        $OwnedProcess.Dispose()
-    }
-}
-
-function Stop-OwnedApp {
-    if ($null -eq $script:AppProcess) {
-        return
-    }
-    $OwnedProcess = $script:AppProcess
-    $script:AppProcess = $null
-    try {
         $OwnedProcess.Refresh()
-        if (-not $OwnedProcess.HasExited -and -not $OwnedProcess.WaitForExit(5000)) {
-            $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+        if (-not $OwnedProcess.HasExited) {
             try {
                 & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
             } catch {
@@ -359,10 +330,28 @@ function Stop-OwnedApp {
         }
         [void] $OwnedProcess.WaitForExit(5000)
     } catch {
-        # The verified foreground child may already have exited and been reaped.
+        # The verified child may already have exited and been reaped.
     } finally {
         $OwnedProcess.Dispose()
     }
+}
+
+function Stop-OwnedOllama {
+    if ($null -eq $script:OllamaProcess) {
+        return
+    }
+    $OwnedProcess = $script:OllamaProcess
+    $script:OllamaProcess = $null
+    Stop-OwnedProcess $OwnedProcess $true
+}
+
+function Stop-OwnedApp {
+    if ($null -eq $script:AppProcess) {
+        return
+    }
+    $OwnedProcess = $script:AppProcess
+    $script:AppProcess = $null
+    Stop-OwnedProcess $OwnedProcess $false
 }
 
 function Quote-NativeArgument([string] $Value) {
@@ -382,6 +371,7 @@ function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
     $script:AppProcess = Start-Process @StartArguments
     try {
         $script:AppProcess.WaitForExit()
+        $script:AppProcess.Refresh()
         $Status = $script:AppProcess.ExitCode
         if ($Status -eq -1073741510) {
             return 130

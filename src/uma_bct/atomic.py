@@ -5,12 +5,62 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+import stat
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO
+
+from .path_safety import check_path
 
 AT_FDCWD = -100
 LINUX_RENAME_NOREPLACE = 1
 MACOS_RENAME_EXCL = 0x00000004
+
+
+def file_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+
+
+@contextmanager
+def open_stable_file(
+    path: Path,
+    purpose: str,
+    *,
+    validator: Callable[[Path], os.stat_result] | None = None,
+    error_type: type[Exception] = ValueError,
+) -> Iterator[tuple[BinaryIO, os.stat_result]]:
+    """Open one regular file and reject links or changes during the read."""
+
+    def inspect() -> os.stat_result:
+        if validator is not None:
+            return validator(path)
+        check_path(path, purpose)
+        return path.lstat()
+
+    before = inspect()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise error_type(f"{purpose} must be one unlinked regular file: {path}")
+    expected = file_identity(before)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        source = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    try:
+        opened = os.fstat(descriptor)
+        if file_identity(opened) != expected or opened.st_nlink != 1:
+            raise error_type(f"{purpose} changed while it was opened: {path}")
+        yield source, before
+        after_open = os.fstat(descriptor)
+        after_path = inspect()
+        if file_identity(after_open) != expected or file_identity(after_path) != expected or after_path.st_nlink != 1:
+            raise error_type(f"{purpose} changed while it was being read: {path}")
+    finally:
+        source.close()
 
 
 def raise_rename_error(destination: Path) -> None:

@@ -10,6 +10,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from uma_bct.atomic import open_stable_file
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_NAME = "archive-box-transcription.zip"
 BUNDLE_ROOT = "Archive Box Transcription"
@@ -64,30 +66,11 @@ def validate_source_path(path: Path, boundary: Path) -> os.stat_result:
 
 
 def read_source(path: Path, boundary: Path) -> tuple[bytes, os.stat_result]:
-    before = validate_source_path(path, boundary)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity or opened.st_nlink != 1:
-            raise ValueError(f"Client file changed while it was opened: {path}")
-        content = bytearray()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            content.extend(chunk)
-        after_open = os.fstat(descriptor)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    after_path = validate_source_path(path, boundary)
-    if (
-        (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != identity
-        or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != identity
-        or len(content) != before.st_size
-    ):
-        raise ValueError(f"Client file changed while it was being read: {path}")
-    return bytes(content), before
+    def validator(candidate: Path) -> os.stat_result:
+        return validate_source_path(candidate, boundary)
+
+    with open_stable_file(path, "Client file", validator=validator) as (source, metadata):
+        return source.read(), metadata
 
 
 def source_boundary(source: Path, directory: Path, root: Path) -> Path:

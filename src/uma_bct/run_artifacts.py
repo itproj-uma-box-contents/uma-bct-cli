@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .atomic import rename_new_file
+from .atomic import open_stable_file, rename_new_file
 from .path_safety import check_path
 
 LOCK_FILE_NAME = ".uma-bct.lock"
@@ -26,32 +26,10 @@ LOCK_FILE_NAME = ".uma-bct.lock"
 def regular_file_sha256(path: Path, purpose: str) -> str:
     """Hash an unlinked regular file while checking its identity."""
 
-    check_path(path, purpose)
-    before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise ValueError(f"{purpose} must be one unlinked regular file: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
     digest = hashlib.sha256()
-    try:
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity or opened.st_nlink != 1:
-            raise ValueError(f"{purpose} changed while it was opened: {path}")
-        while chunk := os.read(descriptor, 1024 * 1024):
+    with open_stable_file(path, purpose) as (source, _metadata):
+        while chunk := source.read(1024 * 1024):
             digest.update(chunk)
-        after_open = os.fstat(descriptor)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    after_path = path.lstat()
-    if (
-        (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != identity
-        or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != identity
-        or after_path.st_nlink != 1
-    ):
-        raise ValueError(f"{purpose} changed while it was being hashed: {path}")
     return digest.hexdigest()
 
 
@@ -121,35 +99,15 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
 
 def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> None:
     temporary_path: Path | None = None
-    source_descriptor: int | None = None
     try:
-        check_path(backup, f"Backed-up {purpose}")
-        before = backup.lstat()
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ValueError(f"Backed-up {purpose} must be one unlinked regular file: {backup}")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        source_descriptor = os.open(backup, flags)
-        opened = os.fstat(source_descriptor)
-        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity or opened.st_nlink != 1:
-            raise ValueError(f"Backed-up {purpose} changed while it was opened: {backup}")
-        source = os.fdopen(source_descriptor, "rb")
-        source_descriptor = None
-        with source, tempfile.NamedTemporaryFile(
-            mode="w+b", dir=destination.parent, prefix=".uma-bct-rollback-", suffix=".tmp", delete=False
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            shutil.copyfileobj(source, temporary)
-            after_open = os.fstat(source.fileno())
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        after_path = backup.lstat()
-        if (
-            (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != identity
-            or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != identity
-            or after_path.st_nlink != 1
-        ):
-            raise ValueError(f"Backed-up {purpose} changed while it was being restored: {backup}")
+        with open_stable_file(backup, f"Backed-up {purpose}") as (source, _metadata):
+            with tempfile.NamedTemporaryFile(
+                mode="w+b", dir=destination.parent, prefix=".uma-bct-rollback-", suffix=".tmp", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                shutil.copyfileobj(source, temporary)
+                temporary.flush()
+                os.fsync(temporary.fileno())
         rename_new_file(
             temporary_path,
             destination,
@@ -157,8 +115,6 @@ def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> 
         )
         temporary_path = None
     finally:
-        if source_descriptor is not None:
-            os.close(source_descriptor)
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
 
@@ -355,39 +311,21 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
         backup = previous_result_path(path, run_id)
         check_path(backup, "Previous result")
         temporary_path: Path | None = None
-        source_descriptor: int | None = None
         try:
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            source_descriptor = os.open(path, flags)
-            opened = os.fstat(source_descriptor)
-            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise ValueError(f"Existing result changed while it was opened: {path}")
-            source = os.fdopen(source_descriptor, "rb")
-            source_descriptor = None
-            with source, tempfile.NamedTemporaryFile(
-                mode="w+b", dir=path.parent, prefix=".uma-bct-backup-", suffix=".tmp", delete=False
-            ) as temporary_file:
-                temporary_path = Path(temporary_file.name)
-                shutil.copyfileobj(source, temporary_file)
-                after_open = os.fstat(source.fileno())
-                temporary_file.flush()
-                os.fsync(temporary_file.fileno())
-            after_path = path.lstat()
-            before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            if (
-                (after_open.st_dev, after_open.st_ino, after_open.st_size, after_open.st_mtime_ns) != before_identity
-                or (after_path.st_dev, after_path.st_ino, after_path.st_size, after_path.st_mtime_ns) != before_identity
-                or after_path.st_nlink != 1
-            ):
-                raise ValueError(f"Existing result changed while it was being backed up: {path}")
+            with open_stable_file(path, "Existing result") as (source, before):
+                with tempfile.NamedTemporaryFile(
+                    mode="w+b", dir=path.parent, prefix=".uma-bct-backup-", suffix=".tmp", delete=False
+                ) as temporary_file:
+                    temporary_path = Path(temporary_file.name)
+                    shutil.copyfileobj(source, temporary_file)
+                    temporary_file.flush()
+                    os.fsync(temporary_file.fileno())
             temporary_path.chmod(stat.S_IMODE(before.st_mode))
             os.utime(temporary_path, ns=(before.st_atime_ns, before.st_mtime_ns))
             rename_new_file(temporary_path, backup, existing_message=f"Previous result already exists: {backup}")
             temporary_path = None
             backups.append(backup)
         except BaseException:
-            if source_descriptor is not None:
-                os.close(source_descriptor)
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
             raise

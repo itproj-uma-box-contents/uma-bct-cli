@@ -21,7 +21,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .adapters.ollama_client import timeout_from_environment
-from .atomic import rename_new_file
+from .atomic import open_stable_file, rename_new_file
 from .bootstrap import build_pipeline
 from .constants import IMAGE_EXTENSIONS
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
@@ -46,7 +46,7 @@ WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
 MANAGED_SCHEMA_VERSION = 1
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
-ACTIVE_WINDOWS_MUTEXES: set[str] = set()
+ACTIVE_WINDOWS_GUARDS: set[str] = set()
 WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
 )
@@ -86,61 +86,20 @@ def canonical_lock_name(path: Path) -> str:
     return os.path.normcase(physical)
 
 
-def _metadata_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_size,
-        getattr(metadata, "st_mtime_ns", int(metadata.st_mtime * 1_000_000_000)),
-        metadata.st_mode,
-    )
-
-
 def fingerprint_file(path: Path, purpose: str) -> dict[str, int | str]:
     """Hash one unlinked regular file while proving its metadata stayed stable."""
 
-    check_path(path, purpose)
     try:
-        before = path.lstat()
-    except OSError as error:
-        raise ManagedBatchError(f"Could not inspect {purpose} {path}: {error}") from error
-    if not stat.S_ISREG(before.st_mode):
-        raise ManagedBatchError(f"{purpose} must be a regular file: {path}")
-    if before.st_nlink != 1:
-        raise ManagedBatchError(f"{purpose} must not be linked: {path}")
-
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
-    digest = hashlib.sha256()
-    byte_count = 0
-    try:
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if _metadata_identity(opened) != _metadata_identity(before) or opened.st_nlink != 1:
-            raise ManagedBatchError(f"{purpose} changed while it was opened: {path}")
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
-            byte_count += len(chunk)
-        after_open = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        byte_count = 0
+        with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, _metadata):
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                byte_count += len(chunk)
     except ManagedBatchError:
         raise
     except OSError as error:
         raise ManagedBatchError(f"Could not read {purpose} {path}: {error}") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-    try:
-        after_path = path.lstat()
-    except OSError as error:
-        raise ManagedBatchError(f"Could not recheck {purpose} {path}: {error}") from error
-    if (
-        _metadata_identity(after_open) != _metadata_identity(before)
-        or _metadata_identity(after_path) != _metadata_identity(before)
-        or after_path.st_nlink != 1
-        or byte_count != before.st_size
-    ):
-        raise ManagedBatchError(f"{purpose} changed while it was being hashed: {path}")
     return {"size": byte_count, "sha256": digest.hexdigest()}
 
 
@@ -303,40 +262,15 @@ def create_batch_directory(results_root: Path, moment: datetime | None = None) -
 
 
 def _read_json_file(path: Path, purpose: str) -> dict[str, Any]:
-    check_path(path, purpose)
-    descriptor: int | None = None
     try:
-        before = path.lstat()
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ManagedBatchError(f"{purpose} must be one unlinked regular file: {path}")
-        if before.st_size > 32 * 1024 * 1024:
-            raise ManagedBatchError(f"{purpose} is unexpectedly large: {path}")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if _metadata_identity(opened) != _metadata_identity(before) or opened.st_nlink != 1:
-            raise ManagedBatchError(f"{purpose} changed while it was opened: {path}")
-        content = bytearray()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            content.extend(chunk)
-            if len(content) > 32 * 1024 * 1024:
+        with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, metadata):
+            if metadata.st_size > 32 * 1024 * 1024:
                 raise ManagedBatchError(f"{purpose} is unexpectedly large: {path}")
-        after_open = os.fstat(descriptor)
-        after_path = path.lstat()
-        if (
-            _metadata_identity(after_open) != _metadata_identity(before)
-            or _metadata_identity(after_path) != _metadata_identity(before)
-            or after_path.st_nlink != 1
-        ):
-            raise ManagedBatchError(f"{purpose} changed while it was being read: {path}")
-        value = json.loads(content.decode("utf-8"))
+            value = json.loads(source.read().decode("utf-8"))
     except ManagedBatchError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ManagedBatchError(f"Could not read {purpose} {path}: {warning_text(error)}") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
     if not isinstance(value, dict):
         raise ManagedBatchError(f"{purpose} must contain a JSON object: {path}")
     return value
@@ -353,14 +287,16 @@ class ResultsRootLock:
     def __init__(self, results_root: Path) -> None:
         self.results_root = results_root
         self.path = results_root / LOCK_FILE_NAME
-        self._descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
-        self._guard_descriptors: list[int] = []
-        self._guard_identities: list[tuple[Path, int, int]] = []
-        self._mutex_handle: int | None = None
-        self._mutex_name: str | None = None
+        self._content = b""
+        self._guard_descriptor: int | None = None
+        self._guard_identity: tuple[Path, int, int] | None = None
+        self._guard_name: str | None = None
 
-    def _verify_identity(self, metadata: os.stat_result) -> None:
+    def _verify_lock(self) -> None:
+        identity = self._identity
+        if identity is None:
+            return
         try:
             current = self.path.lstat()
         except OSError as error:
@@ -369,124 +305,96 @@ class ResultsRootLock:
             redirected_path_kind(self.path, current)
             or not stat.S_ISREG(current.st_mode)
             or current.st_nlink != 1
-            or (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino)
+            or identity != (current.st_dev, current.st_ino)
+            or self.path.read_bytes() != self._content
         ):
             raise ManagedBatchError(f"Results lock changed while it was held: {self.path}")
-
-    @staticmethod
-    def _windows_kernel32() -> tuple[Any, Any]:
-        import ctypes
-
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
-        kernel.CreateMutexW.restype = ctypes.c_void_p
-        kernel.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
-        kernel.WaitForSingleObject.restype = ctypes.c_uint32
-        kernel.ReleaseMutex.argtypes = (ctypes.c_void_p,)
-        kernel.ReleaseMutex.restype = ctypes.c_bool
-        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-        kernel.CloseHandle.restype = ctypes.c_bool
-        return ctypes, kernel
 
     def _acquire_guard(self) -> None:
         self.results_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         check_path(self.results_root.parent, "Results parent directory")
-        if os.name == "nt":
-            ctypes, kernel = self._windows_kernel32()
-            normalized = canonical_lock_name(self.results_root)
-            name = f"Local\\UMA-BCT-{hashlib.sha256(normalized.encode()).hexdigest()}"
-            if name in ACTIVE_WINDOWS_MUTEXES:
-                raise BlockingIOError
-            handle = kernel.CreateMutexW(None, False, name)
-            if not handle:
-                raise OSError(ctypes.get_last_error(), "Could not create the Results mutex.")
-            wait = kernel.WaitForSingleObject(handle, 0)
-            if wait not in {0, 0x80}:
-                kernel.CloseHandle(handle)
-                if wait == 0x102:
-                    raise BlockingIOError
-                raise OSError(ctypes.get_last_error(), "Could not acquire the Results mutex.")
-            self._mutex_handle = int(handle)
-            self._mutex_name = name
-            ACTIVE_WINDOWS_MUTEXES.add(name)
-            self.results_root.mkdir(mode=0o700, exist_ok=True)
-            return
-
-        import fcntl
-
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
         normalized = canonical_lock_name(self.results_root)
         guard_name = f".uma-bct-lock-release-results-{hashlib.sha256(normalized.encode()).hexdigest()}.tmp"
-        guard_directory = self.results_root.parent / guard_name
-        check_path(guard_directory, "Results lock guard")
+        guard_path = self.results_root.parent / guard_name
+        check_path(guard_path, "Results lock guard")
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(guard_path, flags, 0o600)
         try:
-            guard_directory.mkdir(mode=0o700)
-        except FileExistsError:
-            metadata = guard_directory.lstat()
-            if redirected_path_kind(guard_directory, metadata) or not stat.S_ISDIR(metadata.st_mode):
-                raise ManagedBatchError(f"Results lock guard must be a plain directory: {guard_directory}") from None
-            try:
-                if next(guard_directory.iterdir(), None) is not None:
-                    raise ManagedBatchError(f"Results lock guard must be empty: {guard_directory}")
-            except OSError as error:
-                raise ManagedBatchError(f"Could not inspect Results lock guard {guard_directory}: {error}") from error
-        descriptor = os.open(guard_directory, flags)
-        try:
-            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-                raise ManagedBatchError(f"Results lock guard must be a directory: {guard_directory}")
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            metadata = os.fstat(descriptor)
+            current = guard_path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino)
+            ):
+                raise ManagedBatchError(f"Results lock guard must be one unlinked regular file: {guard_path}")
+            if metadata.st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            if os.name == "nt":
+                import msvcrt
+
+                if normalized in ACTIVE_WINDOWS_GUARDS:
+                    raise BlockingIOError
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                except OSError as error:
+                    raise BlockingIOError from error
+                ACTIVE_WINDOWS_GUARDS.add(normalized)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BaseException:
             os.close(descriptor)
             raise
-        self._guard_descriptors.append(descriptor)
-        metadata = os.fstat(descriptor)
-        self._guard_identities.append((guard_directory, metadata.st_dev, metadata.st_ino))
+        self._guard_descriptor = descriptor
+        self._guard_identity = (guard_path, metadata.st_dev, metadata.st_ino)
+        self._guard_name = normalized
         self.results_root.mkdir(mode=0o700, exist_ok=True)
 
     def _release_guard(self) -> None:
-        if os.name == "nt":
-            handle = self._mutex_handle
-            self._mutex_handle = None
-            name = self._mutex_name
-            self._mutex_name = None
-            if handle is not None:
-                ctypes, kernel = self._windows_kernel32()
-                try:
-                    if not kernel.ReleaseMutex(handle):
-                        raise OSError(ctypes.get_last_error(), "Could not release the Results mutex.")
-                finally:
-                    kernel.CloseHandle(handle)
-                    if name is not None:
-                        ACTIVE_WINDOWS_MUTEXES.discard(name)
+        descriptor = self._guard_descriptor
+        identity = self._guard_identity
+        name = self._guard_name
+        self._guard_descriptor = None
+        self._guard_identity = None
+        self._guard_name = None
+        if descriptor is None:
             return
-
-        import fcntl
-
         error: OSError | None = None
-        for path, device, inode in self._guard_identities:
+        if identity is not None:
+            path, device, inode = identity
             try:
                 metadata = path.lstat()
                 if (metadata.st_dev, metadata.st_ino) != (device, inode):
                     raise OSError(f"Results lock guard changed while held: {path}")
             except OSError as caught:
-                error = error or caught
-        self._guard_identities.clear()
-        while self._guard_descriptors:
-            descriptor = self._guard_descriptors.pop()
-            try:
+                error = caught
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
-            except OSError as caught:
-                error = error or caught
-            finally:
-                os.close(descriptor)
+        except OSError as caught:
+            error = error or caught
+        finally:
+            os.close(descriptor)
+            if name is not None:
+                ACTIVE_WINDOWS_GUARDS.discard(name)
         if error is not None:
             raise error
 
     def acquire(self) -> None:
         try:
             self._acquire_guard()
-            self._acquire_file()
+            self._write_lock()
         except BlockingIOError:
             self._release_guard()
             raise ManagedBatchError(
@@ -496,7 +404,7 @@ class ResultsRootLock:
             self._release_guard()
             raise
 
-    def _acquire_file(self) -> None:
+    def _write_lock(self) -> None:
         check_path(self.results_root, "Results directory")
         self.results_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         check_path(self.results_root, "Results directory")
@@ -517,108 +425,39 @@ class ResultsRootLock:
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise ManagedBatchError(f"Results lock must be one unlinked regular file: {self.path}")
-            self._verify_identity(metadata)
-            self._lock_descriptor(descriptor)
-            self._verify_identity(metadata)
+            current = self.path.lstat()
+            if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                raise ManagedBatchError(f"Results lock changed while it was opened: {self.path}")
             if not created:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 raw = os.read(descriptor, 4096)
-                try:
-                    existing = json.loads(raw.decode("utf-8"))
-                except (UnicodeError, json.JSONDecodeError) as error:
-                    raise ManagedBatchError(
-                        f"Results lock is malformed and was not recovered automatically: {self.path}"
-                    ) from error
-                if (
-                    not isinstance(existing, dict)
-                    or set(existing) != {"schema_version", "pid"}
-                    or existing.get("schema_version") != 1
-                    or not isinstance(existing.get("pid"), int)
-                    or isinstance(existing.get("pid"), bool)
-                    or existing["pid"] <= 0
-                    or raw != (json.dumps({"schema_version": 1, "pid": existing["pid"]}) + "\n").encode()
-                ):
+                if re.fullmatch(rb'\{"schema_version": 1, "pid": [1-9][0-9]*\}\n', raw) is None:
                     raise ManagedBatchError(
                         f"Results lock is malformed and was not recovered automatically: {self.path}"
                     )
             content = (json.dumps({"schema_version": 1, "pid": os.getpid()}) + "\n").encode()
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            os.ftruncate(descriptor, 0)
-            view = memoryview(content)
-            while view:
-                written = os.write(descriptor, view)
-                if not written:
-                    raise OSError("Could not write the results lock.")
-                view = view[written:]
-            os.fsync(descriptor)
-            self._verify_identity(metadata)
-            self._descriptor = descriptor
+            with os.fdopen(descriptor, "r+b", closefd=False) as target:
+                target.seek(0)
+                target.write(content)
+                target.truncate()
+                target.flush()
+                os.fsync(descriptor)
+            current = self.path.lstat()
+            if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                raise ManagedBatchError(f"Results lock changed while it was written: {self.path}")
             self._identity = (metadata.st_dev, metadata.st_ino)
-            descriptor = None
-        except BlockingIOError:
-            raise ManagedBatchError(f"Another UMA BCT run is already using this Results directory: {self.results_root}") from None
+            self._content = content
         except OSError as error:
             raise ManagedBatchError(f"Could not reserve Results directory {self.results_root}: {error}") from error
         finally:
             if descriptor is not None:
-                try:
-                    self._unlock_descriptor(descriptor)
-                except OSError:
-                    pass
-                os.close(descriptor)
-
-    @staticmethod
-    def _lock_descriptor(descriptor: int) -> None:
-        if os.name == "nt":
-            import msvcrt
-
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b" ")
-                os.fsync(descriptor)
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            except OSError as error:
-                raise BlockingIOError from error
-        else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    @staticmethod
-    def _unlock_descriptor(descriptor: int) -> None:
-        if os.name == "nt":
-            import msvcrt
-
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-    def _release_file(self) -> None:
-        descriptor = self._descriptor
-        self._descriptor = None
-        self._identity = None
-        if descriptor is None:
-            return
-        try:
-            self._verify_identity(os.fstat(descriptor))
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            expected = (json.dumps({"schema_version": 1, "pid": os.getpid()}) + "\n").encode()
-            if os.read(descriptor, len(expected) + 1) != expected:
-                raise ManagedBatchError(f"Results lock contents changed while it was held: {self.path}")
-        finally:
-            try:
-                self._unlock_descriptor(descriptor)
-            finally:
                 os.close(descriptor)
 
     def release(self) -> None:
         try:
-            self._release_file()
+            self._verify_lock()
         finally:
+            self._identity = None
             self._release_guard()
 
 
@@ -736,8 +575,6 @@ def select_batch(
                 batch_directory,
                 f"Cannot resume {batch_directory}: the processing configuration changed. Restore the original options.",
             )
-        if progress.get("model", {}).get("model") != arguments.model:
-            raise ManagedBatchSelectionError(batch_directory, f"Cannot resume {batch_directory}: the model name changed.")
         if progress.get("application") != {"name": "uma-bct-cli", "version": application_version()}:
             raise ManagedBatchSelectionError(
                 batch_directory,
@@ -771,17 +608,9 @@ def select_batch(
 
 def _safe_relative_batch_path(batch_directory: Path, value: str, purpose: str) -> Path:
     relative = PurePosixPath(value)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or "\\" in value or ":" in value:
         raise ManagedBatchError(f"{purpose} has an unsafe path in {batch_directory}: {value!r}")
-    destination = batch_directory.joinpath(*relative.parts)
-    try:
-        if os.path.commonpath((str(batch_directory.absolute()), str(destination.absolute()))) != str(
-            batch_directory.absolute()
-        ):
-            raise ManagedBatchError(f"{purpose} leaves its batch directory: {value!r}")
-    except ValueError:
-        raise ManagedBatchError(f"{purpose} leaves its batch directory: {value!r}") from None
-    return destination
+    return batch_directory.joinpath(*relative.parts)
 
 
 def _crop_evidence_path(batch_directory: Path, evidence: dict[str, Any]) -> Path:
@@ -812,116 +641,21 @@ def _active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict
     return crop, reservation
 
 
-def _open_cleanup_descriptor(path: Path) -> int:
-    if os.name != "nt":
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        return os.open(path, flags)
-
-    import ctypes
-    import msvcrt
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.argtypes = (
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-    )
-    kernel.CreateFileW.restype = ctypes.c_void_p
-    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-    kernel.CloseHandle.restype = ctypes.c_bool
-    generic_read = 0x80000000
-    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
-    open_existing = 3
-    normal_attributes = 0x00000080
-    handle = kernel.CreateFileW(
-        str(path), generic_read, share_read_write_delete, None, open_existing, normal_attributes, None
-    )
-    invalid_handle = ctypes.c_void_p(-1).value
-    if handle in {None, invalid_handle}:
-        raise OSError(ctypes.get_last_error(), f"Could not open cleanup file: {path}")
-    try:
-        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    except BaseException:
-        kernel.CloseHandle(handle)
-        raise
-
-
 def _dispose_or_restore_quarantine(
     quarantine: Path, target: Path, allowed: tuple[dict[str, Any], ...], purpose: str
 ) -> None:
-    fingerprint_file(quarantine, purpose)
-    descriptor: int | None = None
-    content = b""
-    actual: dict[str, Any]
-    try:
-        descriptor = _open_cleanup_descriptor(quarantine)
-        opened = os.fstat(descriptor)
-        path_metadata = quarantine.lstat()
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (path_metadata.st_dev, path_metadata.st_ino)
-        ):
-            raise ManagedBatchError(f"{purpose} changed before cleanup: {quarantine}")
-        chunks: list[bytes] = []
-        digest = hashlib.sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            chunks.append(chunk)
-            digest.update(chunk)
-        content = b"".join(chunks)
-        actual = {"size": len(content), "sha256": digest.hexdigest()}
-        if actual not in allowed:
-            raise ManagedBatchError(f"Unknown {purpose.lower()} content was retained: {quarantine}")
-        current = quarantine.lstat()
-        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-            raise ManagedBatchError(f"{purpose} changed before cleanup: {quarantine}")
+    actual = fingerprint_file(quarantine, purpose)
+    if actual in allowed:
         quarantine.unlink()
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        after_content = b"".join(iter(lambda: os.read(descriptor, 1024 * 1024), b""))
-        if hashlib.sha256(after_content).hexdigest() != actual["sha256"] or len(after_content) != actual["size"]:
-            restore_unlinked_crop_content(quarantine, target, after_content, purpose)
-            raise ManagedBatchError(f"{purpose} changed during cleanup and was restored: {target}")
         return
-    except ManagedBatchError:
-        if _path_entry_exists(quarantine) and not _path_entry_exists(target):
-            rename_new_file(
-                quarantine,
-                target,
-                existing_message=f"{purpose} target appeared while an unknown file was restored: {target}",
-            )
-        raise
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes, purpose: str) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(quarantine, flags, 0o600)
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if not written:
-                raise OSError(f"Could not restore changed {purpose.lower()} content.")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
     if not _path_entry_exists(target):
         rename_new_file(
             quarantine,
             target,
             existing_message=f"{purpose} target appeared while an unknown file was restored: {target}",
         )
-        return
-    raise ManagedBatchError(f"Changed {purpose.lower()} content was retained for recovery: {quarantine}")
+        raise ManagedBatchError(f"Unknown {purpose.lower()} content was restored and retained: {target}")
+    raise ManagedBatchError(f"Unknown {purpose.lower()} content was retained: {quarantine}")
 
 
 def _quarantine_active_file(
@@ -1133,7 +867,6 @@ def _serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, A
             crop_relative = record.box.image_file_path.relative_to(batch_directory).as_posix()
         except ValueError:
             raise ManagedBatchError(f"A committed crop is outside its batch: {record.box.image_file_path}") from None
-        transcription = record.transcription
         records.append(
             {
                 "box": {
@@ -1143,17 +876,7 @@ def _serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, A
                     "position": record.box.position,
                     "detector_confidence": record.box.detector_confidence,
                 },
-                "transcription": {
-                    "box_id": transcription.box_id,
-                    "position": transcription.position,
-                    "confidence": transcription.confidence,
-                    "record_identifiers": list(transcription.record_identifiers),
-                    "unit_number": transcription.unit_number,
-                    "typed_lines": list(transcription.typed_lines),
-                    "handwritten_lines": list(transcription.handwritten_lines),
-                    "auxiliary_annotations": list(transcription.auxiliary_annotations),
-                    "needs_review": transcription.needs_review,
-                },
+                "transcription": asdict(record.transcription),
             }
         )
     return {
@@ -1191,15 +914,15 @@ def _deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRe
         )
         transcription_value = item["transcription"]
         transcription = BoxTranscription(
-            box_id=transcription_value["box_id"],
-            position=transcription_value["position"],
-            confidence=int(transcription_value["confidence"]),
-            record_identifiers=tuple(transcription_value["record_identifiers"]),
-            unit_number=transcription_value["unit_number"],
-            typed_lines=tuple(transcription_value["typed_lines"]),
-            handwritten_lines=tuple(transcription_value["handwritten_lines"]),
-            auxiliary_annotations=tuple(transcription_value["auxiliary_annotations"]),
-            needs_review=bool(transcription_value["needs_review"]),
+            **{
+                **transcription_value,
+                "confidence": int(transcription_value["confidence"]),
+                "record_identifiers": tuple(transcription_value["record_identifiers"]),
+                "typed_lines": tuple(transcription_value["typed_lines"]),
+                "handwritten_lines": tuple(transcription_value["handwritten_lines"]),
+                "auxiliary_annotations": tuple(transcription_value["auxiliary_annotations"]),
+                "needs_review": bool(transcription_value["needs_review"]),
+            }
         )
         records.append(BoxResult(box, transcription))
     return ImageResult(
@@ -1288,21 +1011,11 @@ def reserve_crop_target(source: Path, target: Path, evidence: dict[str, Any]) ->
     content = evidence["reservation"].encode()
     reservation_path: Path | None = source.with_name(f".uma-bct-rollback-crop-reservation-{uuid.uuid4().hex}.tmp")
     check_path(reservation_path, "Crop-name reservation temporary file")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
     try:
-        descriptor = os.open(reservation_path, flags, 0o600)
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if not written:
-                raise OSError("Could not write the crop-name reservation.")
-            view = view[written:]
-        os.fsync(descriptor)
-        if descriptor is not None:
-            completed_descriptor = descriptor
-            descriptor = None
-            os.close(completed_descriptor)
+        with reservation_path.open("xb") as reservation_file:
+            reservation_file.write(content)
+            reservation_file.flush()
+            os.fsync(reservation_file.fileno())
         rename_new_file(
             reservation_path,
             target,
@@ -1310,8 +1023,6 @@ def reserve_crop_target(source: Path, target: Path, evidence: dict[str, Any]) ->
         )
         reservation_path = None
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
         if reservation_path is not None:
             reservation_path.unlink(missing_ok=True)
     actual = fingerprint_file(target, "Crop-name reservation")
@@ -1828,6 +1539,45 @@ def _already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str,
     return summary
 
 
+def _processed_since_start(progress: dict[str, Any] | None, processed: int, reused: int) -> int:
+    if progress is None:
+        return processed
+    terminal = sum(item.get("state") in TERMINAL_IMAGE_STATES for item in progress.get("inputs", []))
+    return max(processed, terminal - reused)
+
+
+def _interrupted_summary(
+    arguments: argparse.Namespace,
+    images: list[Path],
+    progress: dict[str, Any] | None,
+    batch_directory: Path | None,
+    resumed: bool,
+    reused: int,
+    processed: int,
+) -> dict[str, Any]:
+    if progress is not None and batch_directory is not None:
+        progress["interrupted_phase"] = progress.get("phase", "processing")
+        progress["phase"] = "interrupted"
+        if _can_write_progress(batch_directory):
+            try:
+                _write_progress(batch_directory, progress)
+            except Exception as error:
+                print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
+    value = progress or {
+        "model": {"model": arguments.model},
+        "inputs": [{"state": "pending"} for _image in images],
+    }
+    return managed_public_summary(
+        value,
+        batch_directory=batch_directory,
+        resumed=resumed,
+        images_reused=reused,
+        images_processed_this_start=processed,
+        status="interrupted",
+        trust_catalogue_output=False,
+    )
+
+
 def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results_root: Path) -> int:
     """Run or resume one managed batch and emit exactly one JSON summary."""
 
@@ -1866,92 +1616,40 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             exit_code = 0 if completed_details.get("status") == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None
-
-            with managed_interruption_handlers():
-                if resumed:
-                    reused = prepare_resume(progress, batch_directory)
-                    progress["resume_count"] = int(progress.get("resume_count", 0)) + 1
-                    if progress.get("phase") == "interrupted":
-                        progress["phase"] = progress.pop("interrupted_phase", "processing")
-                    _write_progress(batch_directory, progress)
-
-                pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
-                validate_model_resume(progress, model_metadata, batch_directory)
-                progress["model"] = model_metadata
-                endpoint_history = progress.setdefault("endpoint_history", [])
-                endpoint = model_metadata["ollama_host"]
-                endpoint_history.append(endpoint)
+            if resumed:
+                reused = prepare_resume(progress, batch_directory)
+                progress["resume_count"] = int(progress.get("resume_count", 0)) + 1
+                if progress.get("phase") == "interrupted":
+                    progress["phase"] = progress.pop("interrupted_phase", "processing")
                 _write_progress(batch_directory, progress)
 
-                if progress.get("phase") not in {"publishing", "finalizing", "final"}:
-                    processed = process_pending_images(arguments, images, progress, batch_directory, pipeline)
-                details = finalize_batch(arguments, progress, batch_directory)
-                summary = managed_public_summary(
-                    details,
-                    batch_directory=batch_directory,
-                    resumed=resumed,
-                    images_reused=reused,
-                    images_processed_this_start=processed,
-                )
-                exit_code = 0 if details["status"] == "complete" else 1
-    except ManagedInterruption as interruption:
-        exit_code = interruption.exit_code
-        if progress is not None:
-            processed = max(
-                processed,
-                sum(item.get("state") in TERMINAL_IMAGE_STATES for item in progress.get("inputs", [])) - reused,
+            pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+            validate_model_resume(progress, model_metadata, batch_directory)
+            progress["model"] = model_metadata
+            progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
+            _write_progress(batch_directory, progress)
+
+            if progress.get("phase") not in {"publishing", "finalizing", "final"}:
+                processed = process_pending_images(arguments, images, progress, batch_directory, pipeline)
+            details = finalize_batch(arguments, progress, batch_directory)
+            summary = managed_public_summary(
+                details,
+                batch_directory=batch_directory,
+                resumed=resumed,
+                images_reused=reused,
+                images_processed_this_start=processed,
             )
-        if progress is not None and batch_directory is not None:
-            progress["interrupted_phase"] = progress.get("phase", "processing")
-            progress["phase"] = "interrupted"
-            if _can_write_progress(batch_directory):
-                try:
-                    _write_progress(batch_directory, progress)
-                except Exception as error:
-                    print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
-        summary = managed_public_summary(
-            progress
-            or {"model": {"model": arguments.model}, "inputs": [{"state": "pending"} for _image in images]},
-            batch_directory=batch_directory,
-            resumed=resumed,
-            images_reused=reused,
-            images_processed_this_start=processed,
-            status="interrupted",
-            trust_catalogue_output=False,
-        )
-    except KeyboardInterrupt:
-        exit_code = 130
-        if progress is not None:
-            processed = max(
-                processed,
-                sum(item.get("state") in TERMINAL_IMAGE_STATES for item in progress.get("inputs", [])) - reused,
-            )
-        if progress is not None and batch_directory is not None:
-            progress["interrupted_phase"] = progress.get("phase", "processing")
-            progress["phase"] = "interrupted"
-            if _can_write_progress(batch_directory):
-                try:
-                    _write_progress(batch_directory, progress)
-                except Exception as error:
-                    print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
-        summary = managed_public_summary(
-            progress
-            or {"model": {"model": arguments.model}, "inputs": [{"state": "pending"} for _image in images]},
-            batch_directory=batch_directory,
-            resumed=resumed,
-            images_reused=reused,
-            images_processed_this_start=processed,
-            status="interrupted",
-            trust_catalogue_output=False,
+            exit_code = 0 if details["status"] == "complete" else 1
+    except (ManagedInterruption, KeyboardInterrupt) as interruption:
+        exit_code = interruption.exit_code if isinstance(interruption, ManagedInterruption) else 130
+        processed = _processed_since_start(progress, processed, reused)
+        summary = _interrupted_summary(
+            arguments, images, progress, batch_directory, resumed, reused, processed
         )
     except Exception as error:
         if batch_directory is None and isinstance(error, ManagedBatchSelectionError):
             batch_directory = error.batch_directory
-        if progress is not None:
-            processed = max(
-                processed,
-                sum(item.get("state") in TERMINAL_IMAGE_STATES for item in progress.get("inputs", [])) - reused,
-            )
+        processed = _processed_since_start(progress, processed, reused)
         message = warning_text(error)
         print(f"Managed batch failed: {message}", file=sys.stderr)
         if progress is not None and batch_directory is not None and _can_write_progress(batch_directory):
