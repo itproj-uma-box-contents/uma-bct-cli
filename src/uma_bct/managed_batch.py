@@ -72,6 +72,36 @@ class ManagedInterruption(KeyboardInterrupt):
         self.exit_code = exit_code
 
 
+def _lock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            raise BlockingIOError from error
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
 def application_version() -> str:
     try:
         return version("uma-bct-cli")
@@ -266,7 +296,10 @@ def _read_json_file(path: Path, purpose: str) -> dict[str, Any]:
         with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, metadata):
             if metadata.st_size > 32 * 1024 * 1024:
                 raise ManagedBatchError(f"{purpose} is unexpectedly large: {path}")
-            value = json.loads(source.read().decode("utf-8"))
+            content = source.read(32 * 1024 * 1024 + 1)
+            if len(content) > 32 * 1024 * 1024:
+                raise ManagedBatchError(f"{purpose} is unexpectedly large: {path}")
+        value = json.loads(content.decode("utf-8"))
     except ManagedBatchError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -287,8 +320,8 @@ class ResultsRootLock:
     def __init__(self, results_root: Path) -> None:
         self.results_root = results_root
         self.path = results_root / LOCK_FILE_NAME
+        self._descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
-        self._content = b""
         self._guard_descriptor: int | None = None
         self._guard_identity: tuple[Path, int, int] | None = None
         self._guard_name: str | None = None
@@ -306,7 +339,6 @@ class ResultsRootLock:
             or not stat.S_ISREG(current.st_mode)
             or current.st_nlink != 1
             or identity != (current.st_dev, current.st_ino)
-            or self.path.read_bytes() != self._content
         ):
             raise ManagedBatchError(f"Results lock changed while it was held: {self.path}")
 
@@ -328,24 +360,12 @@ class ResultsRootLock:
                 or (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino)
             ):
                 raise ManagedBatchError(f"Results lock guard must be one unlinked regular file: {guard_path}")
-            if metadata.st_size == 0:
-                os.write(descriptor, b"\0")
-                os.fsync(descriptor)
             if os.name == "nt":
-                import msvcrt
-
                 if normalized in ACTIVE_WINDOWS_GUARDS:
                     raise BlockingIOError
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                try:
-                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                except OSError as error:
-                    raise BlockingIOError from error
+            _lock_descriptor(descriptor)
+            if os.name == "nt":
                 ACTIVE_WINDOWS_GUARDS.add(normalized)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BaseException:
             os.close(descriptor)
             raise
@@ -373,15 +393,7 @@ class ResultsRootLock:
             except OSError as caught:
                 error = caught
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            _unlock_descriptor(descriptor)
         except OSError as caught:
             error = error or caught
         finally:
@@ -389,7 +401,7 @@ class ResultsRootLock:
             if name is not None:
                 ACTIVE_WINDOWS_GUARDS.discard(name)
         if error is not None:
-            raise error
+            raise ManagedBatchError(str(error)) from error
 
     def acquire(self) -> None:
         try:
@@ -428,6 +440,10 @@ class ResultsRootLock:
             current = self.path.lstat()
             if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
                 raise ManagedBatchError(f"Results lock changed while it was opened: {self.path}")
+            _lock_descriptor(descriptor)
+            current = self.path.lstat()
+            if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                raise ManagedBatchError(f"Results lock changed while it was locked: {self.path}")
             if not created:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 raw = os.read(descriptor, 4096)
@@ -445,20 +461,43 @@ class ResultsRootLock:
             current = self.path.lstat()
             if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
                 raise ManagedBatchError(f"Results lock changed while it was written: {self.path}")
+            self._descriptor = descriptor
             self._identity = (metadata.st_dev, metadata.st_ino)
-            self._content = content
+            descriptor = None
+        except BlockingIOError:
+            raise ManagedBatchError(
+                f"Another UMA BCT run is already using this Results directory: {self.results_root}"
+            ) from None
         except OSError as error:
             raise ManagedBatchError(f"Could not reserve Results directory {self.results_root}: {error}") from error
         finally:
             if descriptor is not None:
+                try:
+                    _unlock_descriptor(descriptor)
+                except OSError:
+                    pass
                 os.close(descriptor)
 
     def release(self) -> None:
+        descriptor = self._descriptor
+        self._descriptor = None
         try:
             self._verify_lock()
+            if descriptor is not None:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                expected = (json.dumps({"schema_version": 1, "pid": os.getpid()}) + "\n").encode()
+                if os.read(descriptor, len(expected) + 1) != expected:
+                    raise ManagedBatchError(f"Results lock contents changed while it was held: {self.path}")
         finally:
             self._identity = None
-            self._release_guard()
+            try:
+                if descriptor is not None:
+                    try:
+                        _unlock_descriptor(descriptor)
+                    finally:
+                        os.close(descriptor)
+            finally:
+                self._release_guard()
 
 
 def _managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, dict[str, Any]]]]:
@@ -641,21 +680,102 @@ def _active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict
     return crop, reservation
 
 
+def _open_cleanup_descriptor(path: Path) -> int:
+    if os.name != "nt":
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
+
+    import ctypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.restype = ctypes.c_bool
+    generic_read = 0x80000000
+    share_read_write_delete = 0x00000007
+    open_existing = 3
+    normal_attributes = 0x00000080
+    handle = kernel.CreateFileW(
+        str(path), generic_read, share_read_write_delete, None, open_existing, normal_attributes, None
+    )
+    if handle in {None, ctypes.c_void_p(-1).value}:
+        raise OSError(ctypes.get_last_error(), f"Could not open cleanup file: {path}")
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+
+
 def _dispose_or_restore_quarantine(
     quarantine: Path, target: Path, allowed: tuple[dict[str, Any], ...], purpose: str
 ) -> None:
-    actual = fingerprint_file(quarantine, purpose)
-    if actual in allowed:
+    fingerprint_file(quarantine, purpose)
+    descriptor: int | None = None
+    try:
+        descriptor = _open_cleanup_descriptor(quarantine)
+        opened = os.fstat(descriptor)
+        current = quarantine.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise ManagedBatchError(f"{purpose} changed before cleanup: {quarantine}")
+        content = b"".join(iter(lambda: os.read(descriptor, 1024 * 1024), b""))
+        actual = {"size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        if actual not in allowed:
+            raise ManagedBatchError(f"Unknown {purpose.lower()} content was retained: {quarantine}")
+        current = quarantine.lstat()
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ManagedBatchError(f"{purpose} changed before cleanup: {quarantine}")
         quarantine.unlink()
-        return
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        after_content = b"".join(iter(lambda: os.read(descriptor, 1024 * 1024), b""))
+        if after_content != content:
+            restore_unlinked_crop_content(quarantine, target, after_content, purpose)
+            raise ManagedBatchError(f"{purpose} changed during cleanup and was restored: {target}")
+    except ManagedBatchError:
+        if _path_entry_exists(quarantine) and not _path_entry_exists(target):
+            rename_new_file(
+                quarantine,
+                target,
+                existing_message=f"{purpose} target appeared while an unknown file was restored: {target}",
+            )
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes, purpose: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(quarantine, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as restored:
+            restored.write(content)
+            restored.flush()
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     if not _path_entry_exists(target):
         rename_new_file(
             quarantine,
             target,
             existing_message=f"{purpose} target appeared while an unknown file was restored: {target}",
         )
-        raise ManagedBatchError(f"Unknown {purpose.lower()} content was restored and retained: {target}")
-    raise ManagedBatchError(f"Unknown {purpose.lower()} content was retained: {quarantine}")
+        return
+    raise ManagedBatchError(f"Changed {purpose.lower()} content was retained for recovery: {quarantine}")
 
 
 def _quarantine_active_file(

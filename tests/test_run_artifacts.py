@@ -5,10 +5,52 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from uma_bct.run_artifacts import CatalogueLock, catalogue_lock_path, replace_backed_file
+from uma_bct.run_artifacts import (
+    CatalogueLock,
+    backup_existing_results,
+    catalogue_lock_path,
+    replace_backed_file,
+    restore_backup_no_clobber,
+)
 
 
 class CatalogueLockTest(unittest.TestCase):
+    def short_copy_with_restored_metadata(self, path: Path, source, destination) -> None:
+        metadata = path.stat()
+        destination.write(source.read(64 * 1024))
+        path.write_bytes(b"changed".ljust(metadata.st_size, b"x"))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+    def test_backup_rejects_a_short_copy_hidden_by_restored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "catalogue.csv"
+            source.write_bytes(b"original".ljust(2 * 1024 * 1024, b"x"))
+            with (
+                patch(
+                    "uma_bct.run_artifacts.shutil.copyfileobj",
+                    side_effect=lambda opened, target: self.short_copy_with_restored_metadata(source, opened, target),
+                ),
+                self.assertRaisesRegex(ValueError, "changed while it was being read"),
+            ):
+                backup_existing_results((source,))
+            self.assertEqual(tuple(source.parent.glob("*.previous-*")), ())
+
+    def test_restore_rejects_a_short_copy_hidden_by_restored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backup = root / "catalogue.previous.csv"
+            destination = root / "catalogue.csv"
+            backup.write_bytes(b"original".ljust(2 * 1024 * 1024, b"x"))
+            with (
+                patch(
+                    "uma_bct.run_artifacts.shutil.copyfileobj",
+                    side_effect=lambda opened, target: self.short_copy_with_restored_metadata(backup, opened, target),
+                ),
+                self.assertRaisesRegex(ValueError, "changed while it was being read"),
+            ):
+                restore_backup_no_clobber(backup, destination, "Catalogue")
+            self.assertFalse(destination.exists())
+
     def test_backed_replacement_restores_destination_when_interrupted_after_quarantine_rename(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

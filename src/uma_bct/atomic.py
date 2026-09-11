@@ -55,6 +55,8 @@ def open_stable_file(
         if file_identity(opened) != expected or opened.st_nlink != 1:
             raise error_type(f"{purpose} changed while it was opened: {path}")
         yield source, before
+        if source.tell() != before.st_size:
+            raise error_type(f"{purpose} changed while it was being read: {path}")
         after_open = os.fstat(descriptor)
         after_path = inspect()
         if file_identity(after_open) != expected or file_identity(after_path) != expected or after_path.st_nlink != 1:

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from unittest.mock import Mock, patch
 
 from helpers import make_box, make_image, make_transcription
 
-from uma_bct.atomic import rename_new_file
+from uma_bct.atomic import open_stable_file, rename_new_file
 from uma_bct.constants import OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
 from uma_bct.managed_batch import (
@@ -22,10 +23,12 @@ from uma_bct.managed_batch import (
     DETAILS_FILE_NAME,
     PROGRESS_FILE_NAME,
     ResultsRootLock,
+    _read_json_file,
     allocate_source_names,
     create_batch_directory,
     fingerprint_file,
     publish_reserved_crop,
+    restore_unlinked_crop_content,
     run_managed_batch,
     sanitize_source_name,
 )
@@ -117,6 +120,45 @@ class ManagedBatchTest(unittest.TestCase):
             root = Path(directory).resolve()
             self.prepare_inputs(root, *names)
             yield root
+
+    def test_stable_read_rejects_a_short_read_hidden_by_restored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.bin"
+            path.write_bytes(b"a" * (2 * 1024 * 1024))
+            metadata = path.stat()
+            with self.assertRaisesRegex(ValueError, "changed while it was being read"):
+                with open_stable_file(path, "Source") as (source, _before):
+                    source.read(1024 * 1024)
+                    path.write_bytes(b"b" * metadata.st_size)
+                    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+    def test_json_read_stays_bounded_if_a_small_file_grows(self):
+        metadata = Mock(st_size=1)
+
+        @contextlib.contextmanager
+        def growing_file(*_args, **_kwargs):
+            yield io.BytesIO(b"x" * (32 * 1024 * 1024 + 1)), metadata
+
+        with (
+            patch("uma_bct.managed_batch.open_stable_file", side_effect=growing_file),
+            self.assertRaisesRegex(RuntimeError, "unexpectedly large"),
+        ):
+            _read_json_file(Path("progress.json"), "Run progress")
+
+    @unittest.skipIf(os.name == "nt", "POSIX private-file mode")
+    def test_retained_crop_recovery_is_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            quarantine = root / "recovery.tmp"
+            target = root / "crop.png"
+            target.write_bytes(b"unknown target")
+            previous_umask = os.umask(0o022)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "retained for recovery"):
+                    restore_unlinked_crop_content(quarantine, target, b"private pixels", "Crop")
+            finally:
+                os.umask(previous_umask)
+            self.assertEqual(stat.S_IMODE(quarantine.stat().st_mode), 0o600)
 
     def test_publishes_readable_batch_with_formula_links_and_exact_columns(self):
         with self.prepared_root("PXL_230150462.jpg") as root:
@@ -442,7 +484,7 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(len(list((batch / BOX_IMAGES_DIRECTORY_NAME).iterdir())), 1)
             self.assertTrue((batch / DETAILS_FILE_NAME).is_file())
 
-    def test_crop_changed_at_resume_quarantine_is_restored_and_blocked(self):
+    def test_crop_changed_at_resume_cleanup_syscall_is_restored_and_blocked(self):
         with self.prepared_root("01.jpg") as root:
 
             def stop_after_crop(source: Path, destination: Path, evidence: dict[str, object]):
@@ -461,16 +503,21 @@ class ManagedBatchTest(unittest.TestCase):
                 )
             self.assertEqual(first_status, 2)
 
-            def edit_after_quarantine(source: Path, destination: Path, *, existing_message: str):
-                result = rename_new_file(source, destination, existing_message=existing_message)
-                if "crop-cleanup" in destination.name:
-                    destination.write_bytes(b"late unknown cleanup edit")
+            changed = False
+
+            def edit_after_cleanup_check(path: Path, purpose: str):
+                nonlocal changed
+                result = fingerprint_file(path, purpose)
+                if purpose == "Interrupted crop publication" and not changed:
+                    path.write_bytes(b"late unknown cleanup edit")
+                    changed = True
                 return result
 
-            with patch("uma_bct.managed_batch.rename_new_file", side_effect=edit_after_quarantine):
+            with patch("uma_bct.managed_batch.fingerprint_file", side_effect=edit_after_cleanup_check):
                 status, summary, stderr = self.run_with(root, ManagedPipeline(port=13000))
             target = Path(summary["batch_directory"]) / BOX_IMAGES_DIRECTORY_NAME / "01 - Box 01.png"
 
+            self.assertTrue(changed)
             self.assertEqual(status, 2)
             self.assertIn("Unknown interrupted crop publication content", stderr)
             self.assertEqual(target.read_bytes(), b"late unknown cleanup edit")
@@ -618,6 +665,18 @@ class ManagedBatchTest(unittest.TestCase):
             original_lock = results / "original.lock"
             lock_path.rename(original_lock)
             lock_path.write_text('{"schema_version": 1, "pid": 999}\n', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "already using"):
+                ResultsRootLock(results).acquire()
+            with self.assertRaisesRegex(RuntimeError, "changed"):
+                first.release()
+
+        with tempfile.TemporaryDirectory() as directory:
+            results = Path(directory).resolve() / "Results"
+            first = ResultsRootLock(results)
+            first.acquire()
+            guard = first._guard_identity[0]
+            guard.rename(guard.with_name("original.guard"))
+            guard.write_bytes(b"\0")
             with self.assertRaisesRegex(RuntimeError, "already using"):
                 ResultsRootLock(results).acquire()
             with self.assertRaisesRegex(RuntimeError, "changed"):

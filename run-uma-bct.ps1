@@ -359,20 +359,23 @@ function Quote-NativeArgument([string] $Value) {
 }
 
 function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
-    $StartArguments = @{
-        FilePath = $AppCli
-        ArgumentList = $Arguments
-        NoNewWindow = $true
-        PassThru = $true
-    }
+    $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = $AppCli
+    $StartInfo.Arguments = $Arguments
+    $StartInfo.UseShellExecute = $false
     if (-not [string]::IsNullOrEmpty($OutputPath)) {
-        $StartArguments["RedirectStandardOutput"] = $OutputPath
+        $StartInfo.RedirectStandardOutput = $true
     }
-    $script:AppProcess = Start-Process @StartArguments
+    $script:AppProcess = [Diagnostics.Process]::Start($StartInfo)
     try {
+        if ($StartInfo.RedirectStandardOutput) {
+            $Output = $script:AppProcess.StandardOutput.ReadToEnd()
+        }
         $script:AppProcess.WaitForExit()
-        $script:AppProcess.Refresh()
         $Status = $script:AppProcess.ExitCode
+        if ($StartInfo.RedirectStandardOutput) {
+            [IO.File]::WriteAllText($OutputPath, $Output, [Text.UTF8Encoding]::new($false))
+        }
         if ($Status -eq -1073741510) {
             return 130
         }

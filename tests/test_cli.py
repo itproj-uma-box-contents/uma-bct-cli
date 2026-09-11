@@ -236,6 +236,12 @@ class CliTest(unittest.TestCase):
                 write_json_atomic(manifest, {"status": "failed"}, replace_existing=False)
             self.assertEqual(manifest.read_text(encoding="utf-8"), '{"owner": "other process"}\n')
 
+    def test_manifest_bytes_are_portable_across_platforms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "catalogue.run.json"
+            write_json_atomic(manifest, {"status": "complete"})
+            self.assertNotIn(b"\r\n", manifest.read_bytes())
+
     def test_manifest_writer_does_not_replace_a_file_appearing_at_the_publication_syscall(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory).resolve() / "catalogue.run.json"

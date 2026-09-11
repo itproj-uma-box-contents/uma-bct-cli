@@ -368,7 +368,8 @@ def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_exist
     # Write beside the manifest, then swap it in only when complete.
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=destination.parent, prefix=".uma-bct-json-", suffix=".tmp", delete=False
+            mode="w", encoding="utf-8", newline="\n", dir=destination.parent,
+            prefix=".uma-bct-json-", suffix=".tmp", delete=False
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
             json.dump(value, temporary_file, indent=2, ensure_ascii=False)
