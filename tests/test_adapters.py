@@ -304,11 +304,46 @@ class OllamaClientTest(unittest.TestCase):
         ready = SimpleNamespace(
             list=Mock(return_value={"models": [{"model": "qwen-test", "digest": "sha256:test"}]}), close=Mock()
         )
+        probe = SimpleNamespace(chat=Mock(return_value={"message": {"content": "ignored"}}), close=Mock())
         model = OllamaVisionModel(model="qwen-test")
-        with patch.object(OllamaVisionModel, "client", side_effect=(missing, pull, ready)):
+        with patch.object(OllamaVisionModel, "client", side_effect=(missing, pull, ready, probe)):
             metadata = model.ensure_model(progress_stream=io.StringIO())
         self.assertEqual(metadata["model_digest"], "sha256:test")
         pull.pull.assert_called_once_with(model="qwen-test", stream=True)
+        probe.chat.assert_called_once_with(
+            model="qwen-test",
+            messages=[{"role": "user", "content": "Reply briefly."}],
+            think=False,
+            options={"temperature": 0, "num_ctx": 16384, "num_predict": 1},
+            stream=False,
+        )
+
+    def test_preflight_proves_the_model_can_load_without_exposing_its_reply(self):
+        inventory = SimpleNamespace(
+            list=Mock(return_value={"models": [{"model": "qwen-test", "digest": "sha256:test"}]}), close=Mock()
+        )
+        probe = SimpleNamespace(chat=Mock(return_value={"message": {"content": "private reply"}}), close=Mock())
+        stdout = io.StringIO()
+        model = OllamaVisionModel(model="qwen-test")
+
+        with patch.object(OllamaVisionModel, "client", side_effect=(inventory, probe)), contextlib.redirect_stdout(stdout):
+            metadata = model.preflight()
+
+        self.assertEqual(metadata["ollama_host"], DEFAULT_OLLAMA_HOST)
+        self.assertEqual(stdout.getvalue(), "")
+        probe.chat.assert_called_once_with(
+            model="qwen-test",
+            messages=[{"role": "user", "content": "Reply briefly."}],
+            think=False,
+            options={"temperature": 0, "num_ctx": 16384, "num_predict": 1},
+            stream=False,
+        )
+
+    def test_inference_probe_reports_model_load_failures_once(self):
+        client = SimpleNamespace(chat=Mock(side_effect=RuntimeError("not enough memory")), close=Mock())
+        with patch.object(OllamaVisionModel, "client", return_value=client):
+            with self.assertRaisesRegex(RuntimeError, "inference preflight.*not enough memory"):
+                OllamaVisionModel(model="qwen-test").probe()
 
     def test_bootstrap_builds_qwen_with_opencv_fallback(self):
         client = Mock()

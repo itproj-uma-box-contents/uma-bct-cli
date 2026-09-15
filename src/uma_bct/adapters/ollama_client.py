@@ -311,7 +311,24 @@ class OllamaVisionModel:
         return {"model": self.model, "model_digest": available[self.model], "ollama_host": host}
 
     def preflight(self) -> dict[str, str]:
-        return self.metadata(*self.inventory())
+        metadata = self.metadata(*self.inventory())
+        self.probe()
+        return metadata
+
+    def probe(self) -> None:
+        """Load the model with the production context before image work starts."""
+
+        try:
+            with closing(self.client()) as client:
+                client.chat(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "Reply briefly."}],
+                    think=DEFAULT_THINK,
+                    options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length, "num_predict": 1},
+                    stream=False,
+                )
+        except Exception as error:
+            raise RuntimeError(f"Ollama inference preflight failed for model '{self.model}': {error}") from error
 
     def pull_model(self, output: TextIO) -> None:
         try:
@@ -333,7 +350,9 @@ class OllamaVisionModel:
             print(f"Downloading Ollama model '{self.model}'. This is a large download.", file=output)
             self.pull_model(output)
             host, available = self.inventory()
-        return self.metadata(host, available)
+        metadata = self.metadata(host, available)
+        self.probe()
+        return metadata
 
     def query(
         self, image_path: Path, prompt: str, schema: dict[str, Any], *, validator: Callable[[Any], object] | None = None

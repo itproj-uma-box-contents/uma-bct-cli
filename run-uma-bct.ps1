@@ -2,8 +2,12 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Inputs = Join-Path $Root "inputs"
-$Outputs = Join-Path $Root "outputs"
+$FriendlyInputs = Join-Path $Root "Add Photos Here"
+$FriendlyOutputs = Join-Path $Root "Results"
+$LegacyInputs = Join-Path $Root "inputs"
+$LegacyOutputs = Join-Path $Root "outputs"
+$Inputs = $null
+$Outputs = $null
 $Runtime = Join-Path $Root ".uma-bct-runtime"
 $Constraints = Join-Path $Root "client-constraints.txt"
 $AppEnvironment = Join-Path $Runtime "app"
@@ -14,9 +18,131 @@ $UvArchiveUrl = "https://releases.astral.sh/github/uv/releases/download/$UvVersi
 $UvArchiveSha256 = "ddbfcee1ac615a0499f6aa97b5ec8ebdf3ee4a7714a48055ec2ba0030e3cf810"
 $OllamaVersion = "0.30.8"
 $MinimumOllamaVersion = [version] $OllamaVersion
-$OllamaInstallerUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/OllamaSetup.exe"
-$OllamaInstallerSha256 = "d7cfbb2509d9e9464972d162899a5f085c1802619b6bbe0c4e210b47bcf2d446"
+$OllamaArchiveUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/ollama-windows-amd64.zip"
+$OllamaArchiveSha256 = "c2d26d97e698027329c252629d7113bbc05d874b49960cbb03e93a39ae9fd95c"
+$OllamaDirectory = Join-Path $Runtime "ollama"
+$OllamaPrevious = Join-Path $Runtime "ollama-previous"
+$OllamaLog = Join-Path $Runtime "ollama.log"
+$OllamaOutputLog = Join-Path $Runtime "ollama.stdout.log"
+$OllamaProcess = $null
+$AppProcess = $null
+$LaunchLockPath = Join-Path $Root ".uma-bct-launcher.lock"
+$LaunchLockStream = $null
 $SupportedExtensions = @(".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp")
+
+function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
+    if ($Item.Name -ne ".uma-bct.lock" -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+    $LinkType = $Item.PSObject.Properties["LinkType"]
+    if ($null -eq $LinkType -or -not [string]::IsNullOrEmpty("$($LinkType.Value)")) {
+        return $false
+    }
+    try {
+        $Raw = Get-Content -LiteralPath $Item.FullName -Raw -Encoding UTF8
+        return $Raw -cmatch '^\{"schema_version": 1, "pid": [1-9][0-9]*\}\r?\n?$'
+    } catch {
+        return $false
+    }
+}
+
+function Test-DirectoryData([string] $Path) {
+    try {
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $false
+    } catch {
+        throw "$Path could not be inspected safely: $($_.Exception.Message)"
+    }
+    if (-not $Item.PSIsContainer -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Path must be a directory and not a symbolic link or junction."
+    }
+    foreach ($Entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+        if ($Entry -is [IO.FileInfo] -and (Test-VerifiedResultsLock $Entry)) {
+            continue
+        }
+        return $true
+    }
+    return $false
+}
+
+function Select-DataDirectories {
+    $FriendlyData = (Test-DirectoryData $FriendlyInputs) -or
+        (Test-DirectoryData $FriendlyOutputs)
+    $LegacyData = (Test-DirectoryData $LegacyInputs) -or
+        (Test-DirectoryData $LegacyOutputs)
+    if ($FriendlyData -and $LegacyData) {
+        throw "Private data exists in both '$FriendlyInputs' / '$FriendlyOutputs' and " +
+            "'$LegacyInputs' / '$LegacyOutputs'. Keep only one layout; files were not merged or moved."
+    }
+    if ($LegacyData) {
+        $script:Inputs = $LegacyInputs
+        $script:Outputs = $LegacyOutputs
+    } else {
+        $script:Inputs = $FriendlyInputs
+        $script:Outputs = $FriendlyOutputs
+    }
+}
+
+function Reserve-Bundle {
+    $Created = $false
+    try {
+        $script:LaunchLockStream = [IO.File]::Open(
+            $LaunchLockPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+        $Created = $true
+    } catch [IO.IOException] {
+        $Item = Get-Item -LiteralPath $LaunchLockPath -Force -ErrorAction Stop
+        $LinkType = $Item.PSObject.Properties["LinkType"]
+        if ($Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($null -ne $LinkType -and -not [string]::IsNullOrEmpty("$($LinkType.Value)"))) {
+            throw "The launcher reservation must be a regular file and not a link: $LaunchLockPath"
+        }
+        try {
+            $script:LaunchLockStream = [IO.File]::Open(
+                $LaunchLockPath,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None
+            )
+        } catch [IO.IOException] {
+            throw "This extracted UMA BCT folder is already running. Wait for the other launcher to finish: $Root"
+        }
+    }
+    try {
+        if (-not $Created) {
+            if ($script:LaunchLockStream.Length -gt 64) {
+                throw "The launcher reservation is malformed and was not recovered: $LaunchLockPath"
+            }
+            $ExistingBytes = [byte[]]::new([int] $script:LaunchLockStream.Length)
+            [void] $script:LaunchLockStream.Read($ExistingBytes, 0, $ExistingBytes.Length)
+            $ExistingOwner = [Text.Encoding]::UTF8.GetString($ExistingBytes)
+            if ($ExistingOwner -cnotmatch '^[1-9][0-9]*\r?\n$') {
+                throw "The launcher reservation is malformed and was not recovered: $LaunchLockPath"
+            }
+        }
+        $Owner = [Text.Encoding]::UTF8.GetBytes("$PID`n")
+        $script:LaunchLockStream.SetLength(0)
+        $script:LaunchLockStream.Write($Owner, 0, $Owner.Length)
+        $script:LaunchLockStream.Flush($true)
+    } catch {
+        Release-Bundle
+        throw
+    }
+}
+
+function Release-Bundle {
+    if ($null -ne $script:LaunchLockStream) {
+        $script:LaunchLockStream.Dispose()
+        $script:LaunchLockStream = $null
+    }
+}
 
 function Get-InputImages {
     @(Get-ChildItem -LiteralPath $Inputs -File -ErrorAction SilentlyContinue |
@@ -24,9 +150,8 @@ function Get-InputImages {
 }
 
 function Test-PrivateData {
-    foreach ($Directory in @($Inputs, $Outputs)) {
-        if ($null -ne (Get-ChildItem -LiteralPath $Directory -Force |
-            Select-Object -First 1)) {
+    foreach ($Directory in @($FriendlyInputs, $FriendlyOutputs, $LegacyInputs, $LegacyOutputs)) {
+        if (Test-DirectoryData $Directory) {
             return $true
         }
     }
@@ -46,12 +171,30 @@ function Open-LocalFolder([string] $Path) {
 }
 
 function Find-Ollama {
+    $Candidates = @((Join-Path $OllamaDirectory "ollama.exe"))
+    foreach ($Candidate in $Candidates) {
+        if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
+            ((Get-Item -LiteralPath $Candidate -Force).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            return $Candidate
+        }
+    }
+    return $null
+}
+
+function Find-LlamaServer([string] $Executable) {
+    if ([string]::IsNullOrWhiteSpace($Executable)) {
+        return $null
+    }
+    $ExecutableDirectory = Split-Path -Parent $Executable
     $Candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"),
-        (Join-Path $env:ProgramFiles "Ollama\ollama.exe")
+        (Join-Path $ExecutableDirectory "lib\ollama\llama-server.exe"),
+        (Join-Path $ExecutableDirectory "..\lib\ollama\llama-server.exe")
     )
     foreach ($Candidate in $Candidates) {
-        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+        if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
+            ((Get-Item -LiteralPath $Candidate -Force).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) {
             return $Candidate
         }
     }
@@ -83,60 +226,275 @@ function Assert-OllamaSignature([string] $Path) {
     }
     if ($Signature.Status -ne "Valid" -or
         $Subject -notmatch "(^|, )O=Ollama Inc\.(,|$)") {
-        throw "Ollama installer signature verification failed."
+        throw "Ollama runtime signature verification failed."
     }
 }
 
 function Test-OllamaVersion([string] $Executable) {
+    $Process = $null
     try {
-        $VersionOutput = & $Executable --version 2>$null | Out-String
-        if ($VersionOutput -notmatch "(\d+\.\d+\.\d+)") {
+        $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+        $StartInfo.FileName = $Executable
+        $StartInfo.Arguments = "--version"
+        $StartInfo.UseShellExecute = $false
+        $StartInfo.CreateNoWindow = $true
+        $StartInfo.RedirectStandardOutput = $true
+        $StartInfo.RedirectStandardError = $true
+        $StartInfo.EnvironmentVariables["OLLAMA_HOST"] = "http://127.0.0.1:1"
+        $Process = [Diagnostics.Process]::Start($StartInfo)
+        if (-not $Process.WaitForExit(5000)) {
+            $Process.Kill()
+            $Process.WaitForExit()
             return $false
         }
-        return [version] $Matches[1] -ge $MinimumOllamaVersion
+        $VersionOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
+        $VersionMatches = [regex]::Matches($VersionOutput, "\d+\.\d+\.\d+")
+        if ($VersionMatches.Count -eq 0) {
+            return $false
+        }
+        $ClientVersion = $VersionMatches[$VersionMatches.Count - 1].Value
+        return [version] $ClientVersion -ge $MinimumOllamaVersion
     } catch {
         return $false
+    } finally {
+        if ($null -ne $Process) {
+            $Process.Dispose()
+        }
     }
 }
 
-function Test-Ollama([string] $Executable) {
+function Test-OllamaHealth {
+    $Client = $null
     try {
-        & $Executable list *> $null
-        return $LASTEXITCODE -eq 0
+        $Endpoint = [Uri] $env:OLLAMA_HOST
+        $Client = [Net.Sockets.TcpClient]::new()
+        $Connection = $Client.ConnectAsync($Endpoint.Host, $Endpoint.Port)
+        if (-not $Connection.Wait(500)) {
+            return $false
+        }
+        $Client.ReceiveTimeout = 500
+        $Client.SendTimeout = 500
+        $Stream = $Client.GetStream()
+        $Request = [Text.Encoding]::ASCII.GetBytes(
+            "GET /api/version HTTP/1.0`r`nHost: 127.0.0.1`r`n`r`n"
+        )
+        $Stream.Write($Request, 0, $Request.Length)
+        $Response = [byte[]]::new(64)
+        $Length = $Stream.Read($Response, 0, $Response.Length)
+        $Status = [Text.Encoding]::ASCII.GetString($Response, 0, $Length)
+        return $Status -match "^HTTP/1\.[01] 200 "
     } catch {
         return $false
+    } finally {
+        if ($null -ne $Client) {
+            $Client.Dispose()
+        }
     }
+}
+
+function Get-FreeLoopbackPort {
+    $Listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $Listener.Start()
+        return ([Net.IPEndPoint] $Listener.LocalEndpoint).Port
+    } finally {
+        $Listener.Stop()
+    }
+}
+
+function Stop-OwnedProcess([Diagnostics.Process] $OwnedProcess, [bool] $RequestStop) {
+    try {
+        $OwnedProcess.Refresh()
+        $TaskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+        if (-not $OwnedProcess.HasExited) {
+            if ($RequestStop) {
+                try {
+                    & $TaskKill /PID $OwnedProcess.Id /T *> $null
+                } catch {
+                    # The verified child may not own a window.
+                }
+            }
+            [void] $OwnedProcess.WaitForExit(5000)
+        }
+        $OwnedProcess.Refresh()
+        if (-not $OwnedProcess.HasExited) {
+            try {
+                & $TaskKill /PID $OwnedProcess.Id /T /F *> $null
+            } catch {
+                # Fall through to the exact-process fallback below.
+            }
+            $OwnedProcess.Refresh()
+            if (-not $OwnedProcess.HasExited) {
+                Stop-Process -Id $OwnedProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+        [void] $OwnedProcess.WaitForExit(5000)
+    } catch {
+        # The verified child may already have exited and been reaped.
+    } finally {
+        $OwnedProcess.Dispose()
+    }
+}
+
+function Stop-OwnedOllama {
+    if ($null -eq $script:OllamaProcess) {
+        return
+    }
+    $OwnedProcess = $script:OllamaProcess
+    $script:OllamaProcess = $null
+    Stop-OwnedProcess $OwnedProcess $true
+}
+
+function Stop-OwnedApp {
+    if ($null -eq $script:AppProcess) {
+        return
+    }
+    $OwnedProcess = $script:AppProcess
+    $script:AppProcess = $null
+    Stop-OwnedProcess $OwnedProcess $false
+}
+
+function Quote-NativeArgument([string] $Value) {
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
+    $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = $AppCli
+    $StartInfo.Arguments = $Arguments
+    $StartInfo.UseShellExecute = $false
+    if (-not [string]::IsNullOrEmpty($OutputPath)) {
+        $StartInfo.RedirectStandardOutput = $true
+    }
+    $script:AppProcess = [Diagnostics.Process]::Start($StartInfo)
+    try {
+        if ($StartInfo.RedirectStandardOutput) {
+            $Output = $script:AppProcess.StandardOutput.ReadToEnd()
+        }
+        $script:AppProcess.WaitForExit()
+        $Status = $script:AppProcess.ExitCode
+        if ($StartInfo.RedirectStandardOutput) {
+            [IO.File]::WriteAllText($OutputPath, $Output, [Text.UTF8Encoding]::new($false))
+        }
+        if ($Status -eq -1073741510) {
+            return 130
+        }
+        return $Status
+    } finally {
+        Stop-OwnedApp
+    }
+}
+
+function Start-OwnedOllama([string] $Executable) {
+    foreach ($LogPath in @($OllamaLog, $OllamaOutputLog)) {
+        if (Test-Path -LiteralPath $LogPath) {
+            $LogItem = Get-Item -LiteralPath $LogPath -Force
+            if ($LogItem.PSIsContainer -or
+                ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
+            }
+        }
+    }
+    foreach ($Attempt in 1..3) {
+        try {
+            $Port = Get-FreeLoopbackPort
+            $env:OLLAMA_HOST = "http://127.0.0.1:$Port"
+            Write-Host "Starting the isolated Ollama service (attempt $Attempt of 3)..."
+            $script:OllamaProcess = Start-Process -FilePath $Executable `
+                -ArgumentList "serve" -WindowStyle Hidden -PassThru `
+                -RedirectStandardOutput $OllamaOutputLog -RedirectStandardError $OllamaLog
+        } catch {
+            Stop-OwnedOllama
+            continue
+        }
+
+        $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+        while ([DateTime]::UtcNow -lt $Deadline) {
+            $script:OllamaProcess.Refresh()
+            if ($script:OllamaProcess.HasExited) {
+                break
+            }
+            if (Test-OllamaHealth) {
+                Start-Sleep -Milliseconds 200
+                $script:OllamaProcess.Refresh()
+                if ([DateTime]::UtcNow -lt $Deadline -and
+                    -not $script:OllamaProcess.HasExited -and (Test-OllamaHealth)) {
+                    return
+                }
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        Stop-OwnedOllama
+    }
+    throw "Ollama did not start after three attempts. Review the runtime log at $OllamaLog"
 }
 
 function Install-Ollama {
-    Write-Host "Installing the verified local Ollama service..."
+    Write-Host "Installing the verified private Ollama runtime..."
     Assert-NoPrivateData
-    $OllamaInstaller = Join-Path $Runtime "OllamaSetup.exe"
-    Invoke-WebRequest -Uri $OllamaInstallerUrl -OutFile $OllamaInstaller -UseBasicParsing
-    Assert-InstallerHash $OllamaInstaller $OllamaInstallerSha256
-    Assert-OllamaSignature $OllamaInstaller
+    $OllamaArchive = Join-Path $Runtime "ollama-windows-amd64.zip"
+    $OllamaStaging = Join-Path $Runtime "ollama-install"
+    $Promoted = $false
     try {
-        $Installer = Start-Process -FilePath $OllamaInstaller `
-            -ArgumentList "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES" `
-            -PassThru
-        $Installer.WaitForExit()
-        if ($Installer.ExitCode -ne 0) {
-            throw "Ollama installation failed with exit code $($Installer.ExitCode)."
+        Invoke-WebRequest -Uri $OllamaArchiveUrl -OutFile $OllamaArchive -UseBasicParsing
+        Assert-InstallerHash $OllamaArchive $OllamaArchiveSha256
+        Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
+        Microsoft.PowerShell.Archive\Expand-Archive `
+            -LiteralPath $OllamaArchive -DestinationPath $OllamaStaging
+        $StagedOllama = Join-Path $OllamaStaging "ollama.exe"
+        $StagedLlamaServer = Join-Path $OllamaStaging "lib\ollama\llama-server.exe"
+        if (-not (Test-Path -LiteralPath $StagedOllama -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $StagedLlamaServer -PathType Leaf)) {
+            throw "The verified Ollama archive is missing required executables."
+        }
+        Assert-OllamaSignature $StagedOllama
+        Assert-OllamaSignature $StagedLlamaServer
+        if (-not (Test-OllamaVersion $StagedOllama)) {
+            throw "The verified Ollama archive has an unsupported executable version."
+        }
+        Remove-Item -LiteralPath $OllamaPrevious -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $OllamaDirectory) {
+            Move-Item -LiteralPath $OllamaDirectory -Destination $OllamaPrevious
+        }
+        try {
+            Move-Item -LiteralPath $OllamaStaging -Destination $OllamaDirectory
+            $Promoted = $true
+            Remove-Item -LiteralPath $OllamaPrevious -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            if (-not (Test-Path -LiteralPath $OllamaDirectory) -and
+                (Test-Path -LiteralPath $OllamaPrevious -PathType Container)) {
+                Move-Item -LiteralPath $OllamaPrevious -Destination $OllamaDirectory
+            }
+            throw
         }
     } finally {
-        Remove-Item -LiteralPath $OllamaInstaller -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $OllamaArchive -Force -ErrorAction SilentlyContinue
+        if ($Promoted) {
+            Remove-Item -LiteralPath $OllamaStaging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Recover-OllamaPromotion {
+    if (-not (Test-Path -LiteralPath $OllamaDirectory) -and
+        (Test-Path -LiteralPath $OllamaPrevious -PathType Container)) {
+        Move-Item -LiteralPath $OllamaPrevious -Destination $OllamaDirectory
     }
 }
 
 function Assert-LocalDirectory([string] $Path) {
-    if (Test-Path -LiteralPath $Path) {
-        $Item = Get-Item -LiteralPath $Path -Force
-        if (-not $Item.PSIsContainer) {
-            throw "$Path must be a directory."
-        }
-        if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "$Path must not be a symbolic link or junction."
-        }
+    try {
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return
+    } catch {
+        throw "$Path could not be inspected safely: $($_.Exception.Message)"
+    }
+    if (-not $Item.PSIsContainer) {
+        throw "$Path must be a directory."
+    }
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Path must not be a symbolic link or junction."
     }
 }
 
@@ -150,6 +508,7 @@ function Assert-NoReparseAncestor([string] $Path) {
     }
 }
 
+$RunStatus = 2
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
@@ -160,6 +519,8 @@ try {
         throw "UMA BCT requires Windows 10 22H2 or newer."
     }
     Assert-NoReparseAncestor $Root
+    Select-DataDirectories
+    Reserve-Bundle
     Assert-LocalDirectory $Inputs
     Assert-LocalDirectory $Outputs
     Assert-LocalDirectory $Runtime
@@ -167,6 +528,9 @@ try {
     Assert-LocalDirectory (Join-Path $Runtime "uv-cache")
     Assert-LocalDirectory (Join-Path $Runtime "python")
     Assert-LocalDirectory $AppEnvironment
+    Assert-LocalDirectory $OllamaDirectory
+    Assert-LocalDirectory (Join-Path $Runtime "ollama-install")
+    Assert-LocalDirectory $OllamaPrevious
     New-Item -ItemType Directory -Force -Path $Inputs, $Outputs, $Runtime | Out-Null
     $PrivateDataPresent = Test-PrivateData
 
@@ -187,7 +551,7 @@ try {
         ForEach-Object { Remove-Item "Env:$($_.Name)" }
     foreach ($Variable in @(
         "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PIP_INDEX_URL",
-        "PIP_EXTRA_INDEX_URL", "OLLAMA_DEBUG", "OLLAMA_DOWNLOAD_URL",
+        "PIP_EXTRA_INDEX_URL", "OLLAMA_HOST", "OLLAMA_DEBUG", "OLLAMA_DOWNLOAD_URL",
         "OLLAMA_INSTALL_DIR", "OLLAMA_NO_START", "OLLAMA_UNINSTALL",
         "OLLAMA_VERSION")) {
         Remove-Item "Env:$Variable" -ErrorAction SilentlyContinue
@@ -204,7 +568,7 @@ try {
     }
     if (-not (Test-UvVersion $Uv)) {
         if ($PrivateDataPresent) {
-            throw "Move private files out of inputs and outputs before repairing the local runtime."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the local runtime."
         }
         Assert-NoPrivateData
         Write-Host "Preparing the private local Python runtime..."
@@ -232,24 +596,29 @@ try {
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $Runtime "python"
     $env:UV_DEFAULT_INDEX = "https://pypi.org/simple"
     $env:UV_NO_CONFIG = "1"
-    $env:OLLAMA_HOST = "http://127.0.0.1:11434"
     $env:OLLAMA_NO_CLOUD = "1"
     Remove-Item Env:UMA_BCT_ALLOW_REMOTE_OLLAMA -ErrorAction SilentlyContinue
     Remove-Item Env:UMA_BCT_ALLOW_CONTAINER_OLLAMA -ErrorAction SilentlyContinue
 
+    Recover-OllamaPromotion
     $Ollama = Find-Ollama
-    if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama)) {
+    $LlamaServer = Find-LlamaServer $Ollama
+    if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama) -or $null -eq $LlamaServer) {
         if ($PrivateDataPresent) {
-            throw "Move private files out of inputs and outputs before installing or updating Ollama."
+            throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of '$Inputs' and '$Outputs', then run this launcher again to repair it. Runtime log: $OllamaLog"
         }
         Install-Ollama
         $Ollama = Find-Ollama
+        $LlamaServer = Find-LlamaServer $Ollama
     }
     if ($null -eq $Ollama) {
-        throw "Ollama could not be installed."
+        throw "Ollama could not be installed. Runtime log: $OllamaLog"
     }
     if (-not (Test-OllamaVersion $Ollama)) {
-        throw "Ollama is too old and could not be updated."
+        throw "Ollama is too old and could not be updated. Runtime log: $OllamaLog"
+    }
+    if ($null -eq $LlamaServer) {
+        throw "Ollama's llama-server.exe companion is missing. Runtime log: $OllamaLog"
     }
 
     if (-not $PrivateDataPresent) {
@@ -272,33 +641,19 @@ try {
     } else {
         if (-not (Test-Path -LiteralPath $AppPython -PathType Leaf) -or
             -not (Test-Path -LiteralPath $AppCli -PathType Leaf)) {
-            throw "Move private files out of inputs and outputs before repairing the application environment."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
         & $Uv pip install --no-config --offline --no-deps --reinstall `
             --python $AppPython $Wheels[0].FullName
         if ($LASTEXITCODE -ne 0) {
-            throw "Move private files out of inputs and outputs before repairing the application environment."
+            throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
     }
     if (-not (Test-Path -LiteralPath $AppCli -PathType Leaf)) {
         throw "The application could not be installed."
     }
 
-    if (-not (Test-Ollama $Ollama)) {
-        Write-Host "Starting Ollama..."
-        Start-Process -FilePath $Ollama -ArgumentList "serve" -WindowStyle Hidden
-        $Started = $false
-        foreach ($Attempt in 1..30) {
-            Start-Sleep -Seconds 1
-            if (Test-Ollama $Ollama) {
-                $Started = $true
-                break
-            }
-        }
-        if (-not $Started) {
-            throw "Ollama did not start."
-        }
-    }
+    Start-OwnedOllama $Ollama
 
     Push-Location $Root
     try {
@@ -306,9 +661,10 @@ try {
             Assert-NoPrivateData
             Write-Host "Checking the application and model. The first model download is large..."
             $SetupLog = Join-Path $Runtime "setup.json"
-            & $AppCli setup |
-                Set-Content -LiteralPath $SetupLog -Encoding UTF8
-            if ($LASTEXITCODE -ne 0) {
+            $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
+                " --results-directory " + (Quote-NativeArgument $Outputs)
+            $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
+            if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
             }
         }
@@ -325,26 +681,34 @@ try {
         }
 
         Write-Host "Transcribing the photos..."
-        & $AppCli --force
-        $RunStatus = $LASTEXITCODE
+        $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
+            " --results-directory " + (Quote-NativeArgument $Outputs)
+        $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location
     }
 
     if ($RunStatus -eq 0) {
         Open-LocalFolder $Outputs
-        Write-Host "`nFinished. Review $Outputs\catalogue.csv"
+        Write-Host "`nFinished. Review the newest Batch folder in $Outputs"
     } elseif ($RunStatus -eq 1) {
         Open-LocalFolder $Outputs
         [Console]::Error.WriteLine(
-            "`nProcessing was incomplete. Review the newest run manifest in $Outputs."
+            "`nProcessing was incomplete. Review the newest Batch folder in $Outputs."
         )
         [Console]::Error.WriteLine(
-            "The catalogue may be partial, absent, or retained from the previous run."
+            "Its Catalogue may be partial or absent; Run Details records every outcome."
         )
     }
-    exit $RunStatus
+} catch [Management.Automation.PipelineStoppedException] {
+    [Console]::Error.WriteLine("`nUMA BCT was interrupted.")
+    $RunStatus = 130
 } catch {
     [Console]::Error.WriteLine("`nUMA BCT could not continue: $($_.Exception.Message)")
-    exit 2
+    $RunStatus = 2
+} finally {
+    Stop-OwnedApp
+    Stop-OwnedOllama
+    Release-Bundle
 }
+exit $RunStatus

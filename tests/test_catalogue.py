@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from helpers import make_box, make_image, make_result, make_transcription
 
+from uma_bct.atomic import rename_exclusive
 from uma_bct.catalogue import map_catalogue_record
 from uma_bct.constants import OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
@@ -34,7 +35,7 @@ class CatalogueRulesTest(unittest.TestCase):
         )
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "1990.0001 Unit 0030")
-        self.assertIn("Multiple identifiers", record["Review Notes"])
+        self.assertIn("Multiple identifiers", record["Review Flags"])
 
     def test_blanks_missing_or_uncorroborated_identity(self):
         box = make_box()
@@ -50,14 +51,14 @@ class CatalogueRulesTest(unittest.TestCase):
             with self.subTest(flag=flag):
                 record = map_catalogue_record(transcription, box.image_file_path)
                 self.assertEqual(record["Node Title"], "")
-                self.assertIn(flag, record["Review Notes"])
+                self.assertIn(flag, record["Review Flags"])
 
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
         transcription = make_transcription(box, identifiers=("12/5",), typed=("Meeting 12/5", "Unit 4"))
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Node Title"], "")
-        self.assertIn("Transcription mismatch", record["Review Notes"])
+        self.assertIn("Transcription mismatch", record["Review Flags"])
 
     def test_requires_one_unambiguous_unit(self):
         box = make_box()
@@ -66,13 +67,37 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(map_catalogue_record(accepted, box.image_file_path)["Node Title"], "1960.0009 Unit 0007")
         rejected = map_catalogue_record(conflicting, box.image_file_path)
         self.assertEqual(rejected["Node Title"], "")
-        self.assertIn("Invalid unit", rejected["Review Notes"])
+        self.assertIn("Invalid unit", rejected["Review Flags"])
 
     def test_description_excludes_identity_and_escapes_formulas(self):
         box = make_box()
         transcription = make_transcription(box, handwritten=("1960.0009", "=SUM(A1:A2)"), auxiliary=("Fragile",))
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Description"], "'=SUM(A1:A2); Fragile")
+
+    def test_untrusted_crop_text_is_escaped_and_only_managed_paths_become_formulas(self):
+        box = make_box(crop_path=Path("=OPEN-UNTRUSTED.png"))
+        transcription = make_transcription(box)
+        direct = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(direct["Cropped Box Image Link"], "'=OPEN-UNTRUSTED.png")
+
+        managed = map_catalogue_record(
+            transcription,
+            Path("batch/Box Images/=source - Box 01.png"),
+            catalogue_path=Path("batch/Catalogue.csv"),
+            trusted_crop_link=True,
+        )
+        self.assertEqual(
+            managed["Cropped Box Image Link"],
+            '=HYPERLINK("Box Images/=source - Box 01.png","=source - Box 01.png")',
+        )
+        with self.assertRaisesRegex(ValueError, "inside Box Images"):
+            map_catalogue_record(
+                transcription,
+                Path("batch/outside.png"),
+                catalogue_path=Path("batch/Catalogue.csv"),
+                trusted_crop_link=True,
+            )
 
     def test_preserves_and_flags_duplicate_physical_boxes(self):
         first = make_box(box_id="shelf:001")
@@ -85,9 +110,9 @@ class CatalogueRulesTest(unittest.TestCase):
             ]
         )
         self.assertEqual(len(records), 2)
-        self.assertIn("Potential Duplicate", records[0]["Review Notes"])
-        self.assertIn("Potential Duplicate", records[1]["Review Notes"])
-        self.assertIn("Low confidence", records[0]["Review Notes"])
+        self.assertIn("Potential Duplicate", records[0]["Review Flags"])
+        self.assertIn("Potential Duplicate", records[1]["Review Flags"])
+        self.assertIn("Low confidence", records[0]["Review Flags"])
 
     def test_low_confidence_threshold_is_strict(self):
         box = make_box()
@@ -95,8 +120,8 @@ class CatalogueRulesTest(unittest.TestCase):
         below_threshold = catalogue_records([result], minimum_confidence=71)
         at_threshold = catalogue_records([result], minimum_confidence=70)
 
-        self.assertIn("Low confidence", below_threshold[0]["Review Notes"])
-        self.assertNotIn("Low confidence", at_threshold[0]["Review Notes"])
+        self.assertIn("Low confidence", below_threshold[0]["Review Flags"])
+        self.assertNotIn("Low confidence", at_threshold[0]["Review Flags"])
 
 
 class CsvExportTest(unittest.TestCase):
@@ -141,18 +166,18 @@ class CsvExportTest(unittest.TestCase):
                     "Node Title",
                     "Description",
                     "Date Range",
-                    "Transcription Confidence (0-100)",
-                    "Review Notes",
-                    "Crop Image",
+                    "Transcription Confidence (%)",
+                    "Review Flags",
+                    "Cropped Box Image Link",
                 ],
             )
             self.assertEqual(len(rows), 3)
             self.assertEqual(rows[0]["Node Title"], "2000.0002 Unit 0002")
-            self.assertEqual(rows[0]["Crop Image"], "crops/b-001.png")
+            self.assertEqual(rows[0]["Cropped Box Image Link"], "crops/b-001.png")
             self.assertEqual(rows[1]["Node Title"], "")
-            self.assertEqual(rows[1]["Crop Image"], "crops/b-002.png")
+            self.assertEqual(rows[1]["Cropped Box Image Link"], "crops/b-002.png")
             self.assertEqual(rows[2]["Node Title"], "1990.0001 Unit 0001")
-            self.assertEqual(rows[2]["Crop Image"], "crops/a-001.png")
+            self.assertEqual(rows[2]["Cropped Box Image Link"], "crops/a-001.png")
 
     def test_atomic_failure_preserves_existing_csv(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +203,24 @@ class CsvExportTest(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "already exists"):
                 export_catalogue([result], output, replace_existing=False)
             self.assertEqual(output.read_text(encoding="utf-8"), "other process\n")
+
+    def test_does_not_replace_an_output_appearing_at_the_publication_syscall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.csv"
+            box = make_box(crop_path=output.parent / "crops/box.png")
+            result = make_result(BoxResult(box, make_transcription(box)))
+
+            def late_destination(source, destination):
+                destination.write_text("late output\n", encoding="utf-8")
+                return rename_exclusive(source, destination)
+
+            with (
+                patch("uma_bct.atomic.rename_exclusive", side_effect=late_destination),
+                self.assertRaisesRegex(FileExistsError, "already exists"),
+            ):
+                export_catalogue([result], output, replace_existing=False)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
     def test_csv_is_the_only_output_format(self):
         with self.assertRaisesRegex(ValueError, "must end in .csv"):

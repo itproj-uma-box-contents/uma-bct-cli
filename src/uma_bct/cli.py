@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import ntpath
 import os
 import stat
 import sys
@@ -18,6 +19,7 @@ from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECON
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
+from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
 from .run_artifacts import manifest_path
@@ -92,6 +94,12 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="review-crop root (default: crops beside the catalogue)",
     )
+    parser.add_argument(
+        "--results-directory",
+        type=Path,
+        default=None,
+        help="create or resume a readable managed batch in this directory",
+    )
 
 
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
@@ -138,9 +146,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     add_path_arguments(parser)
     add_processing_arguments(parser)
+    parser.add_argument(
+        "--reprocess",
+        action="store_true",
+        help="create another managed batch for a photo set that is already complete",
+    )
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
-    subcommands.add_parser("setup", help="prepare folders and the pinned model")
+    setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
+    setup.add_argument("--path-to-inputs", type=Path, default=None, help="directory to prepare for input photos")
+    setup.add_argument("--results-directory", type=Path, default=None, help="directory to prepare for managed results")
     return parser
 
 
@@ -150,6 +165,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
     try:
+        check_path(path, purpose)
         metadata = path.lstat()
     except FileNotFoundError:
         raise ValueError(f"{purpose} does not exist: {path}") from None
@@ -210,6 +226,52 @@ def validate_output_target(path: Path, *, directory: bool, purpose: str) -> None
         raise ValueError(f"{purpose} must be a {expected}: {path}")
 
 
+def validate_output_layout(catalogue: str | Path, manifest: str | Path, crop_root: str | Path) -> None:
+    """Keep crop directories separate from published files on one Windows drive."""
+
+    raw_paths = tuple(os.fspath(path) for path in (catalogue, manifest, crop_root))
+    absolute_paths = tuple(os.path.realpath(path) for path in raw_paths)
+    windows_drives = {drive.casefold() for path in (*raw_paths, *absolute_paths) if (drive := ntpath.splitdrive(path)[0])}
+    if len(windows_drives) > 1:
+        raise ValueError("catalogue, manifest, and review-crop paths must use the same Windows drive")
+
+    catalogue_absolute, manifest_absolute, crop_absolute = absolute_paths
+    for artifact, purpose in ((catalogue_absolute, "catalogue output"), (manifest_absolute, "run manifest")):
+        try:
+            common = os.path.commonpath((artifact, crop_absolute))
+        except ValueError:
+            raise ValueError("catalogue, manifest, and review-crop paths must use the same Windows drive") from None
+        common = os.path.normcase(os.path.normpath(common))
+        artifact_normalized = os.path.normcase(os.path.normpath(artifact))
+        crop_normalized = os.path.normcase(os.path.normpath(crop_absolute))
+        if common == crop_normalized:
+            if purpose == "catalogue output":
+                raise ValueError("catalogue output must not be inside the review-crop directory")
+            raise ValueError("run manifest must not be inside the review-crop directory")
+        if common == artifact_normalized:
+            raise ValueError(f"review-crop root must not be inside the {purpose} path")
+
+
+def option_was_supplied(arguments: list[str], names: tuple[str, ...]) -> bool:
+    return any(
+        argument in names
+        or any(argument.startswith(f"{name}=") for name in names if name.startswith("--"))
+        or any(argument.startswith(name) and len(argument) > len(name) for name in names if len(name) == 2)
+        for argument in arguments
+    )
+
+
+def validate_managed_layout(input_path: Path, results_directory: Path) -> None:
+    input_absolute = os.path.realpath(input_path)
+    results_absolute = os.path.realpath(results_directory)
+    try:
+        common = os.path.commonpath((input_absolute, results_absolute))
+    except ValueError:
+        return
+    if common == results_absolute or (input_path.is_dir() and common == input_absolute):
+        raise ValueError("input photos and managed Results must be in separate, non-nested directories")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
@@ -217,7 +279,32 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "setup":
         if raw_arguments[0] != "setup":
             parser.error("setup must be the first argument")
-        return run_setup()
+        setup_arguments: dict[str, Path] = {}
+        if arguments.path_to_inputs is not None:
+            setup_arguments["input_directory"] = arguments.path_to_inputs
+        if arguments.results_directory is not None:
+            setup_arguments["results_directory"] = arguments.results_directory
+        return run_setup(**setup_arguments)
+
+    if arguments.reprocess and arguments.results_directory is None:
+        parser.error("--reprocess requires --results-directory")
+    if arguments.results_directory is not None:
+        conflicting = (
+            option_was_supplied(raw_arguments, ("-o", "--path-to-outputs", "--path-to-output"))
+            or option_was_supplied(raw_arguments, ("-b", "--path-to-box-images", "--work-dir"))
+            or option_was_supplied(raw_arguments, ("-f", "--force"))
+        )
+        if conflicting:
+            parser.error("--results-directory cannot be combined with -o, -b, or --force")
+        try:
+            validate_output_target(arguments.results_directory, directory=True, purpose="Results directory")
+            images = discover_images(arguments.path_to_inputs)
+            validate_managed_layout(arguments.path_to_inputs, arguments.results_directory)
+        except ValueError as error:
+            parser.error(str(error))
+        if not images:
+            parser.error(f"no supported images found in {arguments.path_to_inputs}")
+        return run_managed_batch(arguments, images, arguments.results_directory)
 
     output_path = arguments.path_to_outputs
     if output_path.suffix.casefold() != ".csv":
@@ -230,10 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")
         validate_output_target(crop_root, directory=True, purpose="Review-crop root")
-        output_absolute = Path(os.path.abspath(output_path))
-        crop_absolute = Path(os.path.abspath(crop_root))
-        if crop_absolute == output_absolute or crop_absolute in output_absolute.parents:
-            raise ValueError("catalogue output must not be inside the review-crop directory")
+        validate_output_layout(output_path, run_manifest, crop_root)
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))

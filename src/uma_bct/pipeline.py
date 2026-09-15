@@ -86,9 +86,7 @@ class BoxTranscriptionPipeline:
             return list(regions)
         return [region for region in regions if region.confidence >= self.minimum_detector_confidence]
 
-    def detect_and_crop(
-        self, image: InputImage, detector: BoxDetector, warnings: list[str]
-    ) -> tuple[list[Box], str | None, bool]:
+    def detect_and_crop(self, image: InputImage, detector: BoxDetector, warnings: list[str]) -> tuple[list[Box], str | None, bool]:
         try:
             detected = detector.detect(image)
         except Exception as error:
@@ -117,10 +115,10 @@ class BoxTranscriptionPipeline:
             warnings.append(f"{detector.name} proposed {len(retained)} regions; {len(boxes)} remained after crop checks.")
         return boxes, None, bool(dropped_warnings or dropped_for_confidence)
 
-    # fmt: off
+
     def full_image_localization(self, image: InputImage, warnings: list[str], detector: BoxDetector,
                                 failure: str | None, route: list[str], incomplete: bool) -> Localization:
-    # fmt: on
+
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{detector.name} localization failed ({failure}); full-image recovery is unavailable.")
             return Localization((), detector.name, tuple(route), incomplete=True)
@@ -185,12 +183,13 @@ class BoxTranscriptionPipeline:
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
-    # fmt: off
+
     def recover_failed_crops(self, image: InputImage, localization: Localization, observations: list[ObservedBox],
                              unresolved: int, warnings: list[str]) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
-    # fmt: on
+
         route = list(localization.route)
         actual_detector = localization.actual_detector
+
         # Retry the full image only when every crop failed.
         if localization.full_image or not localization.boxes or observations:
             return observations, unresolved, actual_detector, tuple(route)

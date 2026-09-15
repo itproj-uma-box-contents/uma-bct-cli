@@ -6,9 +6,9 @@ OUTPUT_COLUMNS = [
     "Node Title",
     "Description",
     "Date Range",
-    "Transcription Confidence (0-100)",
-    "Review Notes",
-    "Crop Image",
+    "Transcription Confidence (%)",
+    "Review Flags",
+    "Cropped Box Image Link",
 ]
 
 DUPLICATE_FLAG = "Potential Duplicate"
