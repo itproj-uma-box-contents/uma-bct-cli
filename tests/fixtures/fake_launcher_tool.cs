@@ -181,7 +181,7 @@ public static class FakeLauncherTool
             {
                 Thread.Sleep(10000);
             }
-            Console.Error.WriteLine("Warning: client version is 0.30.8");
+            Console.Error.WriteLine("Warning: client version is 0.32.9");
             return 0;
         }
         if (args[0] == "list")

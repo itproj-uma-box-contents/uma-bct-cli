@@ -25,6 +25,12 @@ from scripts.build_client_bundle import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_OLLAMA_VERSION = "0.32.9"
+EXPECTED_OLLAMA_DARWIN_SHA256 = "17a5b096d4515d00a6415012db847a2b353b389ed7ab33d025e3b98c2f05b49c"
+EXPECTED_OLLAMA_LINUX_AMD64_SHA256 = "5d747a43369f61e38f20b5a39fcc5c90647e562cdc61e2e56034f1c5b113d540"
+EXPECTED_OLLAMA_LINUX_ARM64_SHA256 = "79617139521db251c716d6229505d7530171ff4d68e476d0c22dabc15726a237"
+EXPECTED_OLLAMA_WINDOWS_AMD64_SHA256 = "7b4f6ce09c1f2c3b21561b323779beaf3ca3c7012f8e4522605a13cbbb19f0b8"
+EXPECTED_OLLAMA_CONTAINER_DIGEST = "1685741456770df6e3cceb2a945a5f75e020f658d1701509668d6f4688f1dd3f"
 
 FAKE_OLLAMA = f"""#!{sys.executable}
 import os
@@ -47,7 +53,7 @@ command = sys.argv[1] if len(sys.argv) > 1 else ""
 if command == "--version":
     if os.environ.get("UMA_BCT_FAKE_OLLAMA_STALL_VERSION") == "1":
         time.sleep(10)
-    print("ollama version is 0.30.8")
+    print("ollama version is {EXPECTED_OLLAMA_VERSION}")
     raise SystemExit(0)
 
 endpoint = urlsplit(os.environ["OLLAMA_HOST"])
@@ -370,12 +376,42 @@ class ClientDeliveryTest(unittest.TestCase):
         compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
         self.assertEqual(compose.count('OLLAMA_NO_CLOUD: "1"'), 3)
 
+    def test_delivery_paths_and_fixtures_agree_on_the_ollama_version(self):
+        posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
+        windows = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
+        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        windows_fixture = (ROOT / "tests/fixtures/fake_launcher_tool.cs").read_text(encoding="utf-8")
+
+        with self.subTest(delivery_path="POSIX launcher"):
+            self.assertIn(f'OLLAMA_VERSION="{EXPECTED_OLLAMA_VERSION}"', posix)
+        with self.subTest(delivery_path="Windows launcher"):
+            self.assertIn(f'$OllamaVersion = "{EXPECTED_OLLAMA_VERSION}"', windows)
+        with self.subTest(delivery_path="Compose services"):
+            image = (
+                f"image: ollama/ollama:{EXPECTED_OLLAMA_VERSION}"
+                f"@sha256:{EXPECTED_OLLAMA_CONTAINER_DIGEST}"
+            )
+            self.assertEqual(compose.count(image), 2)
+        for checksum in (
+            EXPECTED_OLLAMA_DARWIN_SHA256,
+            EXPECTED_OLLAMA_LINUX_AMD64_SHA256,
+            EXPECTED_OLLAMA_LINUX_ARM64_SHA256,
+        ):
+            with self.subTest(delivery_path="POSIX archive", checksum=checksum):
+                self.assertIn(checksum, posix)
+        with self.subTest(delivery_path="Windows archive"):
+            self.assertIn(EXPECTED_OLLAMA_WINDOWS_AMD64_SHA256, windows)
+        with self.subTest(delivery_path="POSIX launcher fixture"):
+            self.assertIn(f"ollama version is {EXPECTED_OLLAMA_VERSION}", FAKE_OLLAMA)
+        with self.subTest(delivery_path="Windows launcher fixture"):
+            self.assertIn(f"client version is {EXPECTED_OLLAMA_VERSION}", windows_fixture)
+
     def test_launchers_pin_downloads_and_prepare_before_accepting_photos(self):
         posix = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
         windows = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
         for launcher in (posix, windows):
             self.assertIn("0.12.9", launcher)
-            self.assertIn("0.30.8", launcher)
+            self.assertIn(EXPECTED_OLLAMA_VERSION, launcher)
             self.assertIn("127.0.0.1", launcher)
             self.assertIn("client-constraints.txt", launcher)
             self.assertIn("Add Photos Here", launcher)
@@ -562,7 +598,7 @@ class ClientDeliveryTest(unittest.TestCase):
                 f'PATH="{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"',
             )
             launcher_text = launcher_text.replace(
-                "52acbca4e89c53db9abc586a22b5633fd101db293177264b9a0fe5d64a42a064",
+                EXPECTED_OLLAMA_DARWIN_SHA256,
                 archive_digest,
             )
             launcher.write_text(launcher_text, encoding="utf-8")
