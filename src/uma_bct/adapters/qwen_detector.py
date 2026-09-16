@@ -107,10 +107,10 @@ class QwenBoxDetector:
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         self.dropped_proposal_warnings = ()
         with sanitized_detection_image(image) as image_path:
-            result = self.client.query(
+            response = self.client.query(
                 image_path, GROUNDING_QUESTION, GROUNDING_SCHEMA, validator=validate_grounding_proposals
             )
-        normalized_boxes, dropped = validate_grounding_proposals(result)
+        normalized_boxes, dropped = validate_grounding_proposals(response.value)
         regions: list[DetectedRegion] = []
         conversion_warnings: list[str] = []
         for index, (x1, y1, x2, y2) in enumerate(normalized_boxes, start=1):
