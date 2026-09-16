@@ -132,9 +132,11 @@ def resolve_unit_claim(
     """Fill one omitted unit from exact raw text and say if review is needed.
 
     An explicit structured value is never replaced. A missing value can be
-    recovered only when every recognised raw occurrence names the same unit and
-    none of the surrounding text marks it as uncertain or crossed out. The
-    returned digits preserve the first visible spelling instead of inventing
+    recovered only from an explicit printed Unit or Box label, when every
+    recognised raw occurrence names the same unit and none of the surrounding
+    text marks it as uncertain or crossed out. Bare or handwritten numbers are
+    too easy to misinterpret without looking at the image, so they stay blank.
+    The returned digits preserve the visible spelling instead of inventing
     padding that was not present in the transcription.
     """
 
@@ -150,24 +152,13 @@ def resolve_unit_claim(
         return "", True
 
     normalized = next(iter(evidence.candidates))
-    for index, line in enumerate(typed):
+    for line in typed:
         for match in CONTEXTUAL_UNIT.finditer(line):
             if match.group(1).zfill(4) == normalized:
                 return match.group(1), True
-        bare = re.fullmatch(r"\s*([0-9]{1,4})\s*", line)
-        if bare and index and identifier_evidence((typed[index - 1],)) and bare.group(1).zfill(4) == normalized:
-            return bare.group(1), True
 
-    for line in handwritten:
-        for match in CONTEXTUAL_UNIT.finditer(line):
-            if match.group(1).zfill(4) == normalized:
-                return match.group(1), True
-        if match := HANDWRITTEN_UNIT.fullmatch(line):
-            if match.group(1).zfill(4) == normalized:
-                return match.group(1), True
-
-    # The evidence collector and the extraction rules above intentionally use
-    # the same accepted shapes. Treat any future mismatch as unsafe.
+    # Other evidence can still force review, but it is not promoted without an
+    # explicit printed label.
     return "", True
 
 

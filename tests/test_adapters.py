@@ -143,7 +143,11 @@ class QwenAdapterTest(unittest.TestCase):
         cases = (
             ("typed", record(unit="", typed=["1960.0009", "Unit 7"]), "7"),
             ("padded typed", record(unit="", typed=["1960.0009", "Unit 0007"]), "0007"),
-            ("handwritten", record(unit="", typed=["1960.0009"], handwritten=["7"]), "7"),
+            (
+                "matching typed and handwritten",
+                record(unit="", typed=["1960.0009", "Box No: 55"], handwritten=["Box 55"]),
+                "55",
+            ),
         )
 
         for source, model_record, expected in cases:
@@ -160,6 +164,9 @@ class QwenAdapterTest(unittest.TestCase):
     def test_transcriber_leaves_unsafe_raw_unit_evidence_blank(self):
         box = make_box()
         cases = (
+            ("handwritten only", record(unit="", typed=["1960.0009"], handwritten=["7"])),
+            ("repeated handwriting", record(unit="", typed=["1960.0009"], handwritten=["39", "39"])),
+            ("bare typed", record(unit="", typed=["1960.0009", "7"])),
             ("ambiguous", record(unit="", typed=["1960.0009", "Unit 7 or 8"])),
             (
                 "conflicting",

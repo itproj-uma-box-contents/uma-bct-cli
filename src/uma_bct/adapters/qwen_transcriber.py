@@ -3,9 +3,10 @@
 The prompt keeps IDs, printed text, and handwriting separate. The code checks
 every field and sends uncertain text for human review.
 
-When Qwen copies one clear Unit line but omits the duplicate structured unit
-field, the exact visible digits are recovered and flagged for review. Conflicts
-and uncertain or crossed-out values remain blank.
+When Qwen copies one clear printed Unit or Box label but omits the duplicate
+structured unit field, the exact visible digits are recovered and flagged for
+review. Bare, handwritten, conflicting, uncertain, and crossed-out values
+remain blank.
 
 The model is never asked to self-report a confidence score -- that measures
 whether the model believes its answer, not whether it is right, and LLMs are
