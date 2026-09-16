@@ -138,6 +138,48 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertIn("x=10, y=20, width=80, height=160", client.calls[0][1])
         self.assertTrue(client.calls[0][3], "transcription requests must ask for logprobs")
 
+    def test_transcriber_recovers_one_unambiguous_raw_unit_for_run_details(self):
+        box = make_box()
+        cases = (
+            ("typed", record(unit="", typed=["1960.0009", "Unit 7"]), "7"),
+            ("padded typed", record(unit="", typed=["1960.0009", "Unit 0007"]), "0007"),
+            ("handwritten", record(unit="", typed=["1960.0009"], handwritten=["7"]), "7"),
+        )
+
+        for source, model_record, expected in cases:
+            with self.subTest(source=source):
+                response = {"boxes": [model_record]}
+                client = FakeVision(response, token_logprobs=confident_token_logprobs(response))
+
+                transcription = QwenTextTranscriber(client).transcribe(box)[0]
+
+                self.assertEqual(transcription.unit_number, expected)
+                self.assertEqual(transcription.to_dict()["unit"], expected)
+                self.assertTrue(transcription.needs_review)
+
+    def test_transcriber_leaves_unsafe_raw_unit_evidence_blank(self):
+        box = make_box()
+        cases = (
+            ("ambiguous", record(unit="", typed=["1960.0009", "Unit 7 or 8"])),
+            (
+                "conflicting",
+                record(unit="", typed=["1960.0009", "Unit 7"], handwritten=["8"]),
+            ),
+            ("uncertain", record(unit="", typed=["1960.0009", "Unit 7?"])),
+            ("crossed out", record(unit="", typed=["1960.0009", "Unit 7 crossed out"])),
+        )
+
+        for reason, model_record in cases:
+            with self.subTest(reason=reason):
+                response = {"boxes": [model_record]}
+                client = FakeVision(response, token_logprobs=confident_token_logprobs(response))
+
+                transcription = QwenTextTranscriber(client).transcribe(box)[0]
+
+                self.assertEqual(transcription.unit_number, "")
+                self.assertEqual(transcription.to_dict()["unit"], "")
+                self.assertTrue(transcription.needs_review)
+
     def test_transcriber_scores_confidence_from_the_least_confident_character(self):
         box = make_box()
         response = {"boxes": [record()]}

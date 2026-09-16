@@ -3,6 +3,10 @@
 The prompt keeps IDs, printed text, and handwriting separate. The code checks
 every field and sends uncertain text for human review.
 
+When Qwen copies one clear Unit line but omits the duplicate structured unit
+field, the exact visible digits are recovered and flagged for review. Conflicts
+and uncertain or crossed-out values remain blank.
+
 The model is never asked to self-report a confidence score -- that measures
 whether the model believes its answer, not whether it is right, and LLMs are
 poorly calibrated at that kind of self-assessment. Instead, ``confidence`` is
@@ -20,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from ..domain import Box, BoxTranscription
+from ..identity import resolve_unit_claim
 from ..ports import VisionModelClient
 from .qwen_response import box_token_confidences, check_text, check_text_lines, response_boxes
 
@@ -158,6 +163,7 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 
 def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTranscription:
     values = (*item["typed"], *item["handwritten"], *item["auxiliary_annotations"])
+    unit_number, unit_needs_review = resolve_unit_claim(item["unit"], item["typed"], item["handwritten"])
     return BoxTranscription(
         box_id=box.box_id,
         position=item["position"] or box.position,
@@ -165,11 +171,15 @@ def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTra
         # a guessed plausible-looking number.
         confidence=token_confidence if token_confidence is not None else 0,
         record_identifiers=tuple(item["record_identifiers"]),
-        unit_number=item["unit"],
+        unit_number=unit_number,
         typed_lines=tuple(item["typed"]),
         handwritten_lines=tuple(item["handwritten"]),
         auxiliary_annotations=tuple(item["auxiliary_annotations"]),
-        needs_review=(token_confidence is None or any(not value.strip() or UNCERTAINTY.search(value) for value in values)),
+        needs_review=(
+            token_confidence is None
+            or unit_needs_review
+            or any(not value.strip() or UNCERTAINTY.search(value) for value in values)
+        ),
     )
 
 
