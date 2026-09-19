@@ -19,6 +19,7 @@ TYPED_SIMILARITY_THRESHOLD = 0.92
 OVERLAP_THRESHOLD = 0.70
 
 
+# Keep the observed box behavior together.
 @dataclass(frozen=True)
 class ObservedBox:
     box: Box
@@ -36,14 +37,17 @@ def observations_from_response(box: Box, transcriptions: Sequence[BoxTranscripti
     return observations
 
 
+# Normalize the text.
 def normalise_text(value: str) -> str:
     return " ".join(re.findall(r"\w+", value.casefold()))
 
 
+# Normalize the lines.
 def normalise_lines(lines: Sequence[str]) -> str:
     return normalise_text("\n".join(lines))
 
 
+# Collect the unit evidence.
 def unit_evidence(item: ObservedBox) -> set[str]:
     evidence: set[str] = set()
     if item.transcription.unit_number.strip():
@@ -56,6 +60,7 @@ def unit_evidence(item: ObservedBox) -> set[str]:
     return evidence
 
 
+# Handle the unit conflict step.
 def unit_conflict(first: ObservedBox, second: ObservedBox) -> bool:
     first_units = unit_evidence(first)
     second_units = unit_evidence(second)
@@ -85,17 +90,20 @@ def is_duplicate(first: ObservedBox, second: ObservedBox) -> bool:
     return bool(first_position and first_position == second_position)
 
 
+# Handle the text detail step.
 def text_detail(lines: Sequence[str]) -> tuple[int, int]:
     non_empty = tuple(line for line in lines if line.strip())
     return sum(len("".join(line.split())) for line in non_empty), len(non_empty)
 
 
+# Handle the best observation step.
 def best_observation(group: Sequence[ObservedBox], value: Callable[[BoxTranscription], Sequence[str]]) -> ObservedBox:
     return max(
         group, key=lambda item: (text_detail(value(item.transcription)), item.transcription.confidence, -item.crop_index)
     )
 
 
+# Build the transcription signature.
 def transcription_signature(item: ObservedBox) -> tuple[object, ...]:
     transcription = item.transcription
     return (
@@ -146,6 +154,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     return ObservedBox(representative.box, transcription, representative.crop_index)
 
 
+# Deduplicate this value.
 def deduplicate(observations: Sequence[ObservedBox]) -> list[ObservedBox]:
     groups: list[list[ObservedBox]] = []
     # Merge matching crops, but never merge two records from the same crop.

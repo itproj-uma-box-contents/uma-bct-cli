@@ -104,6 +104,7 @@ class QwenBoxDetector:
     name: str = "qwen"
     dropped_proposal_warnings: tuple[str, ...] = field(default=(), init=False)
 
+    # Detect boxes in the current image.
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         self.dropped_proposal_warnings = ()
         with sanitized_detection_image(image) as image_path:

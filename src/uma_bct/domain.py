@@ -13,6 +13,7 @@ class BoundingBox:
     top_left: tuple[int, int]
     bottom_right: tuple[int, int]
 
+    # Validate the newly created value.
     def __post_init__(self) -> None:
         x1, y1 = self.top_left
         x2, y2 = self.bottom_right
@@ -21,22 +22,27 @@ class BoundingBox:
         if x2 <= x1 or y2 <= y1:
             raise ValueError("Bounding-box bottom-right must follow top-left.")
 
+    # Read the box's horizontal coordinate.
     @property
     def x(self) -> int:
         return self.top_left[0]
 
+    # Read the box's vertical coordinate.
     @property
     def y(self) -> int:
         return self.top_left[1]
 
+    # Read the box width.
     @property
     def width(self) -> int:
         return self.bottom_right[0] - self.top_left[0]
 
+    # Read the box height.
     @property
     def height(self) -> int:
         return self.bottom_right[1] - self.top_left[1]
 
+    # Return this box as x, y, width, and height.
     def as_xywh(self) -> tuple[int, int, int, int]:
         return self.x, self.y, self.width, self.height
 
@@ -49,6 +55,7 @@ class InputImage:
     width: int
     height: int
 
+    # Validate the newly created value.
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
             raise ValueError("Input-image dimensions must be positive.")
@@ -61,6 +68,7 @@ class DetectedRegion:
     bounding_box: BoundingBox
     confidence: float
 
+    # Validate the newly created value.
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("Detector confidence must be between 0 and 1.")
@@ -96,6 +104,7 @@ class BoxTranscription:
     auxiliary_annotations: tuple[str, ...] = ()
     needs_review: bool = False
 
+    # Validate the newly created value.
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 100:
             raise ValueError("Transcription confidence must be between 0 and 100.")
@@ -125,10 +134,12 @@ class BoxResult:
     box: Box
     transcription: BoxTranscription
 
+    # Validate the newly created value.
     def __post_init__(self) -> None:
         if self.box.box_id != self.transcription.box_id:
             raise ValueError("Box and transcription IDs must match.")
 
+    # Convert this value to a dictionary.
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
             "box_id": self.box.box_id,

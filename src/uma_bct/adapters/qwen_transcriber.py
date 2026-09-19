@@ -115,6 +115,7 @@ UNCERTAINTY = re.compile(
 )
 
 
+# Keep the box record behavior together.
 class BoxRecord(TypedDict):
     position: str
     record_identifiers: list[str]
@@ -124,12 +125,14 @@ class BoxRecord(TypedDict):
     auxiliary_annotations: list[str]
 
 
+# Collect the validated lines.
 def validated_lines(item: dict[str, Any], index: int, field: str) -> list[str]:
     return check_text_lines(
         item, box_number=index, field=field, maximum_items=MAX_TEXT_LINES_PER_FIELD, maximum_characters=MAX_TEXT_CHARACTERS
     )
 
 
+# Validate the record.
 def validate_record(item: Any, index: int) -> BoxRecord:
     if not isinstance(item, dict):
         raise TypeError(f"box {index} must be an object")
@@ -143,11 +146,13 @@ def validate_record(item: Any, index: int) -> BoxRecord:
     }
 
 
+# Validate the transcription result.
 def validate_transcription_result(value: Any) -> list[BoxRecord]:
     records = response_boxes(value, maximum=MAX_TRANSCRIPTION_RECORDS, limit_subject="the response")
     return [validate_record(item, index) for index, item in enumerate(records, 1)]
 
 
+# Handle the crop question step.
 def crop_question(box: Box) -> str:
     x, y, width, height = box.bounding_box.as_xywh()
     return f"""This is a clean crop from a photo of archive boxes.
@@ -162,6 +167,7 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 {RULES}"""
 
 
+# Handle the to domain step.
 def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTranscription:
     values = (*item["typed"], *item["handwritten"], *item["auxiliary_annotations"])
     unit_number, unit_needs_review = resolve_unit_claim(item["unit"], item["typed"], item["handwritten"])
@@ -184,11 +190,13 @@ def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTra
     )
 
 
+# Keep the Qwen text transcriber behavior together.
 @dataclass(frozen=True)
 class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
 
+    # Handle the request step.
     def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         response = self.client.query(
             box.image_file_path, prompt, SCHEMA, validator=validate_transcription_result, logprobs=True
@@ -197,8 +205,10 @@ class QwenTextTranscriber:
         confidences = box_token_confidences(response.token_logprobs, len(records))
         return [to_domain(box, record, confidence) for record, confidence in zip(records, confidences, strict=True)]
 
+    # Transcribe the current box.
     def transcribe(self, box: Box) -> list[BoxTranscription]:
         return self.request(box, crop_question(box))
 
+    # Transcribe the full image when crops are unavailable.
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
         return self.request(box, QUESTION)

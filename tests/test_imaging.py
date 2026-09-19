@@ -14,7 +14,9 @@ from uma_bct.path_safety import check_path
 from uma_bct.transcriptions import ObservedBox, deduplicate
 
 
+# Group the imaging checks.
 class ImagingTest(unittest.TestCase):
+    # Check that domain values reject invalid geometry and confidence.
     def test_domain_values_reject_invalid_geometry_and_confidence(self):
         cases = (
             lambda: BoundingBox((-1, 0), (10, 10)),
@@ -26,6 +28,7 @@ class ImagingTest(unittest.TestCase):
             with self.subTest(build=build), self.assertRaises(ValueError):
                 build()
 
+    # Check that cropper applies eight percent padding and saves padded dimensions.
     def test_cropper_applies_eight_percent_padding_and_saves_padded_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -38,6 +41,7 @@ class ImagingTest(unittest.TestCase):
             saved = cv2.imread(str(boxes[0].image_file_path))
             self.assertEqual(saved.shape[:2], (464, 232))
 
+    # Check that cropper uses image relative minimum padding and clamps borders.
     def test_cropper_uses_image_relative_minimum_padding_and_clamps_borders(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -56,6 +60,7 @@ class ImagingTest(unittest.TestCase):
             self.assertEqual(len({box.box_id for box in boxes}), 2)
             self.assertEqual(len({box.image_file_path for box in boxes}), 2)
 
+    # Check that cropper rechecks a parent swapped after validation.
     def test_cropper_rechecks_a_parent_swapped_after_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -77,6 +82,7 @@ class ImagingTest(unittest.TestCase):
                 OpenCVBoxCropper().create_boxes(image, regions, review)
             self.assertEqual(tuple(outside.iterdir()), ())
 
+    # Check that unreadable image has a clear error.
     def test_unreadable_image_has_a_clear_error(self):
         with (
             patch("uma_bct.imaging.cv2.imread", return_value=None),
@@ -84,6 +90,7 @@ class ImagingTest(unittest.TestCase):
         ):
             load_input_image("missing.jpg")
 
+    # Check that OpenCV fallback finds two synthetic boxes.
     def test_opencv_fallback_finds_two_synthetic_boxes(self):
         image = np.full((800, 1200, 3), 230, dtype=np.uint8)
         for left, right in ((150, 550), (650, 1050)):
@@ -93,6 +100,7 @@ class ImagingTest(unittest.TestCase):
         self.assertEqual(len(regions), 2)
         self.assertTrue(all(plausible_bbox(region.bounding_box, 1200, 800) for region in regions))
 
+    # Check that deduplication only merges overlapping independent crops.
     def test_deduplication_only_merges_overlapping_independent_crops(self):
         image = make_image()
         first = make_box(image=image, box_id="first")

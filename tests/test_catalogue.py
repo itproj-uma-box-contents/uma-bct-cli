@@ -13,7 +13,9 @@ from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records, export_catalogue
 
 
+# Group the catalogue rules checks.
 class CatalogueRulesTest(unittest.TestCase):
+    # Check that the code builds titles for every supported identifier.
     def test_builds_titles_for_every_supported_identifier(self):
         for identifier in ("1960.0009", "96/9", "UMA-AC-000000330", "UMA-SRE-20160038"):
             with self.subTest(identifier=identifier):
@@ -28,6 +30,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 self.assertEqual(record["Node ID"], "")
                 self.assertEqual(record["Date Range"], "")
 
+    # Check that the code uses first identifier and flags multiple.
     def test_uses_first_identifier_and_flags_multiple(self):
         box = make_box()
         transcription = make_transcription(
@@ -37,6 +40,7 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(record["Node Title"], "1990.0001 Unit 0030")
         self.assertIn("Multiple identifiers", record["Review Flags"])
 
+    # Check that the code blanks missing or uncorroborated identity.
     def test_blanks_missing_or_uncorroborated_identity(self):
         box = make_box()
         cases = (
@@ -53,6 +57,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 self.assertEqual(record["Node Title"], "")
                 self.assertIn(flag, record["Review Flags"])
 
+    # Check that the code does not promote a slash date from prose.
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
         transcription = make_transcription(box, identifiers=("12/5",), typed=("Meeting 12/5", "Unit 4"))
@@ -60,6 +65,7 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(record["Node Title"], "")
         self.assertIn("Transcription mismatch", record["Review Flags"])
 
+    # Check that the code requires one unambiguous unit.
     def test_requires_one_unambiguous_unit(self):
         box = make_box()
         accepted = make_transcription(box, unit="7", typed=("1960.0009",), handwritten=("7",))
@@ -69,12 +75,14 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(rejected["Node Title"], "")
         self.assertIn("Invalid unit", rejected["Review Flags"])
 
+    # Check that description excludes identity and escapes formulas.
     def test_description_excludes_identity_and_escapes_formulas(self):
         box = make_box()
         transcription = make_transcription(box, handwritten=("1960.0009", "=SUM(A1:A2)"), auxiliary=("Fragile",))
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Description"], "'=SUM(A1:A2); Fragile")
 
+    # Check that untrusted crop text is escaped and only managed paths become formulas.
     def test_untrusted_crop_text_is_escaped_and_only_managed_paths_become_formulas(self):
         box = make_box(crop_path=Path("=OPEN-UNTRUSTED.png"))
         transcription = make_transcription(box)
@@ -99,6 +107,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 trusted_crop_link=True,
             )
 
+    # Check that the code preserves and flags duplicate physical boxes.
     def test_preserves_and_flags_duplicate_physical_boxes(self):
         first = make_box(box_id="shelf:001")
         second = make_box(box_id="shelf:002")
@@ -114,6 +123,7 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertIn("Potential Duplicate", records[1]["Review Flags"])
         self.assertIn("Low confidence", records[0]["Review Flags"])
 
+    # Check that low confidence threshold is strict.
     def test_low_confidence_threshold_is_strict(self):
         box = make_box()
         result = make_result(BoxResult(box, make_transcription(box, confidence=70)))
@@ -124,7 +134,9 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertNotIn("Low confidence", at_threshold[0]["Review Flags"])
 
 
+# Group the CSV export checks.
 class CsvExportTest(unittest.TestCase):
+    # Check that the code writes exact headers in physical order with relative crop images.
     def test_writes_exact_headers_in_physical_order_with_relative_crop_images(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -179,6 +191,7 @@ class CsvExportTest(unittest.TestCase):
             self.assertEqual(rows[2]["Node Title"], "1990.0001 Unit 0001")
             self.assertEqual(rows[2]["Cropped Box Image Link"], "crops/a-001.png")
 
+    # Check that atomic failure preserves existing CSV.
     def test_atomic_failure_preserves_existing_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory).resolve() / "catalogue.csv"
@@ -193,6 +206,7 @@ class CsvExportTest(unittest.TestCase):
             self.assertEqual(output.read_text(encoding="utf-8"), "old\n")
             self.assertEqual(tuple(output.parent.glob(".uma-bct-catalogue-*")), ())
 
+    # Check that the code does not replace an output that appeared during processing.
     def test_does_not_replace_an_output_that_appeared_during_processing(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory).resolve() / "catalogue.csv"
@@ -204,12 +218,14 @@ class CsvExportTest(unittest.TestCase):
                 export_catalogue([result], output, replace_existing=False)
             self.assertEqual(output.read_text(encoding="utf-8"), "other process\n")
 
+    # Check that the code does not replace an output appearing at the publication syscall.
     def test_does_not_replace_an_output_appearing_at_the_publication_syscall(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory).resolve() / "catalogue.csv"
             box = make_box(crop_path=output.parent / "crops/box.png")
             result = make_result(BoxResult(box, make_transcription(box)))
 
+            # Create the competing destination used by this race check.
             def late_destination(source, destination):
                 destination.write_text("late output\n", encoding="utf-8")
                 return rename_exclusive(source, destination)
@@ -222,6 +238,7 @@ class CsvExportTest(unittest.TestCase):
 
             self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
+    # Check that CSV is the only output format.
     def test_csv_is_the_only_output_format(self):
         with self.assertRaisesRegex(ValueError, "must end in .csv"):
             export_catalogue([], "catalogue.xlsx")
