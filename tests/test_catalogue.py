@@ -13,19 +13,23 @@ from uma_bct.export import catalogue_records, export_catalogue
 
 
 class CatalogueRulesTest(unittest.TestCase):
-    def test_builds_titles_for_every_supported_identifier(self):
-        for identifier in ("1960.0009", "96/9", "UMA-AC-000000330", "UMA-SRE-20160038"):
+    def test_builds_unit_fields_for_any_identifier_prefix(self):
+        for identifier in ("1960.0009", "96/9", "UMA-AC-000000330", "UMA-SRE-20160038", "BHP"):
             with self.subTest(identifier=identifier):
                 box = make_box()
-                transcription = make_transcription(
-                    box, identifiers=(identifier,), unit="7", typed=(f"Record ID: {identifier}", "Unit 7")
-                )
+                transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(list(record)[:5], ["Node ID", "Node Type", "Node Title", "Description", "Date Range"])
-                self.assertEqual(record["Node Type"], "Unit")
-                self.assertEqual(record["Node Title"], f"{identifier} Unit 0007")
-                self.assertEqual(record["Node ID"], "")
+                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+                self.assertEqual(record["Unit Type"], identifier)
+                self.assertEqual(record["Unit Number"], "0007")
                 self.assertEqual(record["Date Range"], "")
+
+    def test_accepts_a_prefix_on_the_line_before_unit_number(self):
+        box = make_box()
+        transcription = make_transcription(box, identifiers=("BHP",), unit="24", typed=("BHP", "Unit 24"))
+        record = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(record["Unit Type"], "BHP")
+        self.assertEqual(record["Unit Number"], "0024")
 
     def test_uses_first_identifier_and_flags_multiple(self):
         box = make_box()
@@ -33,7 +37,8 @@ class CatalogueRulesTest(unittest.TestCase):
             box, identifiers=("1990.0001", "UMA-SRE-20160038"), typed=("1990.0001; UMA-SRE-20160038", "Unit 30"), unit="30"
         )
         record = map_catalogue_record(transcription, box.image_file_path)
-        self.assertEqual(record["Node Title"], "1990.0001 Unit 0030")
+        self.assertEqual(record["Unit Type"], "1990.0001")
+        self.assertEqual(record["Unit Number"], "0030")
         self.assertIn("Multiple identifiers", record["Review Notes"])
 
     def test_blanks_missing_or_uncorroborated_identity(self):
@@ -49,23 +54,28 @@ class CatalogueRulesTest(unittest.TestCase):
         for transcription, flag in cases:
             with self.subTest(flag=flag):
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(record["Node Title"], "")
+                self.assertEqual(record["Unit Type"], "")
+                self.assertEqual(record["Unit Number"], "0004")
                 self.assertIn(flag, record["Review Notes"])
 
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
         transcription = make_transcription(box, identifiers=("12/5",), typed=("Meeting 12/5", "Unit 4"))
         record = map_catalogue_record(transcription, box.image_file_path)
-        self.assertEqual(record["Node Title"], "")
+        self.assertEqual(record["Unit Type"], "")
+        self.assertEqual(record["Unit Number"], "0004")
         self.assertIn("Transcription mismatch", record["Review Notes"])
 
     def test_requires_one_unambiguous_unit(self):
         box = make_box()
         accepted = make_transcription(box, unit="7", typed=("1960.0009",), handwritten=("7",))
         conflicting = make_transcription(box, unit="7", typed=("1960.0009", "Unit 7", "Unit 8"))
-        self.assertEqual(map_catalogue_record(accepted, box.image_file_path)["Node Title"], "1960.0009 Unit 0007")
+        accepted_record = map_catalogue_record(accepted, box.image_file_path)
+        self.assertEqual(accepted_record["Unit Type"], "1960.0009")
+        self.assertEqual(accepted_record["Unit Number"], "0007")
         rejected = map_catalogue_record(conflicting, box.image_file_path)
-        self.assertEqual(rejected["Node Title"], "")
+        self.assertEqual(rejected["Unit Type"], "1960.0009")
+        self.assertEqual(rejected["Unit Number"], "")
         self.assertIn("Invalid unit", rejected["Review Notes"])
 
     def test_description_excludes_identity_and_escapes_formulas(self):
@@ -106,9 +116,9 @@ class CatalogueRulesTest(unittest.TestCase):
         )
 
         missing = records[1]
-        self.assertEqual(missing["Node Title"], "1974.0056 Unit 0002")
+        self.assertEqual(missing["Unit Type"], "1974.0056")
+        self.assertEqual(missing["Unit Number"], "0002")
         self.assertEqual(missing["Review Notes"], "Missing Box")
-        self.assertEqual(missing["Node Type"], "")
         self.assertEqual(missing["Crop Image"], "")
 
     def test_detects_gaps_within_each_prefix_and_can_be_disabled(self):
@@ -135,22 +145,22 @@ class CatalogueRulesTest(unittest.TestCase):
 
         records = catalogue_records(results)
         self.assertEqual(
-            [record["Node Title"] for record in records],
+            [(record["Unit Type"], record["Unit Number"]) for record in records],
             [
-                "1990.0001 Unit 0001",
-                "1990.0001 Unit 0002",
-                "1990.0001 Unit 0003",
-                "2000.0002 Unit 0001",
-                "2000.0002 Unit 0002",
-                "2000.0002 Unit 0003",
+                ("1990.0001", "0001"),
+                ("1990.0001", "0002"),
+                ("1990.0001", "0003"),
+                ("2000.0002", "0001"),
+                ("2000.0002", "0002"),
+                ("2000.0002", "0003"),
             ],
         )
         self.assertEqual([record["Review Notes"] for record in records], ["", "Missing Box", "", "", "Missing Box", ""])
 
         without_detection = catalogue_records(results, detect_missing_boxes=False)
         self.assertEqual(
-            [record["Node Title"] for record in without_detection],
-            ["1990.0001 Unit 0001", "1990.0001 Unit 0003", "2000.0002 Unit 0001", "2000.0002 Unit 0003"],
+            [(record["Unit Type"], record["Unit Number"]) for record in without_detection],
+            [("1990.0001", "0001"), ("1990.0001", "0003"), ("2000.0002", "0001"), ("2000.0002", "0003")],
         )
 
     def test_low_confidence_threshold_is_strict(self):
@@ -200,9 +210,8 @@ class CsvExportTest(unittest.TestCase):
             self.assertEqual(
                 OUTPUT_COLUMNS,
                 [
-                    "Node ID",
-                    "Node Type",
-                    "Node Title",
+                    "Unit Type",
+                    "Unit Number",
                     "Description",
                     "Date Range",
                     "Transcription Confidence (0-100)",
@@ -211,11 +220,14 @@ class CsvExportTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(len(rows), 3)
-            self.assertEqual(rows[0]["Node Title"], "1990.0001 Unit 0001")
+            self.assertEqual(rows[0]["Unit Type"], "1990.0001")
+            self.assertEqual(rows[0]["Unit Number"], "0001")
             self.assertEqual(rows[0]["Crop Image"], "crops/a-001.png")
-            self.assertEqual(rows[1]["Node Title"], "2000.0002 Unit 0002")
+            self.assertEqual(rows[1]["Unit Type"], "2000.0002")
+            self.assertEqual(rows[1]["Unit Number"], "0002")
             self.assertEqual(rows[1]["Crop Image"], "crops/b-001.png")
-            self.assertEqual(rows[2]["Node Title"], "")
+            self.assertEqual(rows[2]["Unit Type"], "")
+            self.assertEqual(rows[2]["Unit Number"], "0003")
             self.assertEqual(rows[2]["Crop Image"], "crops/b-002.png")
 
     def test_atomic_failure_preserves_existing_csv(self):

@@ -1,9 +1,8 @@
 """Catalogue rules and output column names."""
 
 OUTPUT_COLUMNS = [
-    "Node ID",
-    "Node Type",
-    "Node Title",
+    "Unit Type",
+    "Unit Number",
     "Description",
     "Date Range",
     "Transcription Confidence (0-100)",

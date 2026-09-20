@@ -1,8 +1,4 @@
-"""Check the visible evidence for record IDs and unit numbers.
-
-Known formats are accepted and close-but-wrong text is marked unclear. The
-code never repairs an ID or chooses between different unit numbers.
-"""
+"""Check visible identifier and unit-number evidence without assuming a prefix format."""
 
 from __future__ import annotations
 
@@ -10,12 +6,10 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-STRONG_RECORD_IDENTIFIER_PATTERN = r"(?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4})"
-LEGACY_RECORD_IDENTIFIER_PATTERN = r"[0-9]{2}/[0-9]+"
-RECORD_IDENTIFIER_PATTERN = rf"(?:{STRONG_RECORD_IDENTIFIER_PATTERN}|{LEGACY_RECORD_IDENTIFIER_PATTERN})"
-RECORD_IDENTIFIER = re.compile(rf"^{RECORD_IDENTIFIER_PATTERN}$", re.IGNORECASE | re.ASCII)
-RECORD_IDENTIFIER_TOKEN = re.compile(
-    rf"(?<![A-Za-z0-9_/])({RECORD_IDENTIFIER_PATTERN})(?![A-Za-z0-9_/])", re.IGNORECASE | re.ASCII
+RECORD_IDENTIFIER = re.compile(r"^[^\s].{0,255}\S$", re.IGNORECASE | re.ASCII)
+KNOWN_IDENTIFIER_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_/])((?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4}|[0-9]{2}/[0-9]+))(?![A-Za-z0-9_/])",
+    re.IGNORECASE | re.ASCII,
 )
 IDENTIFIER_LABEL_PREFIX = re.compile(
     r"^\s*(?:(?:records?\s*(?:set\s*)?(?:identifier|id|number|no)?|"
@@ -23,16 +17,12 @@ IDENTIFIER_LABEL_PREFIX = re.compile(
     r"\.?\s*[:#-]?\s*)",
     re.IGNORECASE | re.ASCII,
 )
-MALFORMED_STRONG_IDENTIFIER = re.compile(
-    r"(?<![A-Za-z0-9_])(?:UMA-(?:AC|SR)E?-[A-Za-z0-9-]+|[0-9]{4}\.[0-9]+)"
-    r"(?![A-Za-z0-9_])",
-    re.IGNORECASE | re.ASCII,
-)
-MALFORMED_LEGACY_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_/])[0-9]{2}/[^\s,;:]+", re.ASCII)
-
 UNIT_PREFIX = r"(?:unit|box(?:\s*(?:no\.?|number))?|no\.?)"
 UNIT_NUMBER = re.compile(rf"^(?:{UNIT_PREFIX}\s*[:#-]?\s*)?([0-9]{{1,4}})$", re.IGNORECASE | re.ASCII)
 CONTEXTUAL_UNIT = re.compile(rf"(?<!\w)(?:{UNIT_PREFIX})\s*[:#-]?\s*([0-9]{{1,4}})(?!\w)", re.IGNORECASE | re.ASCII)
+PREFIXED_UNIT = re.compile(
+    rf"^\s*(?P<prefix>.+?)\s+(?:{UNIT_PREFIX})\s*[:#-]?\s*(?P<number>[0-9]{{1,4}})\s*$", re.IGNORECASE | re.ASCII
+)
 HANDWRITTEN_UNIT = re.compile(r"^\s*([0-9]{1,4})(?:\s+[A-Z][0-9]{1,2})?\s*$", re.IGNORECASE | re.ASCII)
 AMBIGUOUS_UNIT = re.compile(
     r"\b(?:or|maybe|possibly|unclear|unknown|ambiguous|overwritten|"
@@ -57,11 +47,34 @@ def normalise_unit_claim(value: str) -> str | None:
     return match.group(1).zfill(4) if match else None
 
 
+def prefixed_unit(line: str) -> tuple[str, str] | None:
+    match = PREFIXED_UNIT.fullmatch(line)
+    if match is None:
+        return None
+    prefix = " ".join(match.group("prefix").split())
+    return prefix, match.group("number").zfill(4)
+
+
+def standalone_identifier(line: str) -> str | None:
+    value = " ".join(line.split())
+    if (
+        not value
+        or not RECORD_IDENTIFIER.fullmatch(value)
+        or UNIT_NUMBER.fullmatch(value)
+        or IDENTIFIER_LABEL_PREFIX.match(value)
+        or value.casefold() in {"record", "origin", "unit", "box", "number", "identifier"}
+    ):
+        return None
+    return value
+
+
 def identifier_only_line(line: str) -> bool:
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
-    if not RECORD_IDENTIFIER_TOKEN.search(body):
+    if prefixed_unit(line) is not None:
+        return True
+    if not KNOWN_IDENTIFIER_TOKEN.search(body):
         return False
-    residue = RECORD_IDENTIFIER_TOKEN.sub(" ", body)
+    residue = KNOWN_IDENTIFIER_TOKEN.sub(" ", body)
     return IDENTITY_SEPARATORS.fullmatch(residue) is not None
 
 
@@ -71,9 +84,9 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
     identifiers: list[str] = []
     seen: set[str] = set()
     malformed = False
-    for line in visual_lines(lines):
-        matches = tuple(RECORD_IDENTIFIER_TOKEN.finditer(line))
-        valid_spans = {match.span(1) for match in matches}
+    visible_lines = tuple(visual_lines(lines))
+    for index, line in enumerate(visible_lines):
+        matches = tuple(KNOWN_IDENTIFIER_TOKEN.finditer(line))
         legacy_allowed = identifier_only_line(line)
         for match in matches:
             identifier = normalise_identifier(match.group(1))
@@ -84,9 +97,15 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
                 seen.add(key)
                 identifiers.append(identifier)
 
-        malformed |= any(match.span() not in valid_spans for match in MALFORMED_STRONG_IDENTIFIER.finditer(line))
-        if IDENTIFIER_LABEL_PREFIX.match(line):
-            malformed |= any(match.span() not in valid_spans for match in MALFORMED_LEGACY_IDENTIFIER.finditer(line))
+        if prefixed := prefixed_unit(line):
+            identifier = normalise_identifier(prefixed[0])
+            if identifier.casefold() not in {value.casefold() for value in identifiers}:
+                identifiers.append(identifier)
+        elif not matches and index + 1 < len(visible_lines) and CONTEXTUAL_UNIT.search(visible_lines[index + 1]):
+            if identifier := standalone_identifier(line):
+                identifier = normalise_identifier(identifier)
+                if identifier.casefold() not in {value.casefold() for value in identifiers}:
+                    identifiers.append(identifier)
     return tuple(identifiers), malformed
 
 
@@ -139,12 +158,17 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
         value = normalise_identifier(match.group(1)).casefold()
         return " " if value in identifier_keys else match.group(0)
 
-    body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
-    body = RECORD_IDENTIFIER_TOKEN.sub(remove_identifier, body)
     normalized_unit = normalise_unit_claim(structured_unit)
 
     def remove_unit(match: re.Match[str]) -> str:
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
+
+    body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
+    body = KNOWN_IDENTIFIER_TOKEN.sub(remove_identifier, body)
+    if prefixed := prefixed_unit(line):
+        body = line.replace(prefixed[0], " ", 1)
+        body = CONTEXTUAL_UNIT.sub(remove_unit, body)
+        return IDENTITY_SEPARATORS.fullmatch(body) is not None
 
     body = CONTEXTUAL_UNIT.sub(remove_unit, body)
     if normalized_unit and re.fullmatch(r"\s*[0-9]{1,4}\s*", body):

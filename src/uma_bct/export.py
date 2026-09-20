@@ -19,13 +19,14 @@ from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, 
 from .path_safety import check_path
 from .pipeline import ImageResult
 
-NODE_TITLE = re.compile(r"^(?P<prefix>.+?)\s+Unit\s*#?\s*(?P<unit>\d+)\s*$", re.IGNORECASE)
+UNIT_NUMBER = re.compile(r"^\d{1,4}$")
 
 
 def _missing_box_row(prefix: str, unit: int) -> dict[str, str]:
     return {
         **{column: "" for column in OUTPUT_COLUMNS},
-        "Node Title": f"{prefix} Unit {unit:04d}",
+        "Unit Type": prefix,
+        "Unit Number": f"{unit:04d}",
         "Review Notes": MISSING_BOX_FLAG,
     }
 
@@ -36,10 +37,10 @@ def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[st
     units_by_prefix: dict[str, set[int]] = {}
 
     for record in records:
-        match = NODE_TITLE.fullmatch(str(record["Node Title"]).strip())
-        if match:
-            prefix = match.group("prefix")
-            units_by_prefix.setdefault(prefix, set()).add(int(match.group("unit")))
+        prefix = str(record["Unit Type"]).strip()
+        unit = str(record["Unit Number"]).strip()
+        if prefix and UNIT_NUMBER.fullmatch(unit):
+            units_by_prefix.setdefault(prefix, set()).add(int(unit))
 
     return [
         _missing_box_row(prefix, unit)
@@ -56,11 +57,11 @@ def _sorted_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, s
 
     def sort_key(item: tuple[int, dict[str, str | int]]) -> tuple[int, str, int, int]:
         index, record = item
-        match = NODE_TITLE.fullmatch(str(record["Node Title"]).strip())
-        if match is None:
+        prefix = str(record["Unit Type"]).strip()
+        unit = str(record["Unit Number"]).strip()
+        if not prefix or UNIT_NUMBER.fullmatch(unit) is None:
             return (1, "", 0, index)
-        prefix = match.group("prefix")
-        return (0, prefix.casefold(), int(match.group("unit")), index)
+        return (0, prefix.casefold(), int(unit), index)
 
     return [record for _, record in sorted(indexed_records, key=sort_key)]
 
@@ -71,16 +72,20 @@ def _insert_missing_box_records(records: list[dict[str, str | int]]) -> list[dic
     output: list[dict[str, str | int]] = []
     for index, record in enumerate(records):
         output.append(record)
-        current = NODE_TITLE.fullmatch(str(record["Node Title"]).strip())
-        if current is None or index + 1 == len(records):
+        current_prefix = str(record["Unit Type"]).strip()
+        current_unit = str(record["Unit Number"]).strip()
+        if not current_prefix or UNIT_NUMBER.fullmatch(current_unit) is None or index + 1 == len(records):
             continue
-        following = NODE_TITLE.fullmatch(str(records[index + 1]["Node Title"]).strip())
-        if following is None or following.group("prefix") != current.group("prefix"):
+        following_prefix = str(records[index + 1]["Unit Type"]).strip()
+        following_unit = str(records[index + 1]["Unit Number"]).strip()
+        if (
+            not following_prefix
+            or UNIT_NUMBER.fullmatch(following_unit) is None
+            or following_prefix.casefold() != current_prefix.casefold()
+        ):
             continue
-        current_unit = int(current.group("unit"))
-        following_unit = int(following.group("unit"))
-        for unit in range(current_unit + 1, following_unit):
-            output.append(_missing_box_row(current.group("prefix"), unit))
+        for unit in range(int(current_unit) + 1, int(following_unit)):
+            output.append(_missing_box_row(current_prefix, unit))
     return output
 
 
@@ -115,12 +120,14 @@ def catalogue_records(
     if detect_missing_boxes:
         records = _insert_missing_box_records(records)
     title_counts = Counter(
-        str(record["Node Title"]).strip().casefold() for record in records if str(record["Node Title"]).strip()
+        (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
+        for record in records
+        if str(record["Unit Type"]).strip() and str(record["Unit Number"]).strip()
     )
     for record in records:
-        title = str(record["Node Title"]).strip()
+        identity = (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
         flags = str(record["Review Notes"])
-        if title and title_counts[title.casefold()] > 1:
+        if identity[0] and identity[1] and title_counts[identity] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
         confidence = record["Transcription Confidence (0-100)"]
         if confidence != "" and int(confidence) < minimum_confidence:

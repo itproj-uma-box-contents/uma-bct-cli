@@ -164,13 +164,11 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
     image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
-        "Node ID": "",
-        "Node Type": "Unit",
-        "Node Title": title,
+        "Unit Type": identifier,
+        "Unit Number": unit_number,
         "Description": description(transcription),
         "Date Range": "",
         "Transcription Confidence (0-100)": transcription.confidence,

@@ -130,6 +130,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-f", "--force", action="store_true", help="replace an existing catalogue")
     parser.add_argument(
         "--no-missing-box",
+        "--no-missing-box-detection",
         dest="detect_missing_boxes",
         action="store_false",
         help="do not insert rows for missing unit numbers",
