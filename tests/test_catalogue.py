@@ -31,6 +31,14 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(record["Unit Type"], "BHP")
         self.assertEqual(record["Unit Number"], "0024")
 
+    def test_accepts_arbitrary_identifier_prefix_before_unit(self):
+        box = make_box()
+        identifier = "BHP124-SFDSF33"
+        transcription = make_transcription(box, identifiers=(identifier,), unit="30", typed=(f"{identifier} Unit 30",))
+        record = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(record["Unit Type"], identifier)
+        self.assertEqual(record["Unit Number"], "0030")
+
     def test_uses_first_identifier_and_flags_multiple(self):
         box = make_box()
         transcription = make_transcription(

@@ -23,6 +23,8 @@ UNIT_NUMBER = re.compile(r"^\d{1,4}$")
 
 
 def _missing_box_row(prefix: str, unit: int) -> dict[str, str]:
+    """Build a blank catalogue row for one predicted missing unit."""
+
     return {
         **{column: "" for column in OUTPUT_COLUMNS},
         "Unit Type": prefix,
@@ -56,6 +58,7 @@ def _sorted_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, s
     indexed_records = list(enumerate(records))
 
     def sort_key(item: tuple[int, dict[str, str | int]]) -> tuple[int, str, int, int]:
+        # Keep incomplete rows stable after sortable unit rows.
         index, record = item
         prefix = str(record["Unit Type"]).strip()
         unit = str(record["Unit Number"]).strip()

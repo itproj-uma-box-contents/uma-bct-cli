@@ -33,21 +33,29 @@ IDENTITY_SEPARATORS = re.compile(r"^[\s,;:./|&+()\[\]{}\"'“”‘’\-–—]*
 
 
 def visual_lines(lines: Iterable[str]) -> Iterable[str]:
+    """Yield each supplied line, including embedded line breaks."""
+
     for value in lines:
         yield from value.splitlines()
 
 
 def normalise_identifier(identifier: str) -> str:
+    """Trim an identifier while preserving its spelling."""
+
     value = identifier.strip()
     return value.upper() if value.casefold().startswith("uma-") else value
 
 
 def normalise_unit_claim(value: str) -> str | None:
+    """Return a four-digit unit number when the value is valid."""
+
     match = UNIT_NUMBER.fullmatch(value.strip())
     return match.group(1).zfill(4) if match else None
 
 
 def prefixed_unit(line: str) -> tuple[str, str] | None:
+    """Extract any prefix and unit number from one label line."""
+
     match = PREFIXED_UNIT.fullmatch(line)
     if match is None:
         return None
@@ -56,6 +64,8 @@ def prefixed_unit(line: str) -> tuple[str, str] | None:
 
 
 def standalone_identifier(line: str) -> str | None:
+    """Accept a standalone prefix only when followed by a unit line."""
+
     value = " ".join(line.split())
     if (
         not value
@@ -69,6 +79,8 @@ def standalone_identifier(line: str) -> str | None:
 
 
 def identifier_only_line(line: str) -> bool:
+    """Check whether a line contains only identifier-like text."""
+
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
     if prefixed_unit(line) is not None:
         return True
@@ -86,6 +98,8 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
     malformed = False
     visible_lines = tuple(visual_lines(lines))
     for index, line in enumerate(visible_lines):
+        # Known formats remain supported, but arbitrary prefixes are accepted
+        # when the label clearly pairs them with a unit number.
         matches = tuple(KNOWN_IDENTIFIER_TOKEN.finditer(line))
         legacy_allowed = identifier_only_line(line)
         for match in matches:
@@ -110,11 +124,15 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
 
 
 def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
+    """Return identifiers found in visible transcription lines."""
+
     return identifier_evidence_details(lines)[0]
 
 
 @dataclass(frozen=True)
 class UnitEvidence:
+    """Collected unit candidates and whether they conflict."""
+
     candidates: frozenset[str]
     ambiguous: bool
 
