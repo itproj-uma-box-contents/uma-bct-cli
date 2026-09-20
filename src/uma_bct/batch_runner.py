@@ -29,6 +29,7 @@ def configuration(
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
+        "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
         "output": str(arguments.path_to_outputs),
@@ -116,7 +117,11 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
                     raise FileExistsError(f"Output already exists: {path}")
         previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
         records = export_catalogue(
-            results, output_path, minimum_confidence=arguments.min_transcription_confidence, replace_existing=arguments.force
+            results,
+            output_path,
+            minimum_confidence=arguments.min_transcription_confidence,
+            replace_existing=arguments.force,
+            detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
         return len(records), str(output_path), previous
     except Exception as error:

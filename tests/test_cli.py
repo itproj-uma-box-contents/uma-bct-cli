@@ -56,8 +56,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
         self.assertEqual(defaults.min_detector_confidence, 0.6)
         self.assertEqual(defaults.min_transcription_confidence, 80)
+        self.assertTrue(defaults.detect_missing_boxes)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
+
+    def test_can_disable_missing_box_detection(self):
+        self.assertFalse(parse_args(["--no-missing-box-detection"]).detect_missing_boxes)
 
     def test_confidence_options_keep_their_distinct_meanings(self):
         legacy_detector = parse_args(["--min-confidence", "0.7"])

@@ -105,11 +105,53 @@ class CatalogueRulesTest(unittest.TestCase):
             ]
         )
 
-        missing = records[2]
-        self.assertRegex(missing["Node Title"], r"(?i)\bUnit\s*#?\s*0002\b")
+        missing = records[1]
+        self.assertEqual(missing["Node Title"], "1974.0056 Unit 0002")
         self.assertEqual(missing["Review Notes"], "Missing Box")
         self.assertEqual(missing["Node Type"], "")
         self.assertEqual(missing["Crop Image"], "")
+
+    def test_detects_gaps_within_each_prefix_and_can_be_disabled(self):
+        first_a = make_box(box_id="a:001")
+        third_a = make_box(box_id="a:003")
+        first_b = make_box(box_id="b:001")
+        third_b = make_box(box_id="b:003")
+        results = [
+            make_result(
+                BoxResult(
+                    first_b, make_transcription(first_b, identifiers=("2000.0002",), typed=("2000.0002", "Unit 1"), unit="1")
+                ),
+                BoxResult(
+                    third_a, make_transcription(third_a, identifiers=("1990.0001",), typed=("1990.0001", "Unit 3"), unit="3")
+                ),
+                BoxResult(
+                    first_a, make_transcription(first_a, identifiers=("1990.0001",), typed=("1990.0001", "Unit 1"), unit="1")
+                ),
+                BoxResult(
+                    third_b, make_transcription(third_b, identifiers=("2000.0002",), typed=("2000.0002", "Unit 3"), unit="3")
+                ),
+            )
+        ]
+
+        records = catalogue_records(results)
+        self.assertEqual(
+            [record["Node Title"] for record in records],
+            [
+                "1990.0001 Unit 0001",
+                "1990.0001 Unit 0002",
+                "1990.0001 Unit 0003",
+                "2000.0002 Unit 0001",
+                "2000.0002 Unit 0002",
+                "2000.0002 Unit 0003",
+            ],
+        )
+        self.assertEqual([record["Review Notes"] for record in records], ["", "Missing Box", "", "", "Missing Box", ""])
+
+        without_detection = catalogue_records(results, detect_missing_boxes=False)
+        self.assertEqual(
+            [record["Node Title"] for record in without_detection],
+            ["1990.0001 Unit 0001", "1990.0001 Unit 0003", "2000.0002 Unit 0001", "2000.0002 Unit 0003"],
+        )
 
     def test_low_confidence_threshold_is_strict(self):
         box = make_box()
@@ -122,7 +164,7 @@ class CatalogueRulesTest(unittest.TestCase):
 
 
 class CsvExportTest(unittest.TestCase):
-    def test_writes_exact_headers_in_physical_order_with_relative_crop_images(self):
+    def test_writes_exact_headers_in_sorted_order_with_relative_crop_images(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             output = root / "outputs" / "catalogue.csv"
@@ -169,12 +211,12 @@ class CsvExportTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(len(rows), 3)
-            self.assertEqual(rows[0]["Node Title"], "2000.0002 Unit 0002")
-            self.assertEqual(rows[0]["Crop Image"], "crops/b-001.png")
-            self.assertEqual(rows[1]["Node Title"], "")
-            self.assertEqual(rows[1]["Crop Image"], "crops/b-002.png")
-            self.assertEqual(rows[2]["Node Title"], "1990.0001 Unit 0001")
-            self.assertEqual(rows[2]["Crop Image"], "crops/a-001.png")
+            self.assertEqual(rows[0]["Node Title"], "1990.0001 Unit 0001")
+            self.assertEqual(rows[0]["Crop Image"], "crops/a-001.png")
+            self.assertEqual(rows[1]["Node Title"], "2000.0002 Unit 0002")
+            self.assertEqual(rows[1]["Crop Image"], "crops/b-001.png")
+            self.assertEqual(rows[2]["Node Title"], "")
+            self.assertEqual(rows[2]["Crop Image"], "crops/b-002.png")
 
     def test_atomic_failure_preserves_existing_csv(self):
         with tempfile.TemporaryDirectory() as directory:
