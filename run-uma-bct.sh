@@ -250,7 +250,7 @@ has_input_images() {
     for image in "$INPUTS"/*; do
         [ -f "$image" ] || continue
         case "$image" in
-            *.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp])
+            *.[Aa][Vv][Ii][Ff]|*.[Bb][Mm][Pp]|*.[Dd][Nn][Gg]|*.[Gg][Ii][Ff]|*.[Hh][Ee][Ii][Cc]|*.[Hh][Ee][Ii][Ff]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp])
                 return 0
                 ;;
         esac
@@ -686,7 +686,7 @@ if [ "$private_data_present" -eq 0 ]; then
 fi
 
 if ! has_input_images; then
-    printf 'Add JPG, PNG, TIF, or WEBP photos to the folder that just opened.\n'
+    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened.\n'
     open_folder "$INPUTS"
     if [ -t 0 ]; then
         printf 'Press Enter after the photos have finished copying: '

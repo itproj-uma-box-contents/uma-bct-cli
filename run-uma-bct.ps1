@@ -28,7 +28,10 @@ $OllamaProcess = $null
 $AppProcess = $null
 $LaunchLockPath = Join-Path $Root ".uma-bct-launcher.lock"
 $LaunchLockStream = $null
-$SupportedExtensions = @(".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp")
+$SupportedExtensions = @(
+    ".avif", ".bmp", ".dng", ".gif", ".heic", ".heif",
+    ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"
+)
 
 function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
     if ($Item.Name -ne ".uma-bct.lock" -or
@@ -670,7 +673,7 @@ try {
         }
 
         if (@(Get-InputImages).Count -eq 0) {
-            Write-Host "Add JPG, PNG, TIF, or WEBP photos to the folder that just opened."
+            Write-Host "Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened."
             Open-LocalFolder $Inputs
             if ([Environment]::UserInteractive) {
                 Read-Host "Press Enter after the photos have finished copying"

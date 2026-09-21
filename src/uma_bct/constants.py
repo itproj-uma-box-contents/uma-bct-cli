@@ -34,4 +34,7 @@ NMS_IOU_THRESHOLD = 0.45
 PADDING_FRACTION = 0.08
 MINIMUM_IMAGE_PADDING_FRACTION = 0.005
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
+OPENCV_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
+PILLOW_IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".heic", ".heif"}
+RAW_IMAGE_EXTENSIONS = {".dng"}
+IMAGE_EXTENSIONS = OPENCV_IMAGE_EXTENSIONS | PILLOW_IMAGE_EXTENSIONS | RAW_IMAGE_EXTENSIONS

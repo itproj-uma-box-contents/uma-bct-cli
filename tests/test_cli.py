@@ -14,6 +14,7 @@ from helpers import make_box, make_image, make_result, make_transcription
 from uma_bct.atomic import rename_exclusive, rename_new_file
 from uma_bct.batch_runner import export_results_into, run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
+from uma_bct.constants import IMAGE_EXTENSIONS
 from uma_bct.domain import BoxResult
 from uma_bct.export import export_catalogue
 from uma_bct.path_safety import check_path
@@ -102,6 +103,12 @@ class CliTest(unittest.TestCase):
             (root / "A.JPG").write_bytes(b"x")
             (root / "notes.txt").write_text("ignore", encoding="utf-8")
             self.assertEqual([path.name for path in discover_images(root)], ["A.JPG", "b.jpg"])
+
+    def test_discovers_every_documented_image_extension_case_insensitively(self):
+        with temporary_root() as root:
+            for number, extension in enumerate(sorted(IMAGE_EXTENSIONS)):
+                (root / f"{number:02d}{extension.upper()}").write_bytes(b"x")
+            self.assertEqual({path.suffix.casefold() for path in discover_images(root)}, IMAGE_EXTENSIONS)
 
     def test_rejects_redirected_input(self):
         with temporary_root() as root:

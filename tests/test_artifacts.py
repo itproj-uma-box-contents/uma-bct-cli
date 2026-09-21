@@ -28,6 +28,7 @@ class ArtifactSafetyTest(unittest.TestCase):
             "custom-results/Batch 2026-09-11 14-30-05/Box Images/private.png",
             "custom-results/Batch 2026-09-11 14-30-05/.working/private.png",
             "custom-input/SHELF.JPG",
+            "custom-input/SHELF.DNG",
             "custom-model/MODEL.GGUF",
         )
         for path in managed_paths:
@@ -40,6 +41,7 @@ class ArtifactSafetyTest(unittest.TestCase):
         for pattern in ("**/Run Progress.json", "**/Run Details.json", "**/Box Images", "**/.working"):
             self.assertIn(pattern, dockerignore)
         self.assertIn("**/*.[Jj][Pp][Gg]", dockerignore)
+        self.assertIn("**/*.[Dd][Nn][Gg]", dockerignore)
         self.assertIn("*.[Gg][Gg][Uu][Ff]", dockerignore)
 
     def test_ollama_extractor_accepts_archive_internal_link_targets(self):
@@ -87,6 +89,7 @@ class ArtifactSafetyTest(unittest.TestCase):
     def test_release_scan_accepts_code_and_rejects_private_content(self):
         for name in (
             "Archive box photos/shelf.jpg",
+            "Archive box photos/shelf.dng",
             "package/models/model.gguf",
             "outputs/catalogue.csv",
             ".uma-bct.lock",

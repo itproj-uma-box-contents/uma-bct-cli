@@ -38,6 +38,7 @@ PRIVATE_SUFFIXES = {
     ".avif",
     ".bmp",
     ".csv",
+    ".dng",
     ".gif",
     ".gguf",
     ".heic",
