@@ -115,7 +115,7 @@ class RegexDateDetector:
         self.date_delineator_regex+=") ?"
 
     #makes a date format safe for use in other functions
-    def excape_date_format(self, format: str) -> str:
+    def escape_date_format(self, format: str) -> str:
             result = format.replace(ESCAPE_SQEUNCE, ESCAPE_SQEUNCE+ESCAPE_SQEUNCE)
             result = result.replace(DATE_DELINIATOR_SYMBOL, ESCAPE_SQEUNCE+DATE_DELINIATOR_SYMBOL)
             result = result.replace(RANGE_DELINIATOR_SYMBOL, ESCAPE_SQEUNCE+RANGE_DELINIATOR_SYMBOL)
@@ -129,20 +129,20 @@ class RegexDateDetector:
 
     #converts a date format to a regex which matches it
     def date_format_to_regex(self, format: str) -> str:
-        regex = self.excape_date_format(format)
+        regex = self.escape_date_format(format)
         for (date_compnent, regex_component) in self.get_date_component_to_regex_map().items():
             if date_compnent in DATE_COMPONENT_REGEXES:
                 #Create the capture groups keeping track of what component they are
                 i=1
                 while i!=0:
-                    new_regex = regex.replace(self.excape_date_format(date_compnent), f"(?P<{date_compnent}{i}>{regex_component})", 1)
+                    new_regex = regex.replace(self.escape_date_format(date_compnent), f"(?P<{date_compnent}{i}>{regex_component})", 1)
                     if new_regex == regex:
                         i=0
                     else:
                         i+=1
                     regex=new_regex
             else: 
-                regex = regex.replace(self.excape_date_format(date_compnent), f"(?:{regex_component})")
+                regex = regex.replace(self.escape_date_format(date_compnent), f"(?:{regex_component})")
         return "(?:" + regex + ")"
 
     #turns a match result from a date format regex to a date of the form dd/mm/yyyy or a date range dd/mm/yyyy-dd/mm/yyyy
@@ -246,7 +246,5 @@ class RegexDateDetector:
         #sort back to original order
         dates.sort(key = lambda x: x.start())
 
-        print("stand:", [self.standardise_match_result(date) for date in dates])
-
-        return [date.group(0) for date in dates]
+        return [self.standardise_match_result(date) for date in dates]
 
