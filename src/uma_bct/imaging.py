@@ -20,6 +20,7 @@ from .domain import BoundingBox, Box, DetectedRegion, InputImage
 from .path_safety import check_path
 
 
+# Read the image.
 def read_image(path: Path) -> np.ndarray:
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None or image.size == 0:
@@ -27,6 +28,7 @@ def read_image(path: Path) -> np.ndarray:
     return image
 
 
+# Load the input image.
 def load_input_image(path: str | Path) -> InputImage:
     file_path = Path(path)
     image = read_image(file_path)
@@ -34,6 +36,7 @@ def load_input_image(path: str | Path) -> InputImage:
     return InputImage(file_path=file_path, width=width, height=height)
 
 
+# Handle the intersection area step.
 def intersection_area(first: BoundingBox, second: BoundingBox) -> int:
     left = max(first.x, second.x)
     top = max(first.y, second.y)
@@ -42,6 +45,7 @@ def intersection_area(first: BoundingBox, second: BoundingBox) -> int:
     return max(0, right - left) * max(0, bottom - top)
 
 
+# Handle the iou step.
 def iou(first: BoundingBox, second: BoundingBox) -> float:
     intersection = intersection_area(first, second)
     if not intersection:
@@ -51,6 +55,7 @@ def iou(first: BoundingBox, second: BoundingBox) -> float:
     return intersection / float(first_area + second_area - intersection)
 
 
+# Suppress the overlaps.
 def suppress_overlaps(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     retained: list[DetectedRegion] = []
     for region in sorted(regions, key=lambda item: item.confidence, reverse=True):
@@ -70,6 +75,7 @@ def suppress_overlaps(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]
     return retained
 
 
+# Sort detected boxes into visual rows.
 def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     if not regions:
         return []
@@ -95,12 +101,14 @@ def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     return [region for row in rows for region in sorted(row, key=lambda item: item.bounding_box.x)]
 
 
+# Handle the position hint step.
 def position_hint(box: BoundingBox, image_width: int, image_height: int) -> str:
     column = min(2, int(((box.x + box.width / 2.0) / image_width) * 3))
     row = min(2, int(((box.y + box.height / 2.0) / image_height) * 3))
     return f"{('top', 'middle', 'bottom')[row]}-{('left', 'middle', 'right')[column]}"
 
 
+# Handle the clipped box step.
 def clipped_box(box: BoundingBox, image_width: int, image_height: int) -> BoundingBox | None:
     x1 = max(0, min(image_width, box.top_left[0]))
     y1 = max(0, min(image_height, box.top_left[1]))
@@ -156,6 +164,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 class OpenCVBoxCropper:
     """Create clean PNG crops from detected boxes."""
 
+    # Create the boxes.
     def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]:
         original = read_image(image.file_path)
         valid_regions: list[DetectedRegion] = []

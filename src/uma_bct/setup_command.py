@@ -18,6 +18,7 @@ from .path_safety import check_path, redirected_path_kind
 from .run_artifacts import CatalogueLock
 
 
+# Ensure the directory.
 def ensure_directory(path: Path) -> int:
     try:
         check_path(path, "Setup directory")
@@ -35,6 +36,7 @@ def ensure_directory(path: Path) -> int:
     return metadata.st_mode
 
 
+# Warn when directory permissions are too broad.
 def warn_about_permissions(path: Path, mode: int) -> None:
     if sys.platform != "win32" and mode & (stat.S_IRWXG | stat.S_IRWXO):
         print(
@@ -44,11 +46,13 @@ def warn_about_permissions(path: Path, mode: int) -> None:
         )
 
 
+# Handle the safe error step.
 def safe_error(error: Exception) -> str:
     printable = "".join(character if character.isprintable() else " " for character in str(error))
     return (" ".join(printable.split()) or error.__class__.__name__)[:1000]
 
 
+# Validate the setup layout.
 def validate_setup_layout(inputs: Path, outputs: Path) -> None:
     input_path = os.path.realpath(inputs)
     output_path = os.path.realpath(outputs)
@@ -60,6 +64,7 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
         raise RuntimeError("Setup input and results directories must be separate and non-nested.")
 
 
+# Run the setup.
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
     results_directory: Path | None = None) -> int:
 

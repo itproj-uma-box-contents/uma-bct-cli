@@ -19,6 +19,7 @@ LINUX_RENAME_NOREPLACE = 1
 MACOS_RENAME_EXCL = 0x00000004
 
 
+# Capture the file identity.
 def file_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
     return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -28,6 +29,7 @@ def open_stable_file(path: Path, purpose: str, *, validator: Callable[[Path], os
     error_type: type[Exception] = ValueError) -> Iterator[tuple[BinaryIO, os.stat_result]]:
     """Open one regular file and reject links or changes during the read."""
 
+    # Inspect this value.
     def inspect() -> os.stat_result:
         if validator is not None:
             return validator(path)
@@ -60,6 +62,7 @@ def open_stable_file(path: Path, purpose: str, *, validator: Callable[[Path], os
         source.close()
 
 
+# Handle the raise rename error step.
 def raise_rename_error(destination: Path) -> None:
     error_number = ctypes.get_errno()
     raise OSError(error_number, os.strerror(error_number), str(destination))
