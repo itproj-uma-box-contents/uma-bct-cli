@@ -37,7 +37,6 @@ class CatalogueRow(dict[str, str | int]):
     """A row with read-only lookup aliases for the v0.1 draft headings."""
 
     LOOKUP_ALIASES = {
-        "Transcription Confidence (0-100)": "Transcription Confidence (%)",
         "Review Notes": "Review Flags",
         "Crop Image": "Cropped Box Image Link",
     }

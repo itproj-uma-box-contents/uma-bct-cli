@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .atomic import rename_new_file
-from .catalogue import append_flag, map_catalogue_record
+from .catalogue import CatalogueRow, append_flag, map_catalogue_record
 from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS
 from .path_safety import check_path
 from .pipeline import ImageResult
@@ -23,15 +23,15 @@ from .pipeline import ImageResult
 UNIT_NUMBER = re.compile(r"^\d{1,4}$")
 
 
-def _missing_box_row(prefix: str, unit: int) -> dict[str, str]:
+def _missing_box_row(prefix: str, unit: int) -> CatalogueRow:
     """Build a blank catalogue row for one predicted missing unit."""
 
-    return {
+    return CatalogueRow({
         **{column: "" for column in OUTPUT_COLUMNS},
         "Unit Type": prefix,
         "Unit Number": f"{unit:04d}",
-        "Review Notes": MISSING_BOX_FLAG,
-    }
+        "Review Flags": MISSING_BOX_FLAG,
+    })
 
 
 def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str]]:
@@ -135,7 +135,7 @@ def catalogue_records(
         flags = str(record["Review Flags"])
         if identity[0] and identity[1] and title_counts[identity] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
-        confidence = record["Transcription Confidence (0-100)"]
+        confidence = record["Transcription Confidence (%)"]
         if confidence != "" and int(confidence) < minimum_confidence:
             flags = append_flag(flags, LOW_CONFIDENCE_FLAG)
         record["Review Flags"] = flags
