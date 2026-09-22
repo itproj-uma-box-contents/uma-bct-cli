@@ -54,6 +54,7 @@ def extract_archive(source: Path, destination: Path) -> None:
                     archive.extract(member, destination, filter="data")
 
 
+# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)

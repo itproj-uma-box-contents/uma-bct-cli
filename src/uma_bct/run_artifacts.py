@@ -33,6 +33,7 @@ def regular_file_sha256(path: Path, purpose: str) -> str:
     return digest.hexdigest()
 
 
+# Handle the same regular file content step.
 def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
     try:
         return regular_file_sha256(first, purpose) == regular_file_sha256(second, purpose)
@@ -40,6 +41,7 @@ def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
         return False
 
 
+# Check whether the path entry exists.
 def path_entry_exists(path: Path) -> bool:
     try:
         path.lstat()
@@ -97,6 +99,7 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
         raise
 
 
+# Restore the backup no clobber.
 def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> None:
     temporary_path: Path | None = None
     try:
@@ -160,11 +163,13 @@ def rollback_owned_file(destination: Path, expected_digest: str, backup: Path | 
         raise
 
 
+# Create a new run ID.
 def new_run_id() -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
+# Run the directory.
 def run_directory(root: Path) -> Path:
     check_path(root, "Review-crop root")
     destination = root / f"run-{new_run_id()}"
@@ -173,14 +178,17 @@ def run_directory(root: Path) -> Path:
     return destination
 
 
+# Build the manifest path.
 def manifest_path(output_path: Path) -> Path:
     return output_path.with_suffix(".run.json")
 
 
+# Build the failed manifest path.
 def failed_manifest_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}.failed-{new_run_id()}.run.json")
 
 
+# Build the catalogue lock path.
 def catalogue_lock_path(output_path: Path) -> Path:
     return output_path.with_name(LOCK_FILE_NAME)
 
@@ -188,11 +196,13 @@ def catalogue_lock_path(output_path: Path) -> Path:
 class CatalogueLock:
     """Reserve one catalogue and remove only this instance's lock file."""
 
+    # Store the state this object needs.
     def __init__(self, output_path: Path) -> None:
         self.path = catalogue_lock_path(output_path)
         self._descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
 
+    # Build the owner text.
     def _owner_text(self) -> str:
         descriptor: int | None = None
         try:
@@ -211,6 +221,7 @@ class CatalogueLock:
         pid = value.get("pid") if isinstance(value, dict) else None
         return f"PID {pid}" if isinstance(pid, int) and pid > 0 else "PID unavailable"
 
+    # Handle the acquire step.
     def acquire(self) -> None:
         check_path(self.path, "Catalogue lock")
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -244,6 +255,7 @@ class CatalogueLock:
             os.close(descriptor)
             self._descriptor = None
 
+    # Handle the release step.
     def release(self) -> None:
         descriptor = self._descriptor
         identity = self._identity
@@ -289,6 +301,7 @@ class CatalogueLock:
                 os.close(descriptor)
 
 
+# Build the previous result path.
 def previous_result_path(path: Path, run_id: str) -> Path:
     if path.name.endswith(".run.json"):
         stem = path.name[: -len(".run.json")]
@@ -358,6 +371,7 @@ def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> No
         raise
 
 
+# Write JSON without exposing a partial file.
 def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_existing: bool = True) -> None:
     check_path(destination, "Run manifest")
     if destination.exists() and not replace_existing:

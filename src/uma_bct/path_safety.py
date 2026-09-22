@@ -15,6 +15,7 @@ from pathlib import Path
 MACOS_ROOT_ALIASES = frozenset({Path("/etc"), Path("/tmp"), Path("/var")})
 
 
+# Handle the redirected path kind step.
 def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> str | None:
     metadata = metadata or path.lstat()
     if stat.S_ISLNK(metadata.st_mode):

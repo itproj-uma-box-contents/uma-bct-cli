@@ -42,21 +42,25 @@ AMBIGUOUS_UNIT = re.compile(
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:./|&+()\[\]{}\"'“”‘’\-–—]*$")
 
 
+# Collect the visual lines.
 def visual_lines(lines: Iterable[str]) -> Iterable[str]:
     for value in lines:
         yield from value.splitlines()
 
 
+# Normalize the identifier.
 def normalise_identifier(identifier: str) -> str:
     value = identifier.strip()
     return value.upper() if value.casefold().startswith("uma-") else value
 
 
+# Normalize the unit claim.
 def normalise_unit_claim(value: str) -> str | None:
     match = UNIT_NUMBER.fullmatch(value.strip())
     return match.group(1).zfill(4) if match else None
 
 
+# Handle the identifier only line step.
 def identifier_only_line(line: str) -> bool:
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
     if not RECORD_IDENTIFIER_TOKEN.search(body):
@@ -90,10 +94,12 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(identifiers), malformed
 
 
+# Collect the identifier evidence.
 def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     return identifier_evidence_details(lines)[0]
 
 
+# Keep the unit evidence behavior together.
 @dataclass(frozen=True)
 class UnitEvidence:
     candidates: frozenset[str]
@@ -126,6 +132,42 @@ def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterabl
     return UnitEvidence(frozenset(candidates), ambiguous or len(candidates) > 1)
 
 
+def resolve_unit_claim(
+    structured_unit: str, typed_lines: Iterable[str], handwritten_lines: Iterable[str]
+) -> tuple[str, bool]:
+    """Fill one omitted unit from exact raw text and say if review is needed.
+
+    An explicit structured value is never replaced. A missing value can be
+    recovered only from an explicit printed Unit or Box label, when every
+    recognised raw occurrence names the same unit and none of the surrounding
+    text marks it as uncertain or crossed out. Bare or handwritten numbers are
+    too easy to misinterpret without looking at the image, so they stay blank.
+    The returned digits preserve the visible spelling instead of inventing
+    padding that was not present in the transcription.
+    """
+
+    if structured_unit.strip():
+        return structured_unit, False
+
+    typed = tuple(visual_lines(typed_lines))
+    handwritten = tuple(visual_lines(handwritten_lines))
+    evidence = collect_unit_evidence(typed, handwritten)
+    if not evidence.candidates:
+        return "", False
+    if evidence.ambiguous:
+        return "", True
+
+    normalized = next(iter(evidence.candidates))
+    for line in typed:
+        for match in CONTEXTUAL_UNIT.finditer(line):
+            if match.group(1).zfill(4) == normalized:
+                return match.group(1), True
+
+    # Other evidence can still force review, but it is not promoted without an
+    # explicit printed label.
+    return "", True
+
+
 def identity_only_line(line: str, structured_identifiers: Iterable[str], structured_unit: str) -> bool:
     """Check whether a line contains only the box ID or unit number."""
 
@@ -135,6 +177,7 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
         if RECORD_IDENTIFIER.fullmatch(value.strip())
     }
 
+    # Remove the identifier.
     def remove_identifier(match: re.Match[str]) -> str:
         value = normalise_identifier(match.group(1)).casefold()
         return " " if value in identifier_keys else match.group(0)
@@ -143,6 +186,7 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
     body = RECORD_IDENTIFIER_TOKEN.sub(remove_identifier, body)
     normalized_unit = normalise_unit_claim(structured_unit)
 
+    # Remove the unit.
     def remove_unit(match: re.Match[str]) -> str:
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
 

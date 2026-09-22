@@ -58,6 +58,7 @@ PRIVATE_SUFFIXES = {
 }
 
 
+# Collect the artifact paths.
 def artifact_paths(arguments: Iterable[str]) -> list[Path]:
     paths: list[Path] = []
     for argument in arguments:
@@ -71,6 +72,7 @@ def artifact_paths(arguments: Iterable[str]) -> list[Path]:
     return paths
 
 
+# Handle the archive members step.
 def archive_members(path: Path) -> Iterable[tuple[str, bool, bool, int, bool]]:
     if path.name.endswith((".whl", ".zip")):
         with zipfile.ZipFile(path) as archive:
@@ -95,6 +97,7 @@ def archive_members(path: Path) -> Iterable[tuple[str, bool, bool, int, bool]]:
     raise ValueError(f"Unsupported release artifact: {path}")
 
 
+# Handle the unsafe reason step.
 def unsafe_reason(
     name: str, regular: bool = True, is_directory: bool = False, size: int = 0, duplicate: bool = False
 ) -> str | None:
@@ -140,6 +143,7 @@ def unsafe_reason(
     return None
 
 
+# Inspect the artifact.
 def inspect_artifact(path: Path) -> list[str]:
     if not path.is_file():
         return [f"{path}: artifact does not exist"]
@@ -153,6 +157,7 @@ def inspect_artifact(path: Path) -> list[str]:
         return [f"{path}: cannot inspect artifact: {error}"]
 
 
+# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+")

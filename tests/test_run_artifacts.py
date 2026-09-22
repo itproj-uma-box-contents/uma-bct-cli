@@ -14,13 +14,16 @@ from uma_bct.run_artifacts import (
 )
 
 
+# Group the catalogue lock checks.
 class CatalogueLockTest(unittest.TestCase):
+    # Handle the short copy with restored metadata step.
     def short_copy_with_restored_metadata(self, path: Path, source, destination) -> None:
         metadata = path.stat()
         destination.write(source.read(64 * 1024))
         path.write_bytes(b"changed".ljust(metadata.st_size, b"x"))
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
 
+    # Check that backup rejects a short copy hidden by restored metadata.
     def test_backup_rejects_a_short_copy_hidden_by_restored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "catalogue.csv"
@@ -35,6 +38,7 @@ class CatalogueLockTest(unittest.TestCase):
                 backup_existing_results((source,))
             self.assertEqual(tuple(source.parent.glob("*.previous-*")), ())
 
+    # Check that restore rejects a short copy hidden by restored metadata.
     def test_restore_rejects_a_short_copy_hidden_by_restored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,6 +55,7 @@ class CatalogueLockTest(unittest.TestCase):
                 restore_backup_no_clobber(backup, destination, "Catalogue")
             self.assertFalse(destination.exists())
 
+    # Check that backed replacement restores destination when interrupted after quarantine rename.
     def test_backed_replacement_restores_destination_when_interrupted_after_quarantine_rename(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -63,6 +68,7 @@ class CatalogueLockTest(unittest.TestCase):
             real_replace = os.replace
             interrupted = False
 
+            # Handle the interrupt after replace step.
             def interrupt_after_replace(source, target):
                 nonlocal interrupted
                 result = real_replace(source, target)
@@ -81,6 +87,7 @@ class CatalogueLockTest(unittest.TestCase):
             self.assertEqual(staging.read_bytes(), b"new")
             self.assertEqual(tuple(root.glob(".uma-bct-rollback-*")), ())
 
+    # Check that lock is exclusive and records the owner pid.
     def test_lock_is_exclusive_and_records_the_owner_pid(self):
         with tempfile.TemporaryDirectory() as directory:
             catalogue = Path(directory) / "outputs/catalogue.csv"
@@ -96,6 +103,7 @@ class CatalogueLockTest(unittest.TestCase):
             self.assertFalse(lock_path.exists())
             self.assertEqual(list(lock_path.parent.glob(".uma-bct-lock-release-*")), [])
 
+    # Check that invalid stale lock is rejected with safe recovery instructions.
     def test_invalid_stale_lock_is_rejected_with_safe_recovery_instructions(self):
         with tempfile.TemporaryDirectory() as directory:
             catalogue = Path(directory) / "catalogue.csv"
@@ -108,6 +116,7 @@ class CatalogueLockTest(unittest.TestCase):
             self.assertNotIn("private text", str(raised.exception))
             self.assertTrue(lock_path.exists())
 
+    # Check that release does not remove a replaced lock.
     def test_release_does_not_remove_a_replaced_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             catalogue = Path(directory) / "catalogue.csv"
@@ -128,6 +137,7 @@ class CatalogueLockTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "PID 999"):
                 CatalogueLock(catalogue).acquire()
 
+    # Check that non regular stale lock does not block.
     @unittest.skipIf(os.name == "nt", "FIFO fixture requires POSIX")
     def test_non_regular_stale_lock_does_not_block(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,6 +148,7 @@ class CatalogueLockTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "PID unavailable"):
                 CatalogueLock(catalogue).acquire()
 
+    # Check that release does not unlink a replacement swapped at cleanup boundary.
     def test_release_does_not_unlink_a_replacement_swapped_at_cleanup_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             catalogue = Path(directory) / "catalogue.csv"
@@ -148,6 +159,7 @@ class CatalogueLockTest(unittest.TestCase):
             real_replace = os.replace
             swapped = False
 
+            # Handle the swap before replace step.
             def swap_before_replace(source, destination):
                 nonlocal swapped
                 if Path(source) == lock_path and not swapped:

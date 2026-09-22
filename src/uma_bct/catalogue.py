@@ -42,6 +42,7 @@ class CatalogueRow(dict[str, str | int]):
         "Crop Image": "Cropped Box Image Link",
     }
 
+    # Handle the missing step.
     def __missing__(self, key: str) -> str | int:
         alias = self.LOOKUP_ALIASES.get(key)
         if alias is None:
@@ -64,10 +65,12 @@ def append_flag(current: str, flag: str) -> str:
     return "; ".join(flags)
 
 
+# Collect the non empty lines.
 def non_empty_lines(lines: Iterable[str]) -> tuple[str, ...]:
     return tuple(visual_line.strip() for value in lines for visual_line in value.splitlines() if visual_line.strip())
 
 
+# Handle the structured identifiers step.
 def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], bool]:
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()
@@ -85,6 +88,7 @@ def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(explicit_identifiers), invalid
 
 
+# Check for a raw identifier mismatch.
 def raw_identifier_mismatch(transcription: BoxTranscription, explicit_identifiers: tuple[str, ...]) -> bool:
     typed_identifiers, malformed_typed = identifier_evidence_details(transcription.typed_lines)
     handwritten_identifiers, malformed_handwritten = identifier_evidence_details(transcription.handwritten_lines)
@@ -120,6 +124,7 @@ def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...]
     return identifiers, False, False
 
 
+# Normalize the unit.
 def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
     raw_unit = transcription.unit_number.strip()
     if not raw_unit:
@@ -133,6 +138,7 @@ def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bo
     return normalized, None, False
 
 
+# Handle the image reference step.
 def image_reference(image_file_path: str | Path, catalogue_path: str | Path | None) -> str:
     image_path = Path(image_file_path)
     if catalogue_path is None:
@@ -166,6 +172,7 @@ def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Pa
     return f'=HYPERLINK("{target}","{label}")'
 
 
+# Handle the description step.
 def description(transcription: BoxTranscription) -> str:
     values = (*non_empty_lines(transcription.handwritten_lines), *non_empty_lines(transcription.auxiliary_annotations))
     visible = (

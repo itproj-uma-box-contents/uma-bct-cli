@@ -17,6 +17,7 @@ from uma_bct.path_safety import check_path
 from uma_bct.transcriptions import ObservedBox, deduplicate
 
 
+# Write a metadata-free DNG fixture for real LibRaw coverage.
 def write_synthetic_dng(path: Path) -> None:
     raw_pixels = np.tile(np.array([[400, 800], [800, 1200]], dtype=np.uint16), (32, 48))
     tags = (
@@ -36,8 +37,9 @@ def write_synthetic_dng(path: Path) -> None:
     )
     tifffile.imwrite(path, raw_pixels, photometric=32803, metadata=None, extratags=tags)
 
-
+# Group the imaging checks.
 class ImagingTest(unittest.TestCase):
+    # Check that domain values reject invalid geometry and confidence.
     def test_domain_values_reject_invalid_geometry_and_confidence(self):
         cases = (
             lambda: BoundingBox((-1, 0), (10, 10)),
@@ -49,6 +51,7 @@ class ImagingTest(unittest.TestCase):
             with self.subTest(build=build), self.assertRaises(ValueError):
                 build()
 
+    # Check that cropper applies eight percent padding and saves padded dimensions.
     def test_cropper_applies_eight_percent_padding_and_saves_padded_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -61,6 +64,7 @@ class ImagingTest(unittest.TestCase):
             saved = cv2.imread(str(boxes[0].image_file_path))
             self.assertEqual(saved.shape[:2], (464, 232))
 
+    # Check that cropper uses image relative minimum padding and clamps borders.
     def test_cropper_uses_image_relative_minimum_padding_and_clamps_borders(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -79,6 +83,7 @@ class ImagingTest(unittest.TestCase):
             self.assertEqual(len({box.box_id for box in boxes}), 2)
             self.assertEqual(len({box.image_file_path for box in boxes}), 2)
 
+    # Check that cropper rechecks a parent swapped after validation.
     def test_cropper_rechecks_a_parent_swapped_after_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -100,6 +105,7 @@ class ImagingTest(unittest.TestCase):
                 OpenCVBoxCropper().create_boxes(image, regions, review)
             self.assertEqual(tuple(outside.iterdir()), ())
 
+    # Check that unreadable image has a clear error.
     def test_unreadable_image_has_a_clear_error(self):
         with (
             patch("uma_bct.imaging.cv2.imread", return_value=None),
@@ -107,6 +113,7 @@ class ImagingTest(unittest.TestCase):
         ):
             load_input_image("missing.jpg")
 
+    # Check that Pillow formats use and remove a private normalized copy.
     def test_prepares_new_pillow_format_once_and_removes_private_temporary_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -122,6 +129,7 @@ class ImagingTest(unittest.TestCase):
                 self.assertEqual(read_input_image(image).shape, (7, 13, 3))
             self.assertFalse(processing_path.exists())
 
+    # Check that existing formats retain the direct OpenCV path.
     def test_existing_formats_keep_the_direct_opencv_path(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "shelf.jpg"
@@ -132,6 +140,7 @@ class ImagingTest(unittest.TestCase):
                 self.assertIsNone(image.processing_file_path)
                 self.assertEqual(read_input_image(image).shape, (7, 13, 3))
 
+    # Check that a corrupt supported image reports a clear error.
     def test_corrupt_supported_image_has_a_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "corrupt.heic"
@@ -140,6 +149,7 @@ class ImagingTest(unittest.TestCase):
                 with prepare_input_image(source):
                     self.fail("A corrupt image should not enter the pipeline")
 
+    # Check that HEIC uses the primary image in a multi-image container.
     def test_heic_uses_the_primary_image_from_a_multi_image_container(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "shelf.heic"
@@ -154,6 +164,7 @@ class ImagingTest(unittest.TestCase):
             self.assertGreater(green, 200)
             self.assertLess(max(red, blue), 60)
 
+    # Check that GIF uses only its first frame.
     def test_gif_uses_only_the_first_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "shelf.gif"
@@ -167,6 +178,7 @@ class ImagingTest(unittest.TestCase):
             self.assertGreater(red, 200)
             self.assertLess(max(green, blue), 60)
 
+    # Check that new-format transparency is flattened onto white.
     def test_new_format_transparency_is_flattened_onto_white(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "transparent.gif"
@@ -182,6 +194,7 @@ class ImagingTest(unittest.TestCase):
             self.assertEqual(pixels[0, 0].tolist(), [255, 255, 255])
             self.assertGreater(int(pixels[3, 4, 2]), 200)
 
+    # Check that AVIF applies its EXIF orientation.
     def test_avif_applies_exif_orientation(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "shelf.avif"
@@ -192,6 +205,7 @@ class ImagingTest(unittest.TestCase):
             with prepare_input_image(source) as image:
                 self.assertEqual((image.width, image.height), (8, 12))
 
+    # Check that DNG requests full-size oriented camera development.
     def test_dng_uses_full_size_oriented_camera_development(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "shelf.dng"
@@ -213,6 +227,7 @@ class ImagingTest(unittest.TestCase):
             self.assertEqual(options["output_bps"], 8)
             self.assertEqual(pixels[0, 0].tolist(), [10, 20, 30])
 
+    # Check that a synthetic DNG decodes through LibRaw with orientation.
     def test_synthetic_dng_decodes_through_real_libraw_with_orientation(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve() / "synthetic.dng"
@@ -224,7 +239,7 @@ class ImagingTest(unittest.TestCase):
             self.assertEqual((image.width, image.height), (64, 96))
             self.assertEqual(pixels.shape, (96, 64, 3))
             self.assertEqual(pixels.dtype, np.uint8)
-
+    # Check that OpenCV fallback finds two synthetic boxes.
     def test_opencv_fallback_finds_two_synthetic_boxes(self):
         image = np.full((800, 1200, 3), 230, dtype=np.uint8)
         for left, right in ((150, 550), (650, 1050)):
@@ -234,6 +249,7 @@ class ImagingTest(unittest.TestCase):
         self.assertEqual(len(regions), 2)
         self.assertTrue(all(plausible_bbox(region.bounding_box, 1200, 800) for region in regions))
 
+    # Check that deduplication only merges overlapping independent crops.
     def test_deduplication_only_merges_overlapping_independent_crops(self):
         image = make_image()
         first = make_box(image=image, box_id="first")

@@ -28,6 +28,7 @@ DETECTION_MAX_DIMENSION = 1400
 INTERNAL_CONFIDENCE_FLOOR = 0.45
 
 
+# Handle the clamp step.
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
@@ -44,6 +45,7 @@ def range_score(value: float, minimum: float, preferred_minimum: float, preferre
     return (maximum - value) / (maximum - preferred_maximum)
 
 
+# Handle the odd size step.
 def odd_size(value: float, minimum: int = 3) -> int:
     size = max(minimum, round(value))
     return size if size % 2 else size + 1
@@ -62,6 +64,7 @@ def plausible_bbox(box: BoundingBox, image_width: int, image_height: int) -> boo
     )
 
 
+# Handle the line segments step.
 def line_segments(edges: np.ndarray) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]]]:
     height, width = edges.shape
     short_side = min(height, width)
@@ -118,6 +121,7 @@ def line_support(
     return sum((top, bottom, left, right)) / 4.0
 
 
+# Handle the candidate confidence step.
 def candidate_confidence(contour: np.ndarray, bbox: tuple[int, int, int, int], image_shape: tuple[int, int],
                          horizontal_lines: list[tuple[int, ...]], vertical_lines: list[tuple[int, ...]]) -> float:
     _, _, width, height = bbox
@@ -244,5 +248,6 @@ class OpenCVBoxDetector:
 
     name: str = "opencv"
 
+    # Detect boxes in the current image.
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         return detect_regions(read_input_image(image))
