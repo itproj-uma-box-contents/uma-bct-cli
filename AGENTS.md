@@ -79,5 +79,3 @@ and benchmark output inside an ignored private-photo directory.
   stdout; progress and warnings belong on stderr.
 - Prefer small, tested fixes. Do not port experimental preprocessing, caches,
   telemetry, or debug visualisation without a demonstrated regression.
-- Deferred beyond v0.1: Node-ID reconciliation, date extraction, automatic text
-  rotation, sequence-gap analysis, GUI, catalogue APIs, and signed executables.
