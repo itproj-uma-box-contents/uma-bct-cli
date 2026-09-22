@@ -66,19 +66,30 @@ outputs/
       ...review images...
 ```
 
-`catalogue.csv` is the result to review. The run manifest and crop images show
-where each row came from. Before a later run replaces the current catalogue and
-manifest, the launcher preserves timestamped copies beside them. Timestamped
-crop folders are also kept.
+`catalogue.csv` is the result to review. Rows are ordered by `Unit Type` and
+then `Unit Number`. The run manifest and crop images show where each row came
+from. Missing-box review rows have an empty `Crop Image` value because they do
+not correspond to a detected physical box.
 
-Before importing the catalogue, work through the rows in their original photo
-and left-to-right/top-to-bottom crop order:
 
-- Compare each row with its `Crop Image` review evidence.
+Before importing the catalogue, review the rows in `catalogue.csv`. Rows with
+valid `Unit Type` and `Unit Number` values are sorted by `Unit Type` and then
+by numeric `Unit Number` to make it easier to navigate the physical boxes.
+
+Rows marked `Missing Box` are inserted between detected unit numbers when a
+number is absent from an otherwise continuous sequence. These rows represent
+boxes that may be missing and require confirmation. Use
+`--no-missing-box` if missing-box detection is not required.
+
+For every row:
+
+- Open or inspect the file shown in the `Crop Image` column.
+- Compare the crop with the transcribed unit type, unit number, description,
+  and date range.
 - Check every non-empty `Review Notes` value and the
-  `Transcription Confidence (0-100)`. Empty review notes mean only that the tool
-  raised no automated warning; every transcription still requires human review.
-- Keep separate rows for separate physical boxes, even when their titles match.
+  `Transcription Confidence (0-100)` value.
+- Keep separate rows for separate physical boxes, even when their unit type
+  and number are identical.
 
 If the launcher stops, read the short message in its window, correct the stated
 problem, and run the same launcher again. Common first-run causes are no internet
