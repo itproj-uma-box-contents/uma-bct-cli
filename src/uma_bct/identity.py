@@ -6,29 +6,39 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+# Accept a one-to-257-character non-whitespace identifier without leading or trailing whitespace.
 RECORD_IDENTIFIER = re.compile(r"^[^\s](?:.{0,255}\S)?$", re.IGNORECASE | re.ASCII)
+# Find the supported structured IDs: YYYY.NNNN, YY/N, and UMA-(AC|SR)E?-########.
 KNOWN_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_/])((?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4}|[0-9]{2}/[0-9]+))(?![A-Za-z0-9_/])",
     re.IGNORECASE | re.ASCII,
 )
+# Remove common label prefixes such as "Record ID:", "Accession Number:", or "Reference:".
 IDENTIFIER_LABEL_PREFIX = re.compile(
     r"^\s*(?:(?:records?\s*(?:set\s*)?(?:identifier|id|number|no)?|"
     r"accession(?:\s*(?:identifier|id|number|no))?|identifier|id|ref(?:erence)?)"
     r"\.?\s*[:#-]?\s*)",
     re.IGNORECASE | re.ASCII,
 )
+# Match the labels that can introduce a unit number, including Unit, Box, Box No., and No.
 UNIT_PREFIX = r"(?:unit|box(?:\s*(?:no\.?|number))?|no\.?)"
+# Match a complete unit label or a bare one-to-four-digit unit number.
 UNIT_NUMBER = re.compile(rf"^(?:{UNIT_PREFIX}\s*[:#-]?\s*)?([0-9]{{1,4}})$", re.IGNORECASE | re.ASCII)
+# Find a unit label embedded in a transcription line and capture its number.
 CONTEXTUAL_UNIT = re.compile(rf"(?<!\w)(?:{UNIT_PREFIX})\s*[:#-]?\s*([0-9]{{1,4}})(?!\w)", re.IGNORECASE | re.ASCII)
+# Match a line containing an arbitrary identifier prefix followed by a unit label and number.
 PREFIXED_UNIT = re.compile(
     rf"^\s*(?P<prefix>.+?)\s+(?:{UNIT_PREFIX})\s*[:#-]?\s*(?P<number>[0-9]{{1,4}})\s*$", re.IGNORECASE | re.ASCII
 )
+# Match a handwritten bare unit number, optionally followed by a short letter/code suffix.
 HANDWRITTEN_UNIT = re.compile(r"^\s*([0-9]{1,4})(?:\s+[A-Z][0-9]{1,2})?\s*$", re.IGNORECASE | re.ASCII)
+# Detect wording or punctuation that makes a unit-number claim ambiguous.
 AMBIGUOUS_UNIT = re.compile(
     r"\b(?:or|maybe|possibly|unclear|unknown|ambiguous|overwritten|"
     r"crossed\s*out|struck\s*out)\b|\?",
     re.IGNORECASE | re.ASCII,
 )
+# Match lines containing only separators around an identifier or unit number.
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:./|&+()\[\]{}\"'“”‘’\-–—]*$")
 
 
