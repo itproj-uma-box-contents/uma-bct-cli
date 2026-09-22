@@ -167,7 +167,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
     image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
-        "Unit Type": identifier,
+        "Unit Type": escape_spreadsheet_formula(identifier),
         "Unit Number": unit_number,
         "Description": description(transcription),
         "Date Range": "",
