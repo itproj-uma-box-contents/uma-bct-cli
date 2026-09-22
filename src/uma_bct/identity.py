@@ -182,7 +182,7 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
 
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
-    body = KNOWN_IDENTIFIER_TOKEN.sub(remove_identifier, body)
+    body = " " if body.strip().casefold() in identifier_keys else KNOWN_IDENTIFIER_TOKEN.sub(remove_identifier, body)
     if prefixed := prefixed_unit(line):
         body = line.replace(prefixed[0], " ", 1)
         body = CONTEXTUAL_UNIT.sub(remove_unit, body)
