@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from .domain import Box, BoxResult, DetectedRegion, InputImage
-from .imaging import create_full_image_box, load_input_image
+from .imaging import create_full_image_box, prepare_input_image
 from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
@@ -224,34 +224,36 @@ class BoxTranscriptionPipeline:
 
     # Process the current input.
     def process(self, image_path: str | Path) -> ImageResult:
-        image = load_input_image(image_path)
-        warnings: list[str] = []
-        localization = self.localize(image, warnings)
-        if localization.full_image and localization.boxes:
-            observations = self.transcribe_full_image_box(localization.boxes[0], warnings, "Full-image transcription")
-            unresolved = 0 if observations else 1
-        else:
-            observations, unresolved = self.transcribe_crops(localization.boxes, warnings)
-        observations, unresolved, actual_detector, route = self.recover_failed_crops(
-            image, localization, observations, unresolved, warnings
-        )
+        with prepare_input_image(image_path) as image:
+            warnings: list[str] = []
+            localization = self.localize(image, warnings)
+            if localization.full_image and localization.boxes:
+                observations = self.transcribe_full_image_box(
+                    localization.boxes[0], warnings, "Full-image transcription"
+                )
+                unresolved = 0 if observations else 1
+            else:
+                observations, unresolved = self.transcribe_crops(localization.boxes, warnings)
+            observations, unresolved, actual_detector, route = self.recover_failed_crops(
+                image, localization, observations, unresolved, warnings
+            )
 
-        consolidated = deduplicate(observations)
-        status: ImageStatus
-        if not consolidated:
-            status = "failed"
-        elif unresolved or localization.incomplete:
-            status = "partial"
-        else:
-            status = "complete"
-        return ImageResult(
-            input_image=image,
-            requested_detector=self.detector.name,
-            actual_detector=actual_detector,
-            fallback_path=route,
-            transcriber=self.transcriber.name,
-            status=status,
-            records=tuple(BoxResult(item.box, item.transcription) for item in consolidated),
-            warnings=tuple(warnings),
-            model_metadata=self.model_metadata,
-        )
+            consolidated = deduplicate(observations)
+            status: ImageStatus
+            if not consolidated:
+                status = "failed"
+            elif unresolved or localization.incomplete:
+                status = "partial"
+            else:
+                status = "complete"
+            return ImageResult(
+                input_image=image,
+                requested_detector=self.detector.name,
+                actual_detector=actual_detector,
+                fallback_path=route,
+                transcriber=self.transcriber.name,
+                status=status,
+                records=tuple(BoxResult(item.box, item.transcription) for item in consolidated),
+                warnings=tuple(warnings),
+                model_metadata=self.model_metadata,
+            )

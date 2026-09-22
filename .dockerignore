@@ -53,6 +53,7 @@ outputs
 **/.uma-bct-backup-*
 **/*.avif
 **/*.bmp
+**/*.dng
 **/*.gif
 **/*.heic
 **/*.heif
@@ -64,6 +65,7 @@ outputs
 **/*.webp
 **/*.[Aa][Vv][Ii][Ff]
 **/*.[Bb][Mm][Pp]
+**/*.[Dd][Nn][Gg]
 **/*.[Gg][Ii][Ff]
 **/*.[Hh][Ee][Ii][Cc]
 **/*.[Hh][Ee][Ii][Ff]

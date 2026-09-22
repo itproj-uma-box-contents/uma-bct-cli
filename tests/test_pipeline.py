@@ -117,7 +117,7 @@ class PipelineTest(unittest.TestCase):
     # Process the current input.
     def process(self, pipeline):
         with (
-            patch("uma_bct.pipeline.load_input_image", return_value=self.image),
+            patch("uma_bct.pipeline.prepare_input_image", return_value=contextlib.nullcontext(self.image)),
             patch("uma_bct.pipeline.create_full_image_box", return_value=self.full_box),
             contextlib.redirect_stderr(io.StringIO()),
         ):

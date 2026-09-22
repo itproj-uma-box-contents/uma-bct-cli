@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -54,11 +54,18 @@ class InputImage:
     file_path: Path
     width: int
     height: int
+    processing_file_path: Path | None = field(default=None, compare=False, repr=False)
 
     # Validate the newly created value.
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
             raise ValueError("Input-image dimensions must be positive.")
+
+    @property
+    def readable_file_path(self) -> Path:
+        """Return a normalized working copy when the source needs one."""
+
+        return self.processing_file_path or self.file_path
 
 
 @dataclass(frozen=True)

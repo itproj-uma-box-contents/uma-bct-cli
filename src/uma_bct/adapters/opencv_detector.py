@@ -22,7 +22,7 @@ from ..constants import (
     MIN_WIDTH_FRACTION,
 )
 from ..domain import BoundingBox, DetectedRegion, InputImage
-from ..imaging import read_image, sort_in_rows, suppress_overlaps
+from ..imaging import read_input_image, sort_in_rows, suppress_overlaps
 
 DETECTION_MAX_DIMENSION = 1400
 INTERNAL_CONFIDENCE_FLOOR = 0.45
@@ -250,4 +250,4 @@ class OpenCVBoxDetector:
 
     # Detect boxes in the current image.
     def detect(self, image: InputImage) -> list[DetectedRegion]:
-        return detect_regions(read_image(image.file_path))
+        return detect_regions(read_input_image(image))
