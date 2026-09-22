@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-RECORD_IDENTIFIER = re.compile(r"^[^\s].{0,255}\S$", re.IGNORECASE | re.ASCII)
+RECORD_IDENTIFIER = re.compile(r"^[^\s](?:.{0,255}\S)?$", re.IGNORECASE | re.ASCII)
 KNOWN_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_/])((?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4}|[0-9]{2}/[0-9]+))(?![A-Za-z0-9_/])",
     re.IGNORECASE | re.ASCII,
