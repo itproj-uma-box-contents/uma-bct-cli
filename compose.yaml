@@ -4,6 +4,8 @@ services:
   ollama:
     image: ollama/ollama:0.30.8@sha256:05b6fe5143ed006d6d4abd39bdd575f962a5822bdf81e6fbb5e6894eb984ab9c
     restart: unless-stopped
+    environment:
+      OLLAMA_NO_CLOUD: "1"
     volumes:
       - ollama-models:/root/.ollama
     healthcheck:
@@ -22,6 +24,7 @@ services:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_NO_CLOUD: "1"
       UMA_BCT_MODEL: ${UMA_BCT_MODEL:-qwen3-vl:8b-instruct-q4_K_M}
     entrypoint: ["/bin/sh", "-c"]
     command: ['ollama pull "$${UMA_BCT_MODEL}"']
@@ -39,6 +42,7 @@ services:
     environment:
       HOME: /tmp
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_NO_CLOUD: "1"
       UMA_BCT_ALLOW_CONTAINER_OLLAMA: "1"
     volumes:
       - ./inputs:/data/inputs:ro

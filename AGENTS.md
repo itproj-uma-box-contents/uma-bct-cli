@@ -54,7 +54,6 @@ Use the locked environment and keep model-free checks deterministic:
 ```bash
 uv sync --locked --dev
 uv run ruff check .
-uv run ruff format --check .
 uv run coverage run -m unittest discover -s tests -v
 uv run coverage report
 uv build

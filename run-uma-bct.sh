@@ -6,8 +6,12 @@ PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-INPUTS="$ROOT/inputs"
-OUTPUTS="$ROOT/outputs"
+FRIENDLY_INPUTS="$ROOT/Add Photos Here"
+FRIENDLY_OUTPUTS="$ROOT/Results"
+LEGACY_INPUTS="$ROOT/inputs"
+LEGACY_OUTPUTS="$ROOT/outputs"
+INPUTS=""
+OUTPUTS=""
 RUNTIME="$ROOT/.uma-bct-runtime"
 CONSTRAINTS="$ROOT/client-constraints.txt"
 APP_ENV="$RUNTIME/app"
@@ -19,11 +23,228 @@ OLLAMA_VERSION="0.30.8"
 MINIMUM_OLLAMA_VERSION="$OLLAMA_VERSION"
 OLLAMA_RELEASE_URL="https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION"
 MINIMUM_GLIBC_VERSION="2.28"
+OLLAMA_LOG="$RUNTIME/ollama.log"
+OLLAMA_PID=""
+APP_PID=""
+LAUNCH_LOCK="$ROOT/.uma-bct-launcher.lock"
+LAUNCH_LOCK_HELD=0
+LAUNCH_LOCK_IDENTITY=""
 
 fail() {
     printf '\nUMA BCT could not continue: %s\n' "$1" >&2
     exit 2
 }
+
+directory_has_data() {
+    directory=$1
+    [ ! -L "$directory" ] || fail "$directory must not be a symbolic link."
+    [ -e "$directory" ] || return 1
+    [ -d "$directory" ] || fail "$directory must be a directory."
+    [ -r "$directory" ] && [ -x "$directory" ] || fail "$directory could not be inspected safely."
+    for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        if [ "$(basename -- "$entry")" = ".uma-bct.lock" ] && verified_results_lock "$entry"; then
+            continue
+        fi
+        return 0
+    done
+    return 1
+}
+
+verified_results_lock() {
+    lock_path=$1
+    [ -f "$lock_path" ] && [ ! -L "$lock_path" ] && [ -r "$lock_path" ] || return 1
+    link_count=$({ stat -c '%h' "$lock_path" 2>/dev/null || stat -f '%l' "$lock_path" 2>/dev/null || true; })
+    [ "$link_count" = "1" ] || return 1
+    line_count=$(wc -l <"$lock_path" | awk '{print $1}') || return 1
+    [ "$line_count" = "1" ] || return 1
+    lock_content=$(LC_ALL=C sed -n '1,$p' "$lock_path" 2>/dev/null) || return 1
+    case "$lock_content" in
+        *"
+"*) return 1 ;;
+    esac
+    printf '%s\n' "$lock_content" | LC_ALL=C grep -Exq '\{"schema_version": 1, "pid": [1-9][0-9]*\}'
+}
+
+path_identity() {
+    stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1" 2>/dev/null
+}
+
+read_launcher_owner() {
+    owner_path=$1
+    [ -f "$owner_path" ] && [ ! -L "$owner_path" ] && [ -r "$owner_path" ] || return 1
+    owner_links=$({ stat -c '%h' "$owner_path" 2>/dev/null || stat -f '%l' "$owner_path" 2>/dev/null || true; })
+    [ "$owner_links" = "1" ] || return 1
+    owner_value=$(LC_ALL=C sed -n '1,$p' "$owner_path" 2>/dev/null) || return 1
+    case "$owner_value" in
+        ''|0*|*[!0-9]*) return 1 ;;
+    esac
+    [ "$(wc -l <"$owner_path" | awk '{print $1}')" = "1" ] || return 1
+    [ "$(wc -c <"$owner_path" | awk '{print $1}')" -eq "$((${#owner_value} + 1))" ] || return 1
+    printf '%s\n' "$owner_value"
+}
+
+select_data_directories() {
+    friendly_data=0
+    legacy_data=0
+    if directory_has_data "$FRIENDLY_INPUTS" || directory_has_data "$FRIENDLY_OUTPUTS"; then
+        friendly_data=1
+    fi
+    if directory_has_data "$LEGACY_INPUTS" || directory_has_data "$LEGACY_OUTPUTS"; then
+        legacy_data=1
+    fi
+    if [ "$friendly_data" -eq 1 ] && [ "$legacy_data" -eq 1 ]; then
+        fail "Private data exists in both '$FRIENDLY_INPUTS' / '$FRIENDLY_OUTPUTS' and '$LEGACY_INPUTS' / '$LEGACY_OUTPUTS'. Keep only one layout; files were not merged or moved."
+    fi
+    if [ "$legacy_data" -eq 1 ]; then
+        INPUTS=$LEGACY_INPUTS
+        OUTPUTS=$LEGACY_OUTPUTS
+    else
+        INPUTS=$FRIENDLY_INPUTS
+        OUTPUTS=$FRIENDLY_OUTPUTS
+    fi
+}
+
+reserve_bundle() {
+    if ! mkdir -m 700 "$LAUNCH_LOCK" 2>/dev/null; then
+        [ -d "$LAUNCH_LOCK" ] && [ ! -L "$LAUNCH_LOCK" ] || \
+            fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
+        stale_lock_identity=$(path_identity "$LAUNCH_LOCK") || \
+            fail "The launcher reservation identity could not be inspected: $LAUNCH_LOCK"
+        owner_file="$LAUNCH_LOCK/pid"
+        entry_count=$(find "$LAUNCH_LOCK" -mindepth 1 -maxdepth 1 -print 2>/dev/null | wc -l | awk '{print $1}') || \
+            fail "The launcher reservation could not be inspected: $LAUNCH_LOCK"
+        [ "$entry_count" = "1" ] || fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
+        owner_pid=$(read_launcher_owner "$owner_file") || \
+            fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
+        stale_owner_identity=$(path_identity "$owner_file") || \
+            fail "The launcher reservation owner identity could not be inspected: $owner_file"
+        if kill -0 "$owner_pid" 2>/dev/null || ps -p "$owner_pid" >/dev/null 2>&1; then
+            fail "This extracted UMA BCT folder is already running. Wait for the other launcher to finish: $ROOT"
+        fi
+        recovery="$ROOT/.uma-bct-lock-release-launcher-recovery-$$.tmp"
+        [ ! -e "$recovery" ] && [ ! -L "$recovery" ] || \
+            fail "The launcher reservation recovery path already exists: $recovery"
+        if ! mv "$LAUNCH_LOCK" "$recovery" 2>/dev/null; then
+            fail "The launcher reservation changed during recovery: $LAUNCH_LOCK"
+        fi
+        moved_lock_identity=$(path_identity "$recovery" 2>/dev/null || true)
+        moved_owner_identity=$(path_identity "$recovery/pid" 2>/dev/null || true)
+        moved_owner=$(read_launcher_owner "$recovery/pid" 2>/dev/null || true)
+        if [ "$moved_lock_identity" != "$stale_lock_identity" ] || \
+            [ "$moved_owner_identity" != "$stale_owner_identity" ] || \
+            [ "$moved_owner" != "$owner_pid" ]
+        then
+            if [ ! -e "$LAUNCH_LOCK" ] && [ ! -L "$LAUNCH_LOCK" ]; then
+                mv "$recovery" "$LAUNCH_LOCK" 2>/dev/null || true
+            fi
+            fail "The launcher reservation changed during recovery and was not removed: $LAUNCH_LOCK"
+        fi
+        rm -f "$recovery/pid"
+        rmdir "$recovery" || fail "The stale launcher reservation recovery was not empty: $recovery"
+        if ! mkdir -m 700 "$LAUNCH_LOCK" 2>/dev/null; then
+            fail "Another launcher won the reservation recovery race: $ROOT"
+        fi
+    fi
+    LAUNCH_LOCK_IDENTITY=$(path_identity "$LAUNCH_LOCK") || \
+        fail "The new launcher reservation identity could not be inspected: $LAUNCH_LOCK"
+    LAUNCH_LOCK_HELD=1
+    owner_temporary="$LAUNCH_LOCK/.pid-$$.tmp"
+    if ! printf '%s\n' "$$" >"$owner_temporary"; then
+        fail "The launcher reservation owner could not be written: $LAUNCH_LOCK"
+    fi
+    mv "$owner_temporary" "$LAUNCH_LOCK/pid" || \
+        fail "The launcher reservation owner could not be published: $LAUNCH_LOCK"
+}
+
+release_bundle() {
+    [ "$LAUNCH_LOCK_HELD" -eq 1 ] || return 0
+    LAUNCH_LOCK_HELD=0
+    [ -n "$LAUNCH_LOCK_IDENTITY" ] || return 0
+    [ -d "$LAUNCH_LOCK" ] && [ ! -L "$LAUNCH_LOCK" ] || return 0
+    current_identity=$(path_identity "$LAUNCH_LOCK" 2>/dev/null || true)
+    [ "$current_identity" = "$LAUNCH_LOCK_IDENTITY" ] || return 0
+    release_path="$ROOT/.uma-bct-lock-release-launcher-$$.tmp"
+    [ ! -e "$release_path" ] && [ ! -L "$release_path" ] || return 0
+    mv "$LAUNCH_LOCK" "$release_path" 2>/dev/null || return 0
+    moved_identity=$(path_identity "$release_path" 2>/dev/null || true)
+    if [ "$moved_identity" != "$LAUNCH_LOCK_IDENTITY" ]; then
+        [ -e "$LAUNCH_LOCK" ] || [ -L "$LAUNCH_LOCK" ] || \
+            mv "$release_path" "$LAUNCH_LOCK" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$release_path/pid" 2>/dev/null || true
+    rm -f "$release_path/.pid-$$.tmp" 2>/dev/null || true
+    rmdir "$release_path" 2>/dev/null || true
+    LAUNCH_LOCK_IDENTITY=""
+}
+
+process_is_running() {
+    checked_pid=$1
+    kill -0 "$checked_pid" 2>/dev/null || return 1
+    process_state=$(ps -o stat= -p "$checked_pid" 2>/dev/null | awk 'NR == 1 { print $1 }')
+    case "$process_state" in
+        ''|Z*) return 1 ;;
+    esac
+    return 0
+}
+
+stop_process_bounded() {
+    owned_pid=$1
+    signal_name=$2
+    process_is_running "$owned_pid" || return 0
+    kill -"$signal_name" "$owned_pid" 2>/dev/null || true
+    countdown=50
+    while [ "$countdown" -gt 0 ] && process_is_running "$owned_pid"; do
+        sleep 0.1
+        countdown=$((countdown - 1))
+    done
+    if process_is_running "$owned_pid"; then
+        kill -KILL "$owned_pid" 2>/dev/null || true
+    fi
+}
+
+stop_owned_ollama() {
+    [ -n "$OLLAMA_PID" ] || return 0
+    owned_pid=$OLLAMA_PID
+    OLLAMA_PID=""
+    stop_process_bounded "$owned_pid" TERM
+    wait "$owned_pid" 2>/dev/null || true
+}
+
+stop_foreground_cli() {
+    [ -n "$APP_PID" ] || return 0
+    owned_pid=$APP_PID
+    APP_PID=""
+    stop_process_bounded "$owned_pid" TERM
+    wait "$owned_pid" 2>/dev/null || true
+}
+
+cleanup() {
+    stop_foreground_cli
+    stop_owned_ollama
+    release_bundle
+}
+
+forward_interrupt() {
+    exit_code=$1
+    signal_name=$2
+    if [ -n "$APP_PID" ]; then
+        owned_pid=$APP_PID
+        kill -"$signal_name" "$owned_pid" 2>/dev/null || true
+        countdown=50
+        while [ "$countdown" -gt 0 ] && process_is_running "$owned_pid"; do
+            sleep 0.1
+            countdown=$((countdown - 1))
+        done
+    fi
+    exit "$exit_code"
+}
+
+trap cleanup EXIT
+trap 'forward_interrupt 129 HUP' HUP
+trap 'forward_interrupt 130 INT' INT
+trap 'forward_interrupt 143 TERM' TERM
 
 has_input_images() {
     for image in "$INPUTS"/*; do
@@ -38,10 +259,8 @@ has_input_images() {
 }
 
 has_private_data() {
-    if ! private_entry=$(find "$INPUTS" "$OUTPUTS" -mindepth 1 -maxdepth 1 -print -quit); then
-        fail "The inputs and outputs folders could not be inspected safely."
-    fi
-    [ -n "$private_entry" ]
+    directory_has_data "$FRIENDLY_INPUTS" || directory_has_data "$FRIENDLY_OUTPUTS" || \
+        directory_has_data "$LEGACY_INPUTS" || directory_has_data "$LEGACY_OUTPUTS"
 }
 
 open_folder() {
@@ -59,7 +278,13 @@ download_script() {
     has_private_data && fail "Private files appeared before online preparation finished."
     command -v curl >/dev/null 2>&1 || fail "curl is required for the first run."
     curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 \
-        -LsSf "$url" -o "$destination"
+        -LsSf "$url" -o "$destination" &
+    APP_PID=$!
+    if ! wait "$APP_PID"; then
+        APP_PID=""
+        fail "The verified download did not complete."
+    fi
+    APP_PID=""
     if command -v shasum >/dev/null 2>&1; then
         actual_sha256=$(shasum -a 256 "$destination" | awk '{print $1}')
     elif command -v sha256sum >/dev/null 2>&1; then
@@ -70,12 +295,13 @@ download_script() {
     [ "$actual_sha256" = "$expected_sha256" ] || fail "Download checksum verification failed."
 }
 
-find_ollama() {
+find_ollama_in() {
+    search_root=$1
     for candidate in \
-        "$RUNTIME/ollama/ollama" \
-        "$RUNTIME/ollama/bin/ollama"
+        "$search_root/ollama" \
+        "$search_root/bin/ollama"
     do
-        if [ -x "$candidate" ]; then
+        if [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ]; then
             printf '%s\n' "$candidate"
             return 0
         fi
@@ -83,24 +309,117 @@ find_ollama() {
     return 1
 }
 
+find_ollama() {
+    find_ollama_in "$RUNTIME/ollama"
+}
+
+find_llama_server() {
+    ollama_directory=$(dirname -- "$1")
+    search_root=${2:-"$RUNTIME/ollama"}
+    case "$(uname -s)" in
+        Darwin)
+            candidates="$ollama_directory/llama-server
+$search_root/lib/ollama/llama-server"
+            ;;
+        Linux)
+            candidates="$search_root/lib/ollama/llama-server
+$ollama_directory/../lib/ollama/llama-server"
+            ;;
+    esac
+    printf '%s\n' "$candidates" | while IFS= read -r candidate; do
+        if [ -f "$candidate" ] && [ ! -L "$candidate" ] && [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            break
+        fi
+    done
+}
+
+select_ollama_port() {
+    "$APP_PYTHON" -c '
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+'
+}
+
+ollama_is_healthy() {
+    OLLAMA_HEALTH_PORT=$ollama_port "$APP_PYTHON" -c '
+import http.client
+import os
+
+connection = http.client.HTTPConnection("127.0.0.1", int(os.environ["OLLAMA_HEALTH_PORT"]), timeout=0.5)
+try:
+    connection.request("GET", "/api/version")
+    response = connection.getresponse()
+    raise SystemExit(0 if response.status == 200 else 1)
+finally:
+    connection.close()
+' >/dev/null 2>&1
+}
+
+start_owned_ollama() {
+    [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
+    [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
+    if ! : >"$OLLAMA_LOG"; then
+        fail "The Ollama runtime log could not be prepared: $OLLAMA_LOG"
+    fi
+    for attempt in 1 2 3; do
+        ollama_port=$(select_ollama_port || true)
+        case "$ollama_port" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        [ "$ollama_port" -gt 0 ] && [ "$ollama_port" -le 65535 ] || continue
+        OLLAMA_HOST="http://127.0.0.1:$ollama_port"
+        export OLLAMA_HOST
+        printf 'Starting the isolated Ollama service (attempt %s of 3)...\n' "$attempt"
+        "$OLLAMA" serve >>"$OLLAMA_LOG" 2>&1 &
+        OLLAMA_PID=$!
+
+        deadline=$(($(date +%s) + 30))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if ollama_is_healthy && kill -0 "$OLLAMA_PID" 2>/dev/null; then
+                sleep 1
+                if [ "$(date +%s)" -lt "$deadline" ] && \
+                    kill -0 "$OLLAMA_PID" 2>/dev/null && ollama_is_healthy
+                then
+                    return 0
+                fi
+            fi
+            kill -0 "$OLLAMA_PID" 2>/dev/null || break
+            sleep 1
+        done
+        stop_owned_ollama
+    done
+    fail "Ollama did not start after three attempts. Review the runtime log at $OLLAMA_LOG"
+}
+
 ollama_version_is_supported() {
-    current_version=$("$1" --version 2>&1 | awk '
-        match($0, /[0-9]+\.[0-9]+\.[0-9]+/) {
-            version = substr($0, RSTART, RLENGTH)
-        }
-        END { print version }
-    ')
-    awk -v current="$current_version" -v minimum="$MINIMUM_OLLAMA_VERSION" '
-        BEGIN {
-            split(current, found, ".")
-            split(minimum, required, ".")
-            for (part = 1; part <= 3; part++) {
-                if ((found[part] + 0) > (required[part] + 0)) exit 0
-                if ((found[part] + 0) < (required[part] + 0)) exit 1
-            }
-            exit 0
-        }
-    '
+    "$APP_PYTHON" -c '
+import os
+import re
+import subprocess
+import sys
+
+environment = os.environ.copy()
+environment["OLLAMA_HOST"] = "http://127.0.0.1:1"
+try:
+    result = subprocess.run(
+        [sys.argv[1], "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=5,
+        check=False,
+        env=environment,
+    )
+except (OSError, subprocess.SubprocessError):
+    raise SystemExit(1)
+versions = re.findall(r"\d+\.\d+\.\d+", result.stdout)
+found = tuple(map(int, versions[-1].split("."))) if versions else ()
+required = tuple(map(int, sys.argv[2].split(".")))
+raise SystemExit(0 if found >= required else 1)
+' "$1" "$MINIMUM_OLLAMA_VERSION"
 }
 
 require_supported_glibc() {
@@ -171,20 +490,56 @@ install_ollama() {
     esac
     ollama_archive="$RUNTIME/$ollama_archive_name"
     ollama_directory="$RUNTIME/ollama"
+    ollama_staging="$RUNTIME/ollama-install"
+    ollama_previous="$RUNTIME/ollama-previous"
     download_script \
         "$OLLAMA_RELEASE_URL/$ollama_archive_name" \
         "$ollama_archive" \
         "$ollama_archive_sha256"
-    rm -rf "$ollama_directory"
-    mkdir -m 700 "$ollama_directory"
+    [ ! -L "$ollama_staging" ] || fail "The Ollama staging path must not be a symbolic link."
+    [ ! -L "$ollama_previous" ] || fail "The Ollama recovery path must not be a symbolic link."
+    rm -rf "$ollama_staging"
+    mkdir -m 700 "$ollama_staging"
     if [ "$ollama_archive_type" = "gzip" ]; then
-        tar -xzf "$ollama_archive" -C "$ollama_directory"
+        tar -xzf "$ollama_archive" -C "$ollama_staging" &
     else
         "$APP_PYTHON" "$ROOT/extract_ollama_archive.py" \
-            "$ollama_archive" "$ollama_directory"
+            "$ollama_archive" "$ollama_staging" &
     fi
+    APP_PID=$!
+    if ! wait "$APP_PID"; then
+        APP_PID=""
+        fail "The verified Ollama archive could not be extracted."
+    fi
+    APP_PID=""
     rm -f "$ollama_archive"
-    chmod -R go-rwx "$ollama_directory"
+    chmod -R go-rwx "$ollama_staging"
+    staged_ollama=$(find_ollama_in "$ollama_staging" || true)
+    staged_llama_server=""
+    [ -z "$staged_ollama" ] || staged_llama_server=$(find_llama_server "$staged_ollama" "$ollama_staging")
+    [ -n "$staged_ollama" ] && [ -n "$staged_llama_server" ] && \
+        ollama_version_is_supported "$staged_ollama" || \
+        fail "The staged Ollama runtime is incomplete or unsupported. Runtime log: $OLLAMA_LOG"
+
+    rm -rf "$ollama_previous"
+    if [ -d "$ollama_directory" ]; then
+        mv "$ollama_directory" "$ollama_previous"
+    fi
+    if mv "$ollama_staging" "$ollama_directory"; then
+        rm -rf "$ollama_previous"
+    else
+        [ ! -d "$ollama_previous" ] || mv "$ollama_previous" "$ollama_directory" || true
+        fail "The staged Ollama runtime could not be installed. Runtime log: $OLLAMA_LOG"
+    fi
+}
+
+recover_ollama_promotion() {
+    ollama_directory="$RUNTIME/ollama"
+    ollama_previous="$RUNTIME/ollama-previous"
+    [ ! -L "$ollama_previous" ] || fail "The Ollama recovery path must not be a symbolic link."
+    if [ ! -e "$ollama_directory" ] && [ -d "$ollama_previous" ]; then
+        mv "$ollama_previous" "$ollama_directory"
+    fi
 }
 
 install_uv() {
@@ -229,9 +584,13 @@ case "$(uname -m)" in
     *) fail "This computer architecture is not supported by UMA BCT." ;;
 esac
 
+select_data_directories
+reserve_bundle
+
 for directory in \
     "$INPUTS" "$OUTPUTS" "$RUNTIME" "$RUNTIME/bin" \
-    "$RUNTIME/uv-cache" "$RUNTIME/python" "$APP_ENV" "$RUNTIME/ollama"
+    "$RUNTIME/uv-cache" "$RUNTIME/python" "$APP_ENV" "$RUNTIME/ollama" \
+    "$RUNTIME/ollama-install" "$RUNTIME/ollama-previous"
 do
     [ ! -L "$directory" ] || fail "$directory must not be a symbolic link."
     [ ! -e "$directory" ] || [ -d "$directory" ] || fail "$directory must be a directory."
@@ -256,7 +615,7 @@ for variable in $(env | sed -n 's/^\(UV_[A-Za-z0-9_]*\)=.*/\1/p'); do
     unset "$variable"
 done
 unset PYTHONHOME PYTHONPATH VIRTUAL_ENV PIP_INDEX_URL PIP_EXTRA_INDEX_URL 2>/dev/null || true
-unset OLLAMA_DOWNLOAD_URL OLLAMA_INSTALL_DIR OLLAMA_NO_START 2>/dev/null || true
+unset OLLAMA_HOST OLLAMA_DOWNLOAD_URL OLLAMA_INSTALL_DIR OLLAMA_NO_START 2>/dev/null || true
 unset TAR_OPTIONS GZIP XZ_OPT ZSTD_CLEVEL ZSTD_NBTHREADS 2>/dev/null || true
 
 UV="$RUNTIME/bin/uv"
@@ -265,7 +624,7 @@ UV="$RUNTIME/bin/uv"
 uv_version=$({ "$UV" --version 2>/dev/null || true; } | awk '{print $2}')
 if [ "$uv_version" != "$BUNDLED_UV_VERSION" ]; then
     [ "$private_data_present" -eq 0 ] || \
-        fail "Move private files out of inputs and outputs before repairing the local runtime."
+        fail "Move private files out of '$INPUTS' and '$OUTPUTS' before repairing the local runtime."
     install_uv
 fi
 [ -x "$UV" ] || fail "The local Python runtime could not be installed."
@@ -276,7 +635,6 @@ export UV_CACHE_DIR="$RUNTIME/uv-cache"
 export UV_PYTHON_INSTALL_DIR="$RUNTIME/python"
 export UV_DEFAULT_INDEX="https://pypi.org/simple"
 export UV_NO_CONFIG=1
-export OLLAMA_HOST="http://127.0.0.1:11434"
 export OLLAMA_NO_CLOUD=1
 unset UMA_BCT_ALLOW_REMOTE_OLLAMA UMA_BCT_ALLOW_CONTAINER_OLLAMA 2>/dev/null || true
 
@@ -288,43 +646,43 @@ if [ "$private_data_present" -eq 0 ]; then
     "$UV" pip install --no-config --offline --no-deps --python "$APP_PYTHON" "$wheel"
 else
     [ -x "$APP_PYTHON" ] || \
-        fail "Move private files out of inputs and outputs before repairing the application environment."
+        fail "Move private files out of '$INPUTS' and '$OUTPUTS' before repairing the application environment."
     [ -f "$APP_CLI" ] && [ ! -L "$APP_CLI" ] || \
-        fail "Move private files out of inputs and outputs before repairing the application environment."
+        fail "Move private files out of '$INPUTS' and '$OUTPUTS' before repairing the application environment."
     "$UV" pip install --no-config --offline --no-deps --reinstall \
         --python "$APP_PYTHON" "$wheel"
 fi
 [ -x "$APP_CLI" ] || fail "The application could not be installed."
 
+recover_ollama_promotion
 OLLAMA=$(find_ollama || true)
-if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA"; then
-    [ "$private_data_present" -eq 0 ] || \
-        fail "Move private files out of inputs and outputs before installing or updating Ollama."
+LLAMA_SERVER=""
+[ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
+if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA" || [ -z "$LLAMA_SERVER" ]; then
+    [ "$private_data_present" -eq 0 ] || fail \
+        "The local Ollama runtime is incomplete or unsupported; both ollama and llama-server are required. Move private files out of '$INPUTS' and '$OUTPUTS', then run this launcher again to repair it. Runtime log: $OLLAMA_LOG"
     install_ollama
     OLLAMA=$(find_ollama || true)
+    LLAMA_SERVER=""
+    [ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
 fi
-[ -n "$OLLAMA" ] || fail "Ollama could not be installed."
-ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated."
+[ -n "$OLLAMA" ] || fail "Ollama could not be installed. Runtime log: $OLLAMA_LOG"
+ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated. Runtime log: $OLLAMA_LOG"
+[ -n "$LLAMA_SERVER" ] || fail "Ollama's llama-server companion is missing. Runtime log: $OLLAMA_LOG"
 
-if ! "$OLLAMA" list >/dev/null 2>&1; then
-    printf 'Starting Ollama...\n'
-    nohup "$OLLAMA" serve >>"$RUNTIME/ollama.log" 2>&1 &
-    attempts=0
-    until "$OLLAMA" list >/dev/null 2>&1; do
-        attempts=$((attempts + 1))
-        [ "$attempts" -lt 30 ] || fail "Ollama did not start."
-        sleep 1
-    done
-fi
+start_owned_ollama
 
 cd "$ROOT"
 if [ "$private_data_present" -eq 0 ]; then
     has_private_data && fail "Private files appeared before online preparation finished."
     printf 'Checking the application and model. The first model download is large...\n'
-    if ! "$APP_CLI" setup >"$RUNTIME/setup.json"
-    then
+    "$APP_CLI" setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" >"$RUNTIME/setup.json" &
+    APP_PID=$!
+    if ! wait "$APP_PID"; then
+        APP_PID=""
         fail "Automatic setup failed. See the message above and run this launcher again."
     fi
+    APP_PID=""
 fi
 
 if ! has_input_images; then
@@ -339,16 +697,19 @@ has_input_images || fail "No supported photos were found in $INPUTS"
 
 printf 'Transcribing the photos...\n'
 set +e
-"$APP_CLI" --force
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
+APP_PID=$!
+wait "$APP_PID"
 status=$?
+APP_PID=""
 set -e
 
 if [ "$status" -eq 0 ]; then
     open_folder "$OUTPUTS"
-    printf '\nFinished. Review %s/catalogue.csv\n' "$OUTPUTS"
+    printf '\nFinished. Review the newest Batch folder in %s\n' "$OUTPUTS"
 elif [ "$status" -eq 1 ]; then
     open_folder "$OUTPUTS"
-    printf '\nProcessing was incomplete. Review the newest run manifest in %s.\n' "$OUTPUTS" >&2
-    printf 'The catalogue may be partial, absent, or retained from the previous run.\n' >&2
+    printf '\nProcessing was incomplete. Review the newest Batch folder in %s.\n' "$OUTPUTS" >&2
+    printf 'Its Catalogue may be partial or absent; Run Details records every outcome.\n' >&2
 fi
 exit "$status"

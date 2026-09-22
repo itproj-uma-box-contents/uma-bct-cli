@@ -1,5 +1,6 @@
 import io
 import os
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from unittest.mock import patch
 from scripts.check_release_artifacts import inspect_artifact, unsafe_reason
 from scripts.extract_ollama_archive import extract_archive, validate_link_target
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class IdentityDecompressor:
     def stream_reader(self, source):
@@ -18,6 +21,27 @@ class IdentityDecompressor:
 
 
 class ArtifactSafetyTest(unittest.TestCase):
+    def test_custom_managed_results_are_ignored_by_git_and_docker_contexts(self):
+        managed_paths = (
+            "custom-results/Batch 2026-09-11 14-30-05/Run Progress.json",
+            "custom-results/Batch 2026-09-11 14-30-05/Run Details.json",
+            "custom-results/Batch 2026-09-11 14-30-05/Box Images/private.png",
+            "custom-results/Batch 2026-09-11 14-30-05/.working/private.png",
+            "custom-input/SHELF.JPG",
+            "custom-model/MODEL.GGUF",
+        )
+        for path in managed_paths:
+            with self.subTest(path=path):
+                result = subprocess.run(
+                    ["git", "check-ignore", "--no-index", "--quiet", path], cwd=ROOT, check=False
+                )
+                self.assertEqual(result.returncode, 0)
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        for pattern in ("**/Run Progress.json", "**/Run Details.json", "**/Box Images", "**/.working"):
+            self.assertIn(pattern, dockerignore)
+        self.assertIn("**/*.[Jj][Pp][Gg]", dockerignore)
+        self.assertIn("*.[Gg][Gg][Uu][Ff]", dockerignore)
+
     def test_ollama_extractor_accepts_archive_internal_link_targets(self):
         cases = (
             (tarfile.SYMTYPE, "bin/ollama-link", "ollama"),
@@ -61,10 +85,32 @@ class ArtifactSafetyTest(unittest.TestCase):
             self.assertEqual((root / "extracted/bin/ollama-hardlink").read_bytes(), b"ollama")
 
     def test_release_scan_accepts_code_and_rejects_private_content(self):
-        for name in ("Archive box photos/shelf.jpg", "package/models/model.gguf", "outputs/catalogue.csv", "../escape.py"):
+        for name in (
+            "Archive box photos/shelf.jpg",
+            "package/models/model.gguf",
+            "outputs/catalogue.csv",
+            ".uma-bct.lock",
+            ".uma-bct-lock-release-private.tmp",
+            ".uma-bct-rollback-private.csv.tmp",
+            ".uma-bct-launcher.lock/pid",
+            ".uma-bct-lock-release-results-deadbeef.tmp/",
+            "custom-results/Run Progress.json",
+            "custom-results/Run Details.json",
+            "../escape.py",
+        ):
             with self.subTest(name=name):
                 self.assertIsNotNone(unsafe_reason(name))
         self.assertIsNone(unsafe_reason("uma_bct/cli.py"))
+        self.assertIsNone(
+            unsafe_reason("Archive Box Transcription/Add Photos Here/", regular=True, is_directory=True)
+        )
+        self.assertIsNone(unsafe_reason("Archive Box Transcription/Results/", regular=True, is_directory=True))
+        self.assertIsNotNone(
+            unsafe_reason(
+                "Archive Box Transcription/Add Photos Here/", regular=True, is_directory=True, size=13
+            )
+        )
+        self.assertIsNotNone(unsafe_reason("Archive Box Transcription/Add Photos Here/shelf.jpg"))
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -76,6 +122,12 @@ class ArtifactSafetyTest(unittest.TestCase):
                 archive.writestr("inputs/shelf.jpg", "private")
             self.assertEqual(inspect_artifact(safe), [])
             self.assertIn("private", inspect_artifact(private)[0])
+
+            duplicate = root / "duplicate.zip"
+            with zipfile.ZipFile(duplicate, "w") as archive:
+                archive.writestr("uma_bct/cli.py", "private first copy")
+                archive.writestr("uma_bct/cli.py", "expected second copy")
+            self.assertIn("duplicate", inspect_artifact(duplicate)[0])
 
     def test_linux_ollama_extractor_accepts_files_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:

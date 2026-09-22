@@ -76,7 +76,6 @@ def qwen_record(unit="4", **changes):
         "typed": ["1960.0009", f"Unit {unit}"],
         "handwritten": [],
         "auxiliary_annotations": [],
-        "transcription_confidence": 95,
     }
     value.update(changes)
     return value
@@ -179,7 +178,7 @@ class PipelineTest(unittest.TestCase):
         self.assertNotEqual(result.records[0].box.box_id, result.records[1].box.box_id)
 
     def test_invalid_crop_response_still_uses_full_image_recovery(self):
-        invalid_crop = json.dumps({"boxes": [qwen_record(transcription_confidence=True)]})
+        invalid_crop = json.dumps({"boxes": [qwen_record(typed="not an array")]})
         recovered = qwen_record("7", position="centre")
 
         result, request_count = self.process_qwen_responses(invalid_crop, json.dumps({"boxes": [recovered]}))

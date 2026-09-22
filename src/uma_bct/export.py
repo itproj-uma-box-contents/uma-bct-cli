@@ -14,6 +14,7 @@ from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
+from .atomic import rename_new_file
 from .catalogue import append_flag, map_catalogue_record
 from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS
 from .path_safety import check_path
@@ -98,6 +99,7 @@ def catalogue_records(
     minimum_confidence: int = 80,
     catalogue_path: str | Path | None = None,
     detect_missing_boxes: bool = True,
+    trusted_crop_links: bool = False,
 ) -> list[dict[str, str | int]]:
     """Build catalogue rows sorted by box prefix and unit number."""
 
@@ -116,6 +118,7 @@ def catalogue_records(
                     box_result.box.image_file_path,
                     catalogue_path=catalogue_path,
                     additional_flags=(FALLBACK_USED_FLAG,) if used_fallback else (),
+                    trusted_crop_link=trusted_crop_links,
                 )
             )
 
@@ -129,13 +132,13 @@ def catalogue_records(
     )
     for record in records:
         identity = (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
-        flags = str(record["Review Notes"])
+        flags = str(record["Review Flags"])
         if identity[0] and identity[1] and title_counts[identity] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
         confidence = record["Transcription Confidence (0-100)"]
         if confidence != "" and int(confidence) < minimum_confidence:
             flags = append_flag(flags, LOW_CONFIDENCE_FLAG)
-        record["Review Notes"] = flags
+        record["Review Flags"] = flags
 
     return records
 
@@ -147,6 +150,7 @@ def export_catalogue(
     minimum_confidence: int = 80,
     replace_existing: bool = True,
     detect_missing_boxes: bool = True,
+    trusted_crop_links: bool = False,
 ) -> list[dict[str, str | int]]:
     """Safely write the UTF-8 CSV and return its rows."""
 
@@ -155,7 +159,7 @@ def export_catalogue(
         raise ValueError("Catalogue output must end in .csv.")
 
     records = catalogue_records(
-        results, minimum_confidence=minimum_confidence, catalogue_path=destination, detect_missing_boxes=detect_missing_boxes
+        results, minimum_confidence=minimum_confidence, catalogue_path=destination, detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links,
     )
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
@@ -183,8 +187,12 @@ def export_catalogue(
         check_path(destination, "Catalogue output")
         if destination.exists() and not replace_existing:
             raise FileExistsError(f"Catalogue output already exists: {destination}")
-        temporary_path.replace(destination)
-    except Exception:
+        if replace_existing:
+            temporary_path.replace(destination)
+        else:
+            rename_new_file(temporary_path, destination, existing_message=f"Catalogue output already exists: {destination}")
+            temporary_path = None
+    except BaseException:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise

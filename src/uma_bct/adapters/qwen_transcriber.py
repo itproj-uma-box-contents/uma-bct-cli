@@ -2,6 +2,15 @@
 
 The prompt keeps IDs, printed text, and handwriting separate. The code checks
 every field and sends uncertain text for human review.
+
+The model is never asked to self-report a confidence score -- that measures
+whether the model believes its answer, not whether it is right, and LLMs are
+poorly calibrated at that kind of self-assessment. Instead, ``confidence`` is
+derived from the model's own token log-probabilities during generation (see
+``qwen_response.box_token_confidences``): the probability it assigned to the
+single least-confident character it emitted for that box. A box whose score
+could not be computed is treated as zero confidence and sent for review
+rather than guessing a plausible-looking number.
 """
 
 from __future__ import annotations
@@ -12,7 +21,7 @@ from typing import Any, TypedDict
 
 from ..domain import Box, BoxTranscription
 from ..ports import VisionModelClient
-from .qwen_response import check_text, check_text_lines, response_boxes
+from .qwen_response import box_token_confidences, check_text, check_text_lines, response_boxes
 
 MAX_TRANSCRIPTION_RECORDS = 100
 MAX_TEXT_LINES_PER_FIELD = 100
@@ -34,9 +43,7 @@ FIELDS = """For each reported physical box, provide:
 - "handwritten": every handwritten visual line, top to bottom. Include a
   handwritten unit number in its complete visual line.
 - "auxiliary_annotations": explicit condition/content labels that are not the
-  record origin, identifier, or Unit number. Use [] when absent.
-- "transcription_confidence": an integer from 0 to 100 for the accuracy and
-  completeness of the unit, printed text, and handwriting together."""
+  record origin, identifier, or Unit number. Use [] when absent."""
 
 RULES = """Rules:
 - Copy identifiers and prefixes character by character; do not restrict them
@@ -48,9 +55,6 @@ RULES = """Rules:
   words. Do not expand abbreviations.
 - Never translate, summarize, describe, or classify handwriting. Do not insert
   model comments such as "handwritten annotation" or "signature".
-- Use confidence below 80 whenever a visible character may be wrong or missing.
-  An empty transcription may score highly only when no relevant text is visible.
-- Base confidence on transcription, not position, crop boundaries, or detection.
 - Work left to right and top row first. Never merge two physical boxes.
 - Return exactly one JSON object containing one top-level "boxes" array; never
   return separate JSON objects.
@@ -94,17 +98,8 @@ SCHEMA = {
                         "maxItems": MAX_TEXT_LINES_PER_FIELD,
                         "items": {"type": "string", "maxLength": MAX_TEXT_CHARACTERS},
                     },
-                    "transcription_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
                 },
-                "required": [
-                    "position",
-                    "record_identifiers",
-                    "unit",
-                    "typed",
-                    "handwritten",
-                    "auxiliary_annotations",
-                    "transcription_confidence",
-                ],
+                "required": ["position", "record_identifiers", "unit", "typed", "handwritten", "auxiliary_annotations"],
             },
         }
     },
@@ -125,7 +120,6 @@ class BoxRecord(TypedDict):
     typed: list[str]
     handwritten: list[str]
     auxiliary_annotations: list[str]
-    transcription_confidence: int
 
 
 def validated_lines(item: dict[str, Any], index: int, field: str) -> list[str]:
@@ -137,22 +131,14 @@ def validated_lines(item: dict[str, Any], index: int, field: str) -> list[str]:
 def validate_record(item: Any, index: int) -> BoxRecord:
     if not isinstance(item, dict):
         raise TypeError(f"box {index} must be an object")
-    record: BoxRecord = {
+    return {
         "position": check_text(item, box_number=index, field="position", maximum_characters=MAX_TEXT_CHARACTERS),
         "record_identifiers": validated_lines(item, index, "record_identifiers"),
         "unit": check_text(item, box_number=index, field="unit", maximum_characters=MAX_TEXT_CHARACTERS),
         "typed": validated_lines(item, index, "typed"),
         "handwritten": validated_lines(item, index, "handwritten"),
         "auxiliary_annotations": validated_lines(item, index, "auxiliary_annotations"),
-        "transcription_confidence": 0,
     }
-    confidence = item.get("transcription_confidence")
-    if not isinstance(confidence, int) or isinstance(confidence, bool):
-        raise TypeError(f"box {index}.transcription_confidence must be an integer")
-    if not 0 <= confidence <= 100:
-        raise ValueError(f"box {index}.transcription_confidence must be between 0 and 100")
-    record["transcription_confidence"] = confidence
-    return record
 
 
 def validate_transcription_result(value: Any) -> list[BoxRecord]:
@@ -174,18 +160,20 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 {RULES}"""
 
 
-def to_domain(box: Box, item: BoxRecord) -> BoxTranscription:
+def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTranscription:
     values = (*item["typed"], *item["handwritten"], *item["auxiliary_annotations"])
     return BoxTranscription(
         box_id=box.box_id,
         position=item["position"] or box.position,
-        confidence=item["transcription_confidence"],
+        # An unavailable score is zero confidence, forced onto review, never
+        # a guessed plausible-looking number.
+        confidence=token_confidence if token_confidence is not None else 0,
         record_identifiers=tuple(item["record_identifiers"]),
         unit_number=item["unit"],
         typed_lines=tuple(item["typed"]),
         handwritten_lines=tuple(item["handwritten"]),
         auxiliary_annotations=tuple(item["auxiliary_annotations"]),
-        needs_review=any(not value.strip() or UNCERTAINTY.search(value) for value in values),
+        needs_review=(token_confidence is None or any(not value.strip() or UNCERTAINTY.search(value) for value in values)),
     )
 
 
@@ -195,10 +183,12 @@ class QwenTextTranscriber:
     name: str = "qwen"
 
     def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
-        records = validate_transcription_result(
-            self.client.query(box.image_file_path, prompt, SCHEMA, validator=validate_transcription_result)
+        response = self.client.query(
+            box.image_file_path, prompt, SCHEMA, validator=validate_transcription_result, logprobs=True
         )
-        return [to_domain(box, record) for record in records]
+        records = validate_transcription_result(response.value)
+        confidences = box_token_confidences(response.token_logprobs, len(records))
+        return [to_domain(box, record, confidence) for record, confidence in zip(records, confidences, strict=True)]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
         return self.request(box, crop_question(box))

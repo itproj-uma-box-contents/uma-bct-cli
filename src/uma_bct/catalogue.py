@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .constants import (
     AMBIGUOUS_IDENTIFIER_FLAG,
@@ -31,6 +31,22 @@ from .identity import (
 )
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
+
+
+class CatalogueRow(dict[str, str | int]):
+    """A row with read-only lookup aliases for the v0.1 draft headings."""
+
+    LOOKUP_ALIASES = {
+        "Transcription Confidence (0-100)": "Transcription Confidence (%)",
+        "Review Notes": "Review Flags",
+        "Crop Image": "Cropped Box Image Link",
+    }
+
+    def __missing__(self, key: str) -> str | int:
+        alias = self.LOOKUP_ALIASES.get(key)
+        if alias is None:
+            raise KeyError(key)
+        return self[alias]
 
 
 def escape_spreadsheet_formula(value: str) -> str:
@@ -131,9 +147,23 @@ def image_reference(image_file_path: str | Path, catalogue_path: str | Path | No
         # Windows cannot represent a relative path across drive letters.
         raise ValueError(
             "The catalogue and review-crop directory must be on the same drive "
-            "so Crop Image values remain relative. Choose --path-to-box-images on "
+            "so cropped-image link values remain relative. Choose --path-to-box-images on "
             "the catalogue drive."
         ) from None
+
+
+def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Path) -> str:
+    """Build a formula only for a validated, managed ``Box Images`` path."""
+
+    reference = image_reference(image_file_path, catalogue_path)
+    relative = PurePosixPath(reference)
+    if relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "Box Images":
+        raise ValueError("Managed crop links must point to one file inside Box Images.")
+    if ".." in relative.parts or any(not part or any(ord(character) < 32 for character in part) for part in relative.parts):
+        raise ValueError("Managed crop link contains an unsafe path component.")
+    target = reference.replace('"', '""')
+    label = relative.name.replace('"', '""')
+    return f'=HYPERLINK("{target}","{label}")'
 
 
 def description(transcription: BoxTranscription) -> str:
@@ -144,10 +174,9 @@ def description(transcription: BoxTranscription) -> str:
     return escape_spreadsheet_formula("; ".join(visible))
 
 
-# fmt: off
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
-                         catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = ()) -> dict[str, str | int]:
-# fmt: on
+                         catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
+                         trusted_crop_link: bool = False) -> dict[str, str | int]:
     """Build one catalogue row from a transcription."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
@@ -164,15 +193,21 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
+    title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
+    if trusted_crop_link:
+        if catalogue_path is None:
+            raise ValueError("A catalogue path is required for a trusted crop link.")
+        image = trusted_crop_hyperlink(image_file_path, catalogue_path)
+    else:
+        image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
         "Unit Type": escape_spreadsheet_formula(identifier),
         "Unit Number": unit_number,
         "Description": description(transcription),
         "Date Range": "",
-        "Transcription Confidence (0-100)": transcription.confidence,
-        "Review Notes": "; ".join(flags),
-        "Crop Image": image,
+        "Transcription Confidence (%)": transcription.confidence,
+        "Review Flags": "; ".join(flags),
+        "Cropped Box Image Link": image,
     }
-    return {column: record[column] for column in OUTPUT_COLUMNS}
+    return CatalogueRow({column: record[column] for column in OUTPUT_COLUMNS})
