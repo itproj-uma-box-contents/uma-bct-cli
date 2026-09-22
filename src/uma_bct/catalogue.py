@@ -193,7 +193,6 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")
