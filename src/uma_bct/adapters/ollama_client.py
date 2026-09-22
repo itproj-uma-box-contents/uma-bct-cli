@@ -389,7 +389,7 @@ class OllamaVisionModel:
 
     def query(
         self,
-        image_path: Path,
+        image_path: Path | None,
         prompt: str,
         schema: dict[str, Any],
         *,
@@ -400,7 +400,8 @@ class OllamaVisionModel:
             with closing(self.client()) as client:
                 stream = client.chat(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt, "images": [str(image_path)]}],
+                    messages=[{"role": "user", "content": prompt, "images": [str(image_path)]}] if image_path
+                        else [{"role": "user", "content": prompt}],
                     format=schema,
                     think=DEFAULT_THINK,
                     options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length},
