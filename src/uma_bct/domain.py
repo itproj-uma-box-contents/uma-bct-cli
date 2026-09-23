@@ -93,6 +93,7 @@ class BoxTranscription:
     unit_number: str = ""
     typed_lines: tuple[str, ...] = ()
     handwritten_lines: tuple[str, ...] = ()
+    dates: tuple[str, ...] = ()
     auxiliary_annotations: tuple[str, ...] = ()
     needs_review: bool = False
 
@@ -110,12 +111,17 @@ class BoxTranscription:
             "unit": self.unit_number,
             "typed": list(self.typed_lines),
             "handwritten": list(self.handwritten_lines),
+            "dates": list(self.dates),
             "auxiliary_annotations": list(self.auxiliary_annotations),
             "transcription_confidence": self.confidence,
         }
         if self.needs_review:
             value["needs_review"] = True
         return value
+
+    def get_handwritten_text(self) -> str:
+            """Gets the handwritten text as a single string."""
+            return "\n".join(self.handwritten_lines)
 
 
 @dataclass(frozen=True)

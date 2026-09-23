@@ -11,10 +11,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from dataclasses import replace
 
 from .domain import Box, BoxResult, DetectedRegion, InputImage
 from .imaging import create_full_image_box, load_input_image
-from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
+from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber, DateDetector
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]
@@ -36,6 +37,7 @@ class ImageResult:
     actual_detector: str
     fallback_path: tuple[str, ...]
     transcriber: str
+    date_detector: str
     status: ImageStatus
     records: tuple[BoxResult, ...]
     warnings: tuple[str, ...] = ()
@@ -72,6 +74,7 @@ class BoxTranscriptionPipeline:
     detector: BoxDetector
     cropper: BoxCropper
     transcriber: TextTranscriber
+    date_detector: DateDetector
     work_directory: Path
     minimum_detector_confidence: float = 0.60
     fallback_detector: BoxDetector | None = None
@@ -163,6 +166,17 @@ class BoxTranscriptionPipeline:
         if not returned:
             warnings.append(f"{label} returned no boxes.")
             return []
+
+        #extect dates for each transcription
+        for i in range(len(returned)):
+            transcription = returned[i]
+            try:
+                dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
+            except Exception as error:
+                warnings.append(f"{label} failed to extract dates: {warning_text(error)}")
+                continue
+            returned[i] = replace(transcription, dates=dates)
+
         return observations_from_response(box, returned, 0)
 
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
@@ -180,6 +194,17 @@ class BoxTranscriptionPipeline:
                 warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} returned no boxes.")
                 unresolved += 1
                 continue
+
+            #extect dates for each transcription
+            for i in range(len(returned)):
+                transcription = returned[i]
+                try:
+                    dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
+                except Exception as error:
+                    warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} failed to extract dates: {warning_text(error)}")
+                    continue
+                returned[i] = replace(transcription, dates=dates)
+
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
@@ -237,6 +262,7 @@ class BoxTranscriptionPipeline:
             actual_detector=actual_detector,
             fallback_path=route,
             transcriber=self.transcriber.name,
+            date_detector=self.date_detector.name,
             status=status,
             records=tuple(BoxResult(item.box, item.transcription) for item in consolidated),
             warnings=tuple(warnings),

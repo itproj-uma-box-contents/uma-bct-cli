@@ -208,9 +208,10 @@ class RegexDateDetector:
     Custom date formats are prioritised over automatically generated formats 
     Dates with another date or date range are not returned, but two partly overlapping potential dates/date ranges are both returned 
     """
-    def extract_dates(self, string: str) -> list[str]:
+    def extract_dates(self, string: str) -> tuple[str, ...]:
         dates: list[re.Match]  = []
         matches: list[re.Match] = []
+        name: str = "regex"
 
         #find all possible dates, added in order given in documentation:
 
@@ -246,5 +247,5 @@ class RegexDateDetector:
         #sort back to original order
         dates.sort(key = lambda x: x.start())
 
-        return [self.standardise_match_result(date) for date in dates]
+        return (self.standardise_match_result(date) for date in dates)
 

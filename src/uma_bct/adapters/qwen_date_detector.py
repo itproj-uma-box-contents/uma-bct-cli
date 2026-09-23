@@ -84,7 +84,7 @@ DATE_RESULT_SCHEMA = {
     "required": ["dates", "date_ranges"],
 }
 
-def parse_qwen_result(result: dict[str, any]) -> list[str]:
+def parse_qwen_result(result: dict[str, any]) -> tuple[str, ...]:
     results_with_position = []
     for date_result in result["dates"]:
         results_with_position.append((f"{date_result.get("day", "")}/{date_result.get("month", "")}/{date_result.get("year", "")}", date_result['starting_index']))
@@ -93,12 +93,13 @@ def parse_qwen_result(result: dict[str, any]) -> list[str]:
         results_with_position.append((f"{date_result['start_date'].get("day", "")}/{date_result['start_date'].get("month", "")}/{date_result['start_date'].get("year", "")} - {date_result['end_date'].get("day", "")}/{date_result['end_date'].get("month", "")}/{date_result['end_date'].get("year", "")}", date_result['starting_index']))
 
     results_with_position.sort(key = lambda x: x[1])
-    return [result[0] for result in results_with_position]
+    return (result[0] for result in results_with_position)
 
 @dataclass(frozen=True)
 class QwenDateDetector:
     client: VisionModelClient
+    name: str = "qwen"
 
-    def extract_dates(self, string: str) -> list[str]:
+    def extract_dates(self, string: str) -> tuple[str, ...]:
         result = self.client.query(None, DATE_EXTRACTION_PROMPT+string, DATE_RESULT_SCHEMA, validator=None, logprobs=False)
         return(parse_qwen_result(result.value))

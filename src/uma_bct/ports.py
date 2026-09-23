@@ -36,6 +36,14 @@ class TextTranscriber(Protocol):
     def transcribe(self, box: Box) -> list[BoxTranscription]: ...
 
 
+class DateDetector(Protocol):
+    """Read the text from one box."""
+
+    name: str
+
+    def extract_dates(self, text: str) -> tuple[str, ...]: ...
+
+
 @runtime_checkable
 class FullImageTextTranscriber(Protocol):
     """Read a full image when crop processing fails."""
