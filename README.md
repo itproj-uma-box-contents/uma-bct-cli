@@ -17,6 +17,9 @@ local; it does not upload them.
 3. Put the photos directly in `Add Photos Here`, then return to the launcher
    and press Enter if prompted.
 
+The launcher prints the photo folder's full path. If it does not open
+automatically, open that path yourself before pressing Enter.
+
 The terminal shows the current photo, completed counts, and a "still working"
 update every 30 seconds during long model requests. When the run ends, a short
 report shows photo outcomes, catalogue rows, elapsed time, and the Results

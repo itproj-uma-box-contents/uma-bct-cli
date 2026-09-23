@@ -266,9 +266,15 @@ has_private_data() {
 open_folder() {
     [ "${UMA_BCT_NO_OPEN:-}" = "1" ] && return 0
     case "$(uname -s)" in
-        Darwin) open "$1" >/dev/null 2>&1 || true ;;
-        *) command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1 || true ;;
+        Darwin)
+            if open -a Finder "$1" >/dev/null 2>&1; then return 0; fi
+            if open "$1" >/dev/null 2>&1; then return 0; fi
+            ;;
+        *)
+            if command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1; then return 0; fi
+            ;;
     esac
+    printf 'Could not open the folder automatically. Open it in your file manager: %s\n' "$1" >&2
 }
 
 download_script() {
@@ -686,7 +692,7 @@ if [ "$private_data_present" -eq 0 ]; then
 fi
 
 if ! has_input_images; then
-    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened.\n'
+    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to %s.\n' "$INPUTS"
     open_folder "$INPUTS"
     if [ -t 0 ]; then
         printf 'Press Enter after the photos have finished copying: '

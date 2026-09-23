@@ -512,6 +512,40 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertIn('"$APP_CLI" --human --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
         self.assertIn('"--human --path-to-inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
 
+    # Check that macOS asks Finder for the photo folder and gives its path if opening fails.
+    @unittest.skipIf(os.name == "nt", "POSIX shell fixture")
+    def test_posix_folder_open_reports_a_finder_failure(self):
+        source = (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8")
+        start = source.index("open_folder() {")
+        function = source[start:source.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "Add Photos Here"
+            folder.mkdir()
+            calls = root / "open-calls.txt"
+            write_executable(root / "uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
+            write_executable(
+                root / "open",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >>\"$TEST_OPEN_CALLS\"\n"
+                "[ \"${TEST_OPEN_FAIL:-0}\" != 1 ]\n",
+            )
+            environment = os.environ.copy()
+            environment.pop("UMA_BCT_NO_OPEN", None)
+            environment.update(PATH=f"{root}:/usr/bin:/bin", TEST_FOLDER=str(folder), TEST_OPEN_CALLS=str(calls))
+            command = f"set -eu\n{function}\nopen_folder \"$TEST_FOLDER\""
+
+            opened = subprocess.run(["sh", "-c", command], env=environment, capture_output=True, text=True)
+            self.assertEqual(opened.returncode, 0, opened.stderr)
+            self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["-a", "Finder", str(folder)])
+            self.assertEqual(opened.stderr, "")
+
+            calls.unlink()
+            environment["TEST_OPEN_FAIL"] = "1"
+            failed = subprocess.run(["sh", "-c", command], env=environment, capture_output=True, text=True)
+            self.assertEqual(failed.returncode, 0, failed.stderr)
+            self.assertIn(str(folder), failed.stderr)
+            self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["-a", "Finder", str(folder), str(folder)])
+
     # Check that POSIX launcher ignores a foreign default service and cleans up its child.
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_ignores_a_foreign_default_service_and_cleans_up_its_child(self):
@@ -667,6 +701,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 2)
             self.assertIn("No supported photos", result.stderr)
+            self.assertIn(str((root / "Add Photos Here").resolve()), result.stdout)
             self.assertTrue((root / ".uma-bct-runtime/ollama/ollama").is_file())
             self.assertTrue((root / ".uma-bct-runtime/ollama/llama-server").is_file())
             self.assertFalse((root / ".uma-bct-runtime/ollama-install").exists())
