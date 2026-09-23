@@ -126,3 +126,14 @@ uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
 Without it, every existing direct-CLI default, alias, and Docker workflow stays
 available.
+
+Current limitations:
+- It depends on Qwen accurately transcribing all printed text and preserving reading order.
+- It only recognizes unit labels based on Unit, Box, Box No., Box Number, and No..
+- Labels such as Carton 7, Container 7, or Package 7 are not recognized as unit numbers.
+- Values such as Unit 8A, ranges, or unclear/crossed-out unit numbers are not accepted as ordinary unit numbers.
+- Box 7 of 9 exports 0007; the total count (9) is intentionally discarded.
+- Only malformed dotted standard-looking IDs are explicitly detected. Malformed UMA-style or slash-style values may still be accepted as arbitrary identifiers.
+- It cannot semantically distinguish an incidental phrase such as Research Unit 8 from an actual unit claim; Unit 8 would be removed.
+- Printed logos, headings, and labels such as Creator: are included because the rule is “all typed label text.”
+- Line breaks are converted to spaces in the exported cell rather than preserved.
