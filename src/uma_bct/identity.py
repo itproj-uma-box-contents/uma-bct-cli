@@ -54,6 +54,7 @@ AMBIGUOUS_UNIT = re.compile(
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:./|&+()\[\]{}\"'“”‘’\-–—]*$")
 
 
+# Collect the visual lines.
 def visual_lines(lines: Iterable[str]) -> Iterable[str]:
     """Yield each supplied line, including embedded line breaks."""
 
@@ -61,6 +62,7 @@ def visual_lines(lines: Iterable[str]) -> Iterable[str]:
         yield from value.splitlines()
 
 
+# Normalize the identifier.
 def normalise_identifier(identifier: str) -> str:
     """Trim an identifier while preserving its spelling."""
 
@@ -68,6 +70,7 @@ def normalise_identifier(identifier: str) -> str:
     return value.upper() if value.casefold().startswith("uma-") else value
 
 
+# Normalize the unit claim.
 def normalise_unit_claim(value: str) -> str | None:
     """Return a four-digit unit number when the value is valid."""
 
@@ -100,6 +103,7 @@ def standalone_identifier(line: str) -> str | None:
     return value
 
 
+# Handle the identifier only line step.
 def identifier_only_line(line: str) -> bool:
     """Check whether a line contains only identifier-like text."""
 
@@ -154,6 +158,7 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(identifiers), malformed
 
 
+# Collect the identifier evidence.
 def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     """Return identifiers found in visible transcription lines."""
 
@@ -172,6 +177,7 @@ def unit_type_text(lines: Iterable[str]) -> str:
     return " ".join(parts)
 
 
+# Keep the unit evidence behavior together.
 @dataclass(frozen=True)
 class UnitEvidence:
     """Collected unit candidates and whether they conflict."""
@@ -206,6 +212,42 @@ def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterabl
     return UnitEvidence(frozenset(candidates), ambiguous or len(candidates) > 1)
 
 
+def resolve_unit_claim(
+    structured_unit: str, typed_lines: Iterable[str], handwritten_lines: Iterable[str]
+) -> tuple[str, bool]:
+    """Fill one omitted unit from exact raw text and say if review is needed.
+
+    An explicit structured value is never replaced. A missing value can be
+    recovered only from an explicit printed Unit or Box label, when every
+    recognised raw occurrence names the same unit and none of the surrounding
+    text marks it as uncertain or crossed out. Bare or handwritten numbers are
+    too easy to misinterpret without looking at the image, so they stay blank.
+    The returned digits preserve the visible spelling instead of inventing
+    padding that was not present in the transcription.
+    """
+
+    if structured_unit.strip():
+        return structured_unit, False
+
+    typed = tuple(visual_lines(typed_lines))
+    handwritten = tuple(visual_lines(handwritten_lines))
+    evidence = collect_unit_evidence(typed, handwritten)
+    if not evidence.candidates:
+        return "", False
+    if evidence.ambiguous:
+        return "", True
+
+    normalized = next(iter(evidence.candidates))
+    for line in typed:
+        for match in CONTEXTUAL_UNIT.finditer(line):
+            if match.group(1).zfill(4) == normalized:
+                return match.group(1), True
+
+    # Other evidence can still force review, but it is not promoted without an
+    # explicit printed label.
+    return "", True
+
+
 def identity_only_line(line: str, structured_identifiers: Iterable[str], structured_unit: str) -> bool:
     """Check whether a line contains only the box ID or unit number."""
 
@@ -215,12 +257,14 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
         if RECORD_IDENTIFIER.fullmatch(value.strip())
     }
 
+    # Remove the identifier.
     def remove_identifier(match: re.Match[str]) -> str:
         value = normalise_identifier(match.group(1)).casefold()
         return " " if value in identifier_keys else match.group(0)
 
     normalized_unit = normalise_unit_claim(structured_unit)
 
+    # Remove the unit.
     def remove_unit(match: re.Match[str]) -> str:
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
 

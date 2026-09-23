@@ -6,10 +6,12 @@ from uma_bct.domain import BoundingBox, Box, BoxResult, BoxTranscription, InputI
 from uma_bct.pipeline import ImageResult
 
 
+# Build a sample image.
 def make_image(path: Path | None = None) -> InputImage:
     return InputImage(path or Path("shelf.jpg"), width=200, height=300)
 
 
+# Build a sample box.
 def make_box(*, image: InputImage | None = None, box_id: str = "shelf:001", bbox: BoundingBox | None = None,
              crop_path: Path | None = None, confidence: float = 0.95) -> Box:
     source = image or make_image()
@@ -23,6 +25,7 @@ def make_box(*, image: InputImage | None = None, box_id: str = "shelf:001", bbox
     )
 
 
+# Build a sample transcription.
 def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",), unit: str = "4",
                        typed: tuple[str, ...] | None = None, handwritten: tuple[str, ...] = (),
                        auxiliary: tuple[str, ...] = (), confidence: int = 95, needs_review: bool = False) -> BoxTranscription:
@@ -39,6 +42,7 @@ def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",
     )
 
 
+# Build a sample result.
 def make_result(*records: BoxResult, requested: str = "qwen", actual: str = "qwen",
                 route: tuple[str, ...] = ("qwen",), status: str = "complete", warnings: tuple[str, ...] = ()) -> ImageResult:
     image = records[0].box.source_image if records else make_image()

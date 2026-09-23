@@ -15,12 +15,16 @@ from scripts.extract_ollama_archive import extract_archive, validate_link_target
 ROOT = Path(__file__).resolve().parents[1]
 
 
+# Keep the identity decompressor behavior together.
 class IdentityDecompressor:
+    # Expose the source as a readable stream.
     def stream_reader(self, source):
         return source
 
 
+# Group the artifact safety checks.
 class ArtifactSafetyTest(unittest.TestCase):
+    # Check that custom managed results are ignored by git and docker contexts.
     def test_custom_managed_results_are_ignored_by_git_and_docker_contexts(self):
         managed_paths = (
             "custom-results/Batch 2026-09-11 14-30-05/Run Progress.json",
@@ -28,6 +32,7 @@ class ArtifactSafetyTest(unittest.TestCase):
             "custom-results/Batch 2026-09-11 14-30-05/Box Images/private.png",
             "custom-results/Batch 2026-09-11 14-30-05/.working/private.png",
             "custom-input/SHELF.JPG",
+            "custom-input/SHELF.DNG",
             "custom-model/MODEL.GGUF",
         )
         for path in managed_paths:
@@ -40,8 +45,10 @@ class ArtifactSafetyTest(unittest.TestCase):
         for pattern in ("**/Run Progress.json", "**/Run Details.json", "**/Box Images", "**/.working"):
             self.assertIn(pattern, dockerignore)
         self.assertIn("**/*.[Jj][Pp][Gg]", dockerignore)
+        self.assertIn("**/*.[Dd][Nn][Gg]", dockerignore)
         self.assertIn("*.[Gg][Gg][Uu][Ff]", dockerignore)
 
+    # Check that Ollama extractor accepts archive internal link targets.
     def test_ollama_extractor_accepts_archive_internal_link_targets(self):
         cases = (
             (tarfile.SYMTYPE, "bin/ollama-link", "ollama"),
@@ -56,6 +63,7 @@ class ArtifactSafetyTest(unittest.TestCase):
             with self.subTest(entry_type=entry_type, linkname=linkname):
                 validate_link_target(member)
 
+    # Check that the code extracts safe archive internal links.
     @unittest.skipIf(os.name == "nt", "safe-link extraction needs POSIX links")
     def test_extracts_safe_archive_internal_links(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -84,9 +92,11 @@ class ArtifactSafetyTest(unittest.TestCase):
             self.assertEqual((root / "extracted/bin/ollama-link").read_bytes(), b"ollama")
             self.assertEqual((root / "extracted/bin/ollama-hardlink").read_bytes(), b"ollama")
 
+    # Check that release scan accepts code and rejects private content.
     def test_release_scan_accepts_code_and_rejects_private_content(self):
         for name in (
             "Archive box photos/shelf.jpg",
+            "Archive box photos/shelf.dng",
             "package/models/model.gguf",
             "outputs/catalogue.csv",
             ".uma-bct.lock",
@@ -129,11 +139,13 @@ class ArtifactSafetyTest(unittest.TestCase):
                 archive.writestr("uma_bct/cli.py", "expected second copy")
             self.assertIn("duplicate", inspect_artifact(duplicate)[0])
 
+    # Check that Linux Ollama extractor accepts files and rejects traversal.
     def test_linux_ollama_extractor_accepts_files_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive_path = root / "ollama.tar.zst"
 
+            # Build the archive fixture used by this check.
             def write_archive(name, *, entry_type=tarfile.REGTYPE, linkname=""):
                 buffer = io.BytesIO()
                 with tarfile.open(fileobj=buffer, mode="w") as archive:

@@ -36,9 +36,12 @@ that launcher started.
 
 ## Photos and results
 
-Supported input types are `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, and
-`.webp`. Adding a photo to `Add Photos Here` is a local file copy, not an
-internet upload.
+Supported input types are `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.webp`,
+`.heic`, `.heif`, `.dng`, `.avif`, `.bmp`, and `.gif`. Extensions are matched
+case-insensitively. HEIC and HEIF containers use their primary image; animated
+or multi-page formats use the first frame or page. DNG files are developed from
+the full RAW image rather than a lower-resolution embedded preview. Adding a
+photo to `Add Photos Here` is a local file copy, not an internet upload.
 
 Every run creates or resumes a readable batch:
 

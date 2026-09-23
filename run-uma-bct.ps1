@@ -16,10 +16,10 @@ $AppCli = Join-Path $AppEnvironment "Scripts\uma-bct.exe"
 $UvVersion = "0.12.9"
 $UvArchiveUrl = "https://releases.astral.sh/github/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
 $UvArchiveSha256 = "ddbfcee1ac615a0499f6aa97b5ec8ebdf3ee4a7714a48055ec2ba0030e3cf810"
-$OllamaVersion = "0.30.8"
+$OllamaVersion = "0.32.9"
 $MinimumOllamaVersion = [version] $OllamaVersion
 $OllamaArchiveUrl = "https://github.com/ollama/ollama/releases/download/v$OllamaVersion/ollama-windows-amd64.zip"
-$OllamaArchiveSha256 = "c2d26d97e698027329c252629d7113bbc05d874b49960cbb03e93a39ae9fd95c"
+$OllamaArchiveSha256 = "7b4f6ce09c1f2c3b21561b323779beaf3ca3c7012f8e4522605a13cbbb19f0b8"
 $OllamaDirectory = Join-Path $Runtime "ollama"
 $OllamaPrevious = Join-Path $Runtime "ollama-previous"
 $OllamaLog = Join-Path $Runtime "ollama.log"
@@ -28,7 +28,10 @@ $OllamaProcess = $null
 $AppProcess = $null
 $LaunchLockPath = Join-Path $Root ".uma-bct-launcher.lock"
 $LaunchLockStream = $null
-$SupportedExtensions = @(".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp")
+$SupportedExtensions = @(
+    ".avif", ".bmp", ".dng", ".gif", ".heic", ".heif",
+    ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"
+)
 
 function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
     if ($Item.Name -ne ".uma-bct.lock" -or
@@ -670,7 +673,7 @@ try {
         }
 
         if (@(Get-InputImages).Count -eq 0) {
-            Write-Host "Add JPG, PNG, TIF, or WEBP photos to the folder that just opened."
+            Write-Host "Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened."
             Open-LocalFolder $Inputs
             if ([Environment]::UserInteractive) {
                 Read-Host "Press Enter after the photos have finished copying"
