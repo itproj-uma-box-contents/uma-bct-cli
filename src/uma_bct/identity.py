@@ -13,6 +13,12 @@ KNOWN_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_/])((?:UMA-(?:AC|SR)E?-[0-9]{8,9}|[0-9]{4}\.[0-9]{4}|[0-9]{2}/[0-9]+))(?![A-Za-z0-9_/])",
     re.IGNORECASE | re.ASCII,
 )
+# Find a dotted value shaped like YYYY.NNNN so wrong digit counts cannot fall
+# through to the arbitrary-prefix path (for example, 1960.009).
+DOTTED_IDENTIFIER_LOOKALIKE = re.compile(
+    r"(?<![A-Za-z0-9_/])([0-9]{4}\.[0-9]+)(?![A-Za-z0-9_/])",
+    re.IGNORECASE | re.ASCII,
+)
 # Remove common label prefixes such as "Record ID:", "Accession Number:", or "Reference:".
 IDENTIFIER_LABEL_PREFIX = re.compile(
     r"^\s*(?:(?:records?\s*(?:set\s*)?(?:identifier|id|number|no)?|"
@@ -26,6 +32,12 @@ UNIT_PREFIX = r"(?:unit|box(?:\s*(?:no\.?|number))?|no\.?)"
 UNIT_NUMBER = re.compile(rf"^(?:{UNIT_PREFIX}\s*[:#-]?\s*)?([0-9]{{1,4}})$", re.IGNORECASE | re.ASCII)
 # Find a unit label embedded in a transcription line and capture its number.
 CONTEXTUAL_UNIT = re.compile(rf"(?<!\w)(?:{UNIT_PREFIX})\s*[:#-]?\s*([0-9]{{1,4}})(?!\w)", re.IGNORECASE | re.ASCII)
+# Match the complete printed unit-number phrase so it can be omitted from Unit Type.
+# A sequence total such as "of 9" describes the photographed run, not the unit type.
+PRINTED_UNIT_TEXT = re.compile(
+    rf"(?<!\w)(?:{UNIT_PREFIX})\s*[:#-]?\s*[0-9]{{1,4}}(?!\w)(?:\s+of\s+[0-9]{{1,4}}(?!\w))?",
+    re.IGNORECASE | re.ASCII,
+)
 # Match a line containing an arbitrary identifier prefix followed by a unit label and number.
 PREFIXED_UNIT = re.compile(
     rf"^\s*(?P<prefix>.+?)\s+(?:{UNIT_PREFIX})\s*[:#-]?\s*(?P<number>[0-9]{{1,4}})\s*$", re.IGNORECASE | re.ASCII
@@ -111,6 +123,10 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
         # Known formats remain supported, but arbitrary prefixes are accepted
         # when the label clearly pairs them with a unit number.
         matches = tuple(KNOWN_IDENTIFIER_TOKEN.finditer(line))
+        malformed_dotted = any(
+            KNOWN_IDENTIFIER_TOKEN.fullmatch(match.group(1)) is None for match in DOTTED_IDENTIFIER_LOOKALIKE.finditer(line)
+        )
+        malformed = malformed or malformed_dotted
         legacy_allowed = identifier_only_line(line)
         for match in matches:
             identifier = normalise_identifier(match.group(1))
@@ -121,11 +137,16 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
                 seen.add(key)
                 identifiers.append(identifier)
 
-        if prefixed := prefixed_unit(line):
+        if (prefixed := prefixed_unit(line)) and not malformed_dotted:
             identifier = normalise_identifier(prefixed[0])
             if identifier.casefold() not in {value.casefold() for value in identifiers}:
                 identifiers.append(identifier)
-        elif not matches and index + 1 < len(visible_lines) and CONTEXTUAL_UNIT.search(visible_lines[index + 1]):
+        elif (
+            not matches
+            and not malformed_dotted
+            and index + 1 < len(visible_lines)
+            and CONTEXTUAL_UNIT.search(visible_lines[index + 1])
+        ):
             if identifier := standalone_identifier(line):
                 identifier = normalise_identifier(identifier)
                 if identifier.casefold() not in {value.casefold() for value in identifiers}:
@@ -137,6 +158,18 @@ def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     """Return identifiers found in visible transcription lines."""
 
     return identifier_evidence_details(lines)[0]
+
+
+def unit_type_text(lines: Iterable[str]) -> str:
+    """Return all printed label text except complete unit-number phrases."""
+
+    parts: list[str] = []
+    for line in visual_lines(lines):
+        without_unit = PRINTED_UNIT_TEXT.sub(" ", line)
+        value = " ".join(without_unit.split())
+        if value and IDENTITY_SEPARATORS.fullmatch(value) is None:
+            parts.append(value)
+    return " ".join(parts)
 
 
 @dataclass(frozen=True)

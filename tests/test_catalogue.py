@@ -40,38 +40,116 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(record["Unit Type"], identifier)
         self.assertEqual(record["Unit Number"], "0030")
 
+    def test_builds_unit_type_from_all_printed_label_text(self):
+        box = make_box()
+        cases = (
+            (
+                ("HOME, Roderick Weir", "2008.0036", "Unit 7"),
+                ("2008.0036",),
+                "7",
+                "HOME, Roderick Weir 2008.0036",
+                "0007",
+            ),
+            (
+                (
+                    "THE UNIVERSITY OF MELBOURNE ARCHIVES",
+                    "Creator:",
+                    "Victorian Chamber of Mines",
+                    "107/56",
+                    "Box 7 of 9",
+                ),
+                ("107/56",),
+                "7",
+                "THE UNIVERSITY OF MELBOURNE ARCHIVES Creator: Victorian Chamber of Mines 107/56",
+                "0007",
+            ),
+            (
+                ("BURNET, Sir Frank Macfarlane", "1986.0107 (1989.0034)", "Unit 22"),
+                ("1986.0107", "1989.0034"),
+                "22",
+                "BURNET, Sir Frank Macfarlane 1986.0107 (1989.0034)",
+                "0022",
+            ),
+            (
+                (
+                    "Printing & Allied Trades",
+                    "Employers' Association",
+                    "of Victoria",
+                    "1975.0064 Unit 8",
+                ),
+                ("1975.0064",),
+                "8",
+                "Printing & Allied Trades Employers' Association of Victoria 1975.0064",
+                "0008",
+            ),
+        )
+        for typed, identifiers, unit, expected_type, expected_unit in cases:
+            with self.subTest(expected_type=expected_type):
+                transcription = make_transcription(box, identifiers=identifiers, typed=typed, unit=unit)
+                record = map_catalogue_record(transcription, box.image_file_path)
+                self.assertEqual(record["Unit Type"], expected_type)
+                self.assertEqual(record["Unit Number"], expected_unit)
+
     def test_uses_first_identifier_and_flags_multiple(self):
         box = make_box()
         transcription = make_transcription(
             box, identifiers=("1990.0001", "UMA-SRE-20160038"), typed=("1990.0001; UMA-SRE-20160038", "Unit 30"), unit="30"
         )
         record = map_catalogue_record(transcription, box.image_file_path)
-        self.assertEqual(record["Unit Type"], "1990.0001")
+        self.assertEqual(record["Unit Type"], "1990.0001; UMA-SRE-20160038")
         self.assertEqual(record["Unit Number"], "0030")
         self.assertIn("Multiple identifiers", record["Review Flags"])
 
-    def test_blanks_missing_or_uncorroborated_identity(self):
+    def test_preserves_printed_unit_type_when_identifier_evidence_needs_review(self):
         box = make_box()
         cases = (
-            (make_transcription(box, identifiers=(), typed=("Record origin", "Unit 4")), "Missing identifier"),
-            (make_transcription(box, identifiers=("1960.0009",), typed=("1960.0010", "Unit 4")), "Ambiguous identifier"),
+            (
+                make_transcription(box, identifiers=("1960.0009",), typed=("1960.0010", "Unit 4")),
+                "1960.0010",
+            ),
             (
                 make_transcription(box, identifiers=("1960.009",), typed=("Record ID: 1960.009", "Unit 4")),
-                "Ambiguous identifier",
+                "Record ID: 1960.009",
             ),
         )
-        for transcription, flag in cases:
-            with self.subTest(flag=flag):
+        for transcription, expected_type in cases:
+            with self.subTest(expected_type=expected_type):
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(record["Unit Type"], "")
+                self.assertEqual(record["Unit Type"], expected_type)
                 self.assertEqual(record["Unit Number"], "0004")
-                self.assertIn(flag, record["Review Flags"])
+                self.assertIn("Ambiguous identifier", record["Review Flags"])
+                self.assertIn("Transcription mismatch", record["Review Flags"])
+
+    def test_flags_a_malformed_dotted_identifier_on_the_unit_line(self):
+        box = make_box()
+        transcription = make_transcription(box, identifiers=("1960.009",), typed=("1960.009 Unit 4",), unit="4")
+        record = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(record["Unit Type"], "1960.009")
+        self.assertEqual(record["Unit Number"], "0004")
+        self.assertIn("Ambiguous identifier", record["Review Flags"])
+        self.assertIn("Transcription mismatch", record["Review Flags"])
+
+    def test_accepts_printed_unit_type_without_a_structured_identifier(self):
+        box = make_box()
+        transcription = make_transcription(box, identifiers=(), typed=("Record origin", "Unit 4"))
+        record = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(record["Unit Type"], "Record origin")
+        self.assertEqual(record["Unit Number"], "0004")
+        self.assertNotIn("Missing identifier", record["Review Flags"])
+
+    def test_flags_a_missing_unit_type_when_the_label_only_has_a_unit_number(self):
+        box = make_box()
+        transcription = make_transcription(box, identifiers=(), typed=("Unit 4",))
+        record = map_catalogue_record(transcription, box.image_file_path)
+        self.assertEqual(record["Unit Type"], "")
+        self.assertEqual(record["Unit Number"], "0004")
+        self.assertIn("Missing identifier", record["Review Flags"])
 
     def test_does_not_promote_a_slash_date_from_prose(self):
         box = make_box()
         transcription = make_transcription(box, identifiers=("12/5",), typed=("Meeting 12/5", "Unit 4"))
         record = map_catalogue_record(transcription, box.image_file_path)
-        self.assertEqual(record["Unit Type"], "")
+        self.assertEqual(record["Unit Type"], "Meeting 12/5")
         self.assertEqual(record["Unit Number"], "0004")
         self.assertIn("Transcription mismatch", record["Review Flags"])
 

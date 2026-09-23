@@ -28,6 +28,7 @@ from .identity import (
     identity_only_line,
     normalise_identifier,
     normalise_unit_claim,
+    unit_type_text,
 )
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
@@ -180,10 +181,12 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-    identifier = identifiers[0] if identifiers else ""
+    unit_type = unit_type_text(transcription.typed_lines)
     flags: list[str] = []
-    if not identifiers:
+    if not unit_type:
         flags.append(AMBIGUOUS_IDENTIFIER_FLAG if ambiguous_identifier else MISSING_IDENTIFIER_FLAG)
+    elif ambiguous_identifier:
+        flags.append(AMBIGUOUS_IDENTIFIER_FLAG)
     elif len(identifiers) > 1:
         flags.append(MULTIPLE_IDENTIFIERS_FLAG)
     if unit_flag:
@@ -200,7 +203,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
-        "Unit Type": escape_spreadsheet_formula(identifier),
+        "Unit Type": escape_spreadsheet_formula(unit_type),
         "Unit Number": unit_number,
         "Description": description(transcription),
         "Date Range": "",

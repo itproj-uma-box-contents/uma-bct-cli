@@ -37,9 +37,10 @@ FIELDS = """For each reported physical box, provide:
 - "unit": the visible printed or handwritten box number as digits only. Older
   box numbers may be unpadded. Use "" when it is missing, crossed out, or
   ambiguous.
-- "typed": every printed visual line. Include printed identifiers and complete
-  "<prefix> Unit <number>" lines verbatim even though their parts also appear
-  in structured fields.
+- "typed": every printed visual line in reading order. This text is used to
+  build Unit Type, so include all printed names, headings, identifiers, and
+  complete "<prefix> Unit <number>" lines verbatim even though their parts also
+  appear in structured fields.
 - "handwritten": every handwritten visual line, top to bottom. Include a
   handwritten unit number in its complete visual line.
 - "auxiliary_annotations": explicit condition/content labels that are not the
