@@ -683,25 +683,16 @@ try {
             throw "No supported photos were found in $Inputs"
         }
 
-        Write-Host "Transcribing the photos..."
-        $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
+        # The CLI owns the progress lines and the final client report.
+        $Arguments = "--human --path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
         $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location
     }
 
-    if ($RunStatus -eq 0) {
+    if ($RunStatus -eq 0 -or $RunStatus -eq 1) {
         Open-LocalFolder $Outputs
-        Write-Host "`nFinished. Review the newest Batch folder in $Outputs"
-    } elseif ($RunStatus -eq 1) {
-        Open-LocalFolder $Outputs
-        [Console]::Error.WriteLine(
-            "`nProcessing was incomplete. Review the newest Batch folder in $Outputs."
-        )
-        [Console]::Error.WriteLine(
-            "Its Catalogue may be partial or absent; Run Details records every outcome."
-        )
     }
 } catch [Management.Automation.PipelineStoppedException] {
     [Console]::Error.WriteLine("`nUMA BCT was interrupted.")

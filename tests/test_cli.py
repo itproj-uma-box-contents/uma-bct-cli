@@ -94,6 +94,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(defaults.min_transcription_confidence, 80)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
+        self.assertTrue(parse_args(["--human"]).human)
 
     # Check that confidence options keep their distinct meanings.
     def test_confidence_options_keep_their_distinct_meanings(self):
@@ -547,6 +548,24 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest["configuration"]["minimum_transcription_confidence"], 80)
             self.assertEqual(manifest["configuration"]["minimum_detector_confidence"], 0.6)
             self.assertIn("Processing", progress)
+
+            # The opt-in report uses the same published result without changing JSON mode.
+            human_args = arguments(root, force=True)
+            human_args.human = True
+            human_stdout = io.StringIO()
+            with (
+                patch("uma_bct.batch_runner.build_pipeline", return_value=FakeBatchPipeline()),
+                contextlib.redirect_stdout(human_stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                human_status = run_batch(
+                    human_args, [image], human_args.path_to_outputs,
+                    root / "outputs/catalogue.run.json", preserve_existing_manifest_on_failure=True,
+                )
+            self.assertEqual(human_status, 0)
+            self.assertIn("Finished\nPhotos finished: 1 of 1", human_stdout.getvalue())
+            self.assertIn("Catalogue: 1 rows", human_stdout.getvalue())
+            self.assertNotIn('"schema_version"', human_stdout.getvalue())
 
     # Check that the code continues after one image failure.
     def test_continues_after_one_image_failure(self):

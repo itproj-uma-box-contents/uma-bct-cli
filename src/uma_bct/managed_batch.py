@@ -37,6 +37,7 @@ from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
+from .terminal import TerminalProgress, print_run_summary
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
@@ -1279,6 +1280,7 @@ def process_pending_images(
     progress: dict[str, Any],
     batch_directory: Path,
     pipeline: Any,
+    reporter: TerminalProgress,
 ) -> int:
     processed = 0
     for index, (image_path, item) in enumerate(zip(images, progress["inputs"], strict=True)):
@@ -1296,7 +1298,7 @@ def process_pending_images(
         working_directory.mkdir(mode=0o700, parents=True)
         pipeline.work_directory = working_directory
         verify_source_unchanged(item)
-        print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
+        reporter.photo_started(index + 1, image_path)
         try:
             result = pipeline.process(image_path)
         except Exception as error:
@@ -1306,6 +1308,7 @@ def process_pending_images(
             write_progress(batch_directory, progress)
             cleanup_committed_work(progress, batch_directory, item)
             print(f"Failed {ascii(str(image_path))}: {message}", file=sys.stderr)
+            reporter.photo_finished(index + 1, "failed", 0)
             processed += 1
             continue
 
@@ -1334,6 +1337,7 @@ def process_pending_images(
         cleanup_committed_work(progress, batch_directory, item)
         for warning in updated.warnings:
             print(f"Warning for {ascii(str(image_path))}: {warning_text(warning)}", file=sys.stderr)
+        reporter.photo_finished(index + 1, updated.status, len(updated.records))
         processed += 1
     return processed
 
@@ -1755,7 +1759,15 @@ def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progr
 
 
 def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results_root: Path) -> int:
-    """Run or resume one managed batch and emit exactly one JSON summary."""
+    """Run or resume one managed batch and show its final outcome."""
+
+    with TerminalProgress(len(images)) as reporter:
+        return _run_managed_batch(arguments, images, results_root, reporter)
+
+
+def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], results_root: Path,
+    reporter: TerminalProgress) -> int:
+    """Keep checkpoint, publication, and interruption handling together."""
 
     lock = ResultsRootLock(results_root)
     batch_directory: Path | None = None
@@ -1768,6 +1780,7 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
     interruption_context = managed_interruption_handlers()
     interruption_context.__enter__()
     try:
+        reporter.phase("Checking input photos and saved progress...")
         lock.acquire()
         request_timeout = arguments.request_timeout
         if request_timeout is None:
@@ -1777,6 +1790,7 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             arguments, results_root, snapshot, request_timeout
         )
         if completed is not None:
+            reporter.phase("Checking the completed batch...")
             completed_batch, completed_details = completed
             batch_directory = completed_batch
             validate_sources_and_crops(completed_details, completed_batch, snapshot)
@@ -1794,11 +1808,13 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             assert batch_directory is not None and progress is not None
             if resumed:
                 reused = prepare_resume(progress, batch_directory)
+                reporter.reused(reused)
                 progress["resume_count"] = int(progress.get("resume_count", 0)) + 1
                 if progress.get("phase") == "interrupted":
                     progress["phase"] = progress.pop("interrupted_phase", "processing")
                 write_progress(batch_directory, progress)
 
+            reporter.phase("Checking the local model...")
             pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
             validate_model_resume(progress, model_metadata, batch_directory)
             progress["model"] = model_metadata
@@ -1806,7 +1822,8 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
-                processed = process_pending_images(arguments, images, progress, batch_directory, pipeline)
+                processed = process_pending_images(arguments, images, progress, batch_directory, pipeline, reporter)
+            reporter.phase("Finalizing results...")
             details = finalize_batch(arguments, progress, batch_directory)
             summary = managed_public_summary(
                 details,
@@ -1863,5 +1880,6 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
                 summary["lock_cleanup_error"] = message
             exit_code = 2
 
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    reporter.close()
+    print_run_summary(summary, human=getattr(arguments, "human", False), elapsed_seconds=reporter.elapsed_seconds())
     return exit_code

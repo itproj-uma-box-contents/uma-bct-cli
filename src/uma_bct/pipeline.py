@@ -180,7 +180,7 @@ class BoxTranscriptionPipeline:
         observations: list[ObservedBox] = []
         unresolved = 0
         for index, box in enumerate(boxes, start=1):
-            print(f"Crop {index}/{len(boxes)}: bbox={box.bounding_box.as_xywh()}, hint={box.position}", file=sys.stderr)
+            print(f"Transcribing box {index} of {len(boxes)}...", file=sys.stderr)
             try:
                 returned = self.transcriber.transcribe(box)
             except Exception as error:

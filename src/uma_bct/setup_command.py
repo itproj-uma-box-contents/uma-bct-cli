@@ -16,6 +16,7 @@ from .adapters.ollama_client import DEFAULT_MODEL, OllamaVisionModel
 from .managed_batch import ResultsRootLock
 from .path_safety import check_path, redirected_path_kind
 from .run_artifacts import CatalogueLock
+from .terminal import TerminalProgress
 
 
 # Ensure the directory.
@@ -67,6 +68,18 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
 # Run the setup.
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
     results_directory: Path | None = None) -> int:
+    """Prepare folders and model while showing that a long download is active."""
+
+    with TerminalProgress(None) as reporter:
+        return _run_setup(
+            root=root, model_name=model_name, input_directory=input_directory,
+            results_directory=results_directory, reporter=reporter,
+        )
+
+
+def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | None,
+    results_directory: Path | None, reporter: TerminalProgress) -> int:
+    """Keep the existing setup result and cleanup in one place."""
 
     working_directory = (root or Path.cwd()).absolute()
     inputs = input_directory or working_directory / "inputs"
@@ -86,11 +99,13 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, inpu
     lock: CatalogueLock | ResultsRootLock | None = None
     status = 0
     try:
+        reporter.phase("Checking local folders...")
         validate_setup_layout(inputs, outputs)
         warn_about_permissions(inputs, ensure_directory(inputs))
         warn_about_permissions(outputs, ensure_directory(outputs))
         lock = ResultsRootLock(outputs) if results_directory is not None else CatalogueLock(outputs / "catalogue.csv")
         lock.acquire()
+        reporter.phase("Checking or downloading the local model...")
         OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
         message = safe_error(error)
@@ -108,5 +123,8 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, inpu
                 result.update(status="failed", error=combined[:1000])
                 print(f"Lock cleanup failed: {message}", file=sys.stderr)
                 status = 2
+    if status == 0:
+        reporter.phase("Setup complete.")
+    reporter.close()
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return status

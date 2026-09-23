@@ -238,6 +238,28 @@ class ManagedBatchTest(unittest.TestCase):
                 ["http://127.0.0.1:12000", "http://127.0.0.1:13000"],
             )
 
+    # Check that a resumed launcher report includes reused and newly processed photos.
+    def test_resumed_human_report_uses_final_counts(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            self.run_with(root, ManagedPipeline(interrupt_name="02.jpg"))
+            arguments = managed_arguments(root)
+            arguments.human = True
+            images = sorted(arguments.path_to_inputs.glob("*.jpg"))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                patch("uma_bct.managed_batch.build_pipeline", return_value=ManagedPipeline()),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = run_managed_batch(arguments, images, arguments.results_directory)
+
+            self.assertEqual(status, 0)
+            self.assertIn("Resuming: 1 photo already finished", stderr.getvalue())
+            self.assertIn("Processing photo 2 of 2", stderr.getvalue())
+            self.assertIn("Finished\nPhotos finished: 2 of 2", stdout.getvalue())
+            self.assertIn("Catalogue: 2 rows", stdout.getvalue())
+            self.assertNotIn('"schema_version"', stdout.getvalue())
+
     # Check that changed input blocks resume before pipeline preflight.
     def test_changed_input_blocks_resume_before_pipeline_preflight(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:

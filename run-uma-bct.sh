@@ -695,21 +695,16 @@ if ! has_input_images; then
 fi
 has_input_images || fail "No supported photos were found in $INPUTS"
 
-printf 'Transcribing the photos...\n'
 set +e
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
+# Let the CLI show one readable report while retaining JSON for direct users.
+"$APP_CLI" --human --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
 APP_PID=$!
 wait "$APP_PID"
 status=$?
 APP_PID=""
 set -e
 
-if [ "$status" -eq 0 ]; then
+if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
     open_folder "$OUTPUTS"
-    printf '\nFinished. Review the newest Batch folder in %s\n' "$OUTPUTS"
-elif [ "$status" -eq 1 ]; then
-    open_folder "$OUTPUTS"
-    printf '\nProcessing was incomplete. Review the newest Batch folder in %s.\n' "$OUTPUTS" >&2
-    printf 'Its Catalogue may be partial or absent; Run Details records every outcome.\n' >&2
 fi
 exit "$status"

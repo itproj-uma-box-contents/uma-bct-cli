@@ -17,6 +17,19 @@ local; it does not upload them.
 3. Put the photos directly in `Add Photos Here`, then return to the launcher
    and press Enter if prompted.
 
+The terminal shows the current photo, completed counts, and a "still working"
+update every 30 seconds during long model requests. When the run ends, a short
+report shows photo outcomes, catalogue rows, elapsed time, and the Results
+location. Keep the terminal open until that report appears.
+
+During model setup and photo processing, the CLI asks the operating system to
+prevent automatic idle sleep. It releases that request when the CLI exits. If
+the computer cannot provide this protection, the terminal warns you and the
+run continues. Keep the laptop lid open: manual sleep or low battery can still
+interrupt work. Some screen saver or lock policies may still turn off the
+display while processing continues. If the warning appears, adjust the
+computer's power settings before a long batch.
+
 The first run needs an internet connection because it installs the verified
 private runtime and downloads the large model. The launcher finishes all online
 preparation before asking for photographs. Later runs reuse that runtime and
@@ -125,6 +138,10 @@ Advanced users can prepare custom locations with:
 uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
+
+Direct CLI runs continue to write one JSON summary to stdout, with live
+progress on stderr. Add `--human` to show the same readable final report as
+the launcher instead of JSON.
 
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
 Without it, every existing direct-CLI default, alias, and Docker workflow stays

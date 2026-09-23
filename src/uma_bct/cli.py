@@ -19,6 +19,7 @@ from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECON
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
+from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
@@ -160,6 +161,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create another managed batch for a photo set that is already complete",
     )
+    parser.add_argument("--human", action="store_true", help="show a readable transcription report instead of JSON")
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
@@ -301,7 +303,9 @@ def main(argv: list[str] | None = None) -> int:
             setup_arguments["input_directory"] = arguments.path_to_inputs
         if arguments.results_directory is not None:
             setup_arguments["results_directory"] = arguments.results_directory
-        return run_setup(**setup_arguments)
+        # Keep the computer active while the local model is checked or downloaded.
+        with keep_awake():
+            return run_setup(**setup_arguments)
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
@@ -321,7 +325,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
         if not images:
             parser.error(f"no supported images found in {arguments.path_to_inputs}")
-        return run_managed_batch(arguments, images, arguments.results_directory)
+        # Resume and publication are part of the same protected CLI job.
+        with keep_awake():
+            return run_managed_batch(arguments, images, arguments.results_directory)
 
     output_path = arguments.path_to_outputs
     if output_path.suffix.casefold() != ".csv":
@@ -344,10 +350,11 @@ def main(argv: list[str] | None = None) -> int:
     existing = next((path for path in (output_path, run_manifest) if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
-    return run_batch(
-        arguments,
-        images,
-        output_path,
-        run_manifest,
-        preserve_existing_manifest_on_failure=bool(arguments.force and existing),
-    )
+    with keep_awake():
+        return run_batch(
+            arguments,
+            images,
+            output_path,
+            run_manifest,
+            preserve_existing_manifest_on_failure=bool(arguments.force and existing),
+        )

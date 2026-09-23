@@ -34,6 +34,7 @@ from .run_artifacts import (
     run_directory,
     write_json_atomic,
 )
+from .terminal import TerminalProgress, print_run_summary
 
 
 # Keep the export state behavior together.
@@ -96,20 +97,23 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
 
 
 # Process the images.
-def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]]) -> list[ImageResult]:
+def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]],
+    progress: TerminalProgress) -> list[ImageResult]:
     results: list[ImageResult] = []
-    for image_path in images:
-        print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
+    for index, image_path in enumerate(images, start=1):
+        progress.photo_started(index, image_path)
         try:
             result = pipeline.process(image_path)
         except Exception as error:
             message = warning_text(error)
             failures.append({"source_image": str(image_path), "error": message})
             print(f"Failed {ascii(str(image_path))}: {message}", file=sys.stderr)
+            progress.photo_finished(index, "failed", 0)
             continue
         results.append(result)
         for warning in result.warnings:
             print(f"Warning for {ascii(str(image_path))}: {warning_text(warning)}", file=sys.stderr)
+        progress.photo_finished(index, result.status, len(result.records))
     return results
 
 
@@ -307,8 +311,15 @@ def replace_manifest_if_unchanged(path: Path, previous: dict[str, Any], updated:
 
 
 # Build the emit summary.
-def emit_summary(summary: dict[str, Any], image_count: int, model_name: str) -> None:
-    print(json.dumps(public_summary(summary, image_count=image_count, model_name=model_name), indent=2, ensure_ascii=False))
+def emit_summary(summary: dict[str, Any], image_count: int, model_name: str,
+    progress: TerminalProgress, *, human: bool) -> None:
+    progress.close()
+    print_run_summary(
+        public_summary(summary, image_count=image_count, model_name=model_name),
+        human=human,
+        elapsed_seconds=progress.elapsed_seconds(),
+        attempted=progress.completed,
+    )
 
 
 # Build the lock failure summary.
@@ -354,11 +365,13 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
 # Build the locked batch summary.
 def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     output_path: Path, normal_manifest_path: Path, *,
-    preserve_existing_manifest_on_failure: bool) -> tuple[dict[str, Any], bool]:
+    preserve_existing_manifest_on_failure: bool, progress: TerminalProgress) -> tuple[dict[str, Any], bool]:
 
     failures: list[dict[str, str]] = []
+    progress.phase("Checking the local model...")
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
-    results = process_images(pipeline, images, failures) if pipeline else []
+    results = process_images(pipeline, images, failures, progress) if pipeline else []
+    progress.phase("Finalizing results..." if pipeline else "Saving run details...")
     export_state = ExportState()
     manifest: Path | None = None
     summary: dict[str, Any] | None = None
@@ -421,14 +434,26 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
 
 def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path, normal_manifest_path: Path, *,
               preserve_existing_manifest_on_failure: bool) -> int:
-    """Process a batch, write its files, and print a JSON summary."""
+    """Process a batch and report it in JSON or readable terminal text."""
+
+    with TerminalProgress(len(images)) as progress:
+        return _run_batch(
+            arguments, images, output_path, normal_manifest_path,
+            preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
+            progress=progress,
+        )
+
+
+def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Path, normal_manifest_path: Path, *,
+               preserve_existing_manifest_on_failure: bool, progress: TerminalProgress) -> int:
+    """Keep the batch's existing lock and publication behavior together."""
 
     lock = CatalogueLock(output_path)
     try:
         lock.acquire()
     except Exception as error:
         summary = lock_failure_summary(arguments, error)
-        emit_summary(summary, len(images), arguments.model)
+        emit_summary(summary, len(images), arguments.model, progress, human=getattr(arguments, "human", False))
         return 2
 
     release_error: str | None = None
@@ -440,6 +465,7 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
                 output_path,
                 normal_manifest_path,
                 preserve_existing_manifest_on_failure=preserve_existing_manifest_on_failure,
+                progress=progress,
             )
     finally:
         try:
@@ -462,7 +488,7 @@ def run_batch(arguments: argparse.Namespace, images: list[Path], output_path: Pa
                 summary["run_manifest"] = None
                 print(f"Manifest was not updated after lock cleanup failed: {message}", file=sys.stderr)
 
-    emit_summary(summary, len(images), arguments.model)
+    emit_summary(summary, len(images), arguments.model, progress, human=getattr(arguments, "human", False))
     if release_error is not None:
         return 2
     if not pipeline_ready:

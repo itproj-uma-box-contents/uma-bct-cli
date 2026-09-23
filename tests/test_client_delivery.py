@@ -509,6 +509,8 @@ class ClientDeliveryTest(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(["sh", "-n", str(ROOT / "run-uma-bct.sh")], check=True, capture_output=True, text=True)
+        self.assertIn('"$APP_CLI" --human --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
+        self.assertIn('"--human --path-to-inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
 
     # Check that POSIX launcher ignores a foreign default service and cleans up its child.
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
