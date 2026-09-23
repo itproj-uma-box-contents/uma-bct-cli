@@ -1,9 +1,8 @@
 """Catalogue rules and output column names."""
 
 OUTPUT_COLUMNS = [
-    "Node ID",
-    "Node Type",
-    "Node Title",
+    "Unit Type",
+    "Unit Number",
     "Description",
     "Date Range",
     "Transcription Confidence (%)",
@@ -12,6 +11,7 @@ OUTPUT_COLUMNS = [
 ]
 
 DUPLICATE_FLAG = "Potential Duplicate"
+MISSING_BOX_FLAG = "Missing Box"
 
 LOW_CONFIDENCE_FLAG = "Low confidence"
 

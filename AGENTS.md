@@ -17,10 +17,10 @@ When requirements conflict, use this order of authority:
 
 ## Client catalogue rules
 
-- The first five export columns are `Node ID`, `Node Type`, `Node Title`,
-  `Description`, and `Date Range`.
-- `Node Type` is `Unit`. `Node ID` and `Date Range` remain blank in v0.1.
-- A canonical title is `{first record identifier} Unit {four-digit box number}`.
+- The first four export columns are `Unit Type`, `Unit Number`, `Description`,
+  and `Date Range`.
+- `Unit Type` is the first visible identifier or prefix before the unit number.
+- `Unit Number` is the four-digit normalized box number.
 - Recognised identifiers include `YYYY.NNNN`, `YY/N`, and
   `UMA-(AC|SR)E?-\d{8,9}`. When multiple identifiers are present, use the first
   one and flag the record for review.
@@ -78,7 +78,3 @@ and benchmark output inside an ignored private-photo directory.
   stdout; progress and warnings belong on stderr.
 - Prefer small, tested fixes. Do not port experimental preprocessing, caches,
   telemetry, or debug visualisation without a demonstrated regression.
-- Preserve existing formatting when editing or adding code; do not run
-  automated formatters.
-- Deferred beyond v0.1: Node-ID reconciliation, date extraction, automatic text
-  rotation, sequence-gap analysis, GUI, catalogue APIs, and signed executables.

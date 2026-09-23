@@ -36,22 +36,27 @@ MAX_TEXT_CHARACTERS = 4096
 FIELDS = """For each reported physical box, provide:
 - "position": where it sits in the original photo, such as "top-left".
 - "record_identifiers": every visible record-set identifier in reading order.
-  Supported examples include "1960.0009", "96/9", "UMA-AC-000000330", and
-  "UMA-SRE-20160038". Use [] when none is legible.
+  Preserve any visible identifier or prefix exactly, including identifiers not
+  matching the examples "1960.0009", "96/9", "UMA-AC-000000330", and
+  "UMA-SRE-20160038". If a label reads "<prefix> Unit <number>", return the
+  prefix in this field. Use [] when none is legible.
 - "unit": the visible printed or handwritten box number as digits only. Older
   box numbers may be unpadded. Use "" when it is missing, crossed out, or
   ambiguous.
-- "typed": every printed visual line. Include printed identifiers and complete
-  Unit lines verbatim even though they also appear in structured fields.
+- "typed": every printed visual line in reading order. This text is used to
+  build Unit Type, so include all printed names, headings, identifiers, and
+  complete "<prefix> Unit <number>" lines verbatim even though their parts also
+  appear in structured fields.
 - "handwritten": every handwritten visual line, top to bottom. Include a
   handwritten unit number in its complete visual line.
 - "auxiliary_annotations": explicit condition/content labels that are not the
   record origin, identifier, or Unit number. Use [] when absent."""
 
 RULES = """Rules:
-- Copy identifiers character by character. A YYYY.NNNN identifier has exactly
-  four digits after the dot; never append the separate Unit number.
-- Omit an uncertain identifier rather than guessing.
+- Copy identifiers and prefixes character by character; do not restrict them
+  to a known catalogue or organisation prefix. A YYYY.NNNN identifier has
+  exactly four digits after the dot; never append the separate Unit number.
+- Omit an uncertain identifier and lower confidence instead of guessing.
 - Keep printed and handwritten text strictly separate. The white label is typed.
 - Transcribe handwriting verbatim, including crossed-out or partly legible
   words. Do not expand abbreviations.

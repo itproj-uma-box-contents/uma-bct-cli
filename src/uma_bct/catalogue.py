@@ -28,6 +28,7 @@ from .identity import (
     identity_only_line,
     normalise_identifier,
     normalise_unit_claim,
+    unit_type_text,
 )
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
@@ -37,7 +38,6 @@ class CatalogueRow(dict[str, str | int]):
     """A row with read-only lookup aliases for the v0.1 draft headings."""
 
     LOOKUP_ALIASES = {
-        "Transcription Confidence (0-100)": "Transcription Confidence (%)",
         "Review Notes": "Review Flags",
         "Crop Image": "Cropped Box Image Link",
     }
@@ -188,10 +188,12 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-    identifier = identifiers[0] if identifiers else ""
+    unit_type = unit_type_text(transcription.typed_lines)
     flags: list[str] = []
-    if not identifiers:
+    if not unit_type:
         flags.append(AMBIGUOUS_IDENTIFIER_FLAG if ambiguous_identifier else MISSING_IDENTIFIER_FLAG)
+    elif ambiguous_identifier:
+        flags.append(AMBIGUOUS_IDENTIFIER_FLAG)
     elif len(identifiers) > 1:
         flags.append(MULTIPLE_IDENTIFIERS_FLAG)
     if unit_flag:
@@ -200,7 +202,6 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")
@@ -209,9 +210,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
-        "Node ID": "",
-        "Node Type": "Unit",
-        "Node Title": title,
+        "Unit Type": escape_spreadsheet_formula(unit_type),
+        "Unit Number": unit_number,
         "Description": description(transcription),
         "Date Range": "",
         "Transcription Confidence (%)": transcription.confidence,

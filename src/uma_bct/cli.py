@@ -144,6 +144,14 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         help=(f"Ollama timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
     )
     parser.add_argument("-f", "--force", action="store_true", help="replace an existing catalogue")
+    parser.add_argument(
+        "--no-missing-box",
+        "--no-missing-box-detection",
+        dest="detect_missing_boxes",
+        action="store_false",
+        help="do not insert rows for missing unit numbers",
+    )
+    parser.set_defaults(detect_missing_boxes=True)
 
 
 # Build the argument parser.
