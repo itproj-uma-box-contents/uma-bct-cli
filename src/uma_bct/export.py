@@ -21,6 +21,7 @@ from .path_safety import check_path
 from .pipeline import ImageResult
 
 UNIT_NUMBER = re.compile(r"^\d{1,4}$")
+MAX_GAP_SIZE = 100
 
 
 def _missing_box_row(prefix: str, unit: int) -> CatalogueRow:
@@ -71,7 +72,7 @@ def _sorted_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, s
 
 
 def _insert_missing_box_records(records: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
-    """Insert missing rows directly between consecutive units in each prefix group."""
+    """Insert missing rows between consecutive units in each prefix group, unless the gap exceeds MAX_GAP_SIZE."""
 
     output: list[dict[str, str | int]] = []
     for index, record in enumerate(records):
@@ -88,6 +89,11 @@ def _insert_missing_box_records(records: list[dict[str, str | int]]) -> list[dic
             or following_prefix.casefold() != current_prefix.casefold()
         ):
             continue
+
+        gap_size = int(following_unit) - int(current_unit) - 1
+        if gap_size <= 0 or gap_size > MAX_GAP_SIZE:
+            continue
+
         for unit in range(int(current_unit) + 1, int(following_unit)):
             output.append(_missing_box_row(current_prefix, unit))
     return output
