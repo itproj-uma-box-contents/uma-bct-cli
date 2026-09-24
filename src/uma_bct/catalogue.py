@@ -11,6 +11,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
+from .util.date_util import get_earliest_date, get_latest_date
 from .constants import (
     AMBIGUOUS_IDENTIFIER_FLAG,
     INVALID_UNIT_FLAG,
@@ -207,7 +208,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Node Title": title,
         "Description": description(transcription),
         "Dates": "; ".join([date.to_string() for date in transcription.dates]),
-        "Date Range": "",
+        "Date Range": f"{get_earliest_date(transcription.dates).to_string()} to {get_latest_date(transcription.dates).to_string()}",
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,

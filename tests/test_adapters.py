@@ -31,6 +31,7 @@ from uma_bct.adapters.qwen_transcriber import (
 from uma_bct.bootstrap import build_pipeline
 from uma_bct.ports import ModelResponse
 
+from uma_bct.adapters.qwen_date_detector import QwenDateDetector
 
 class FakeVision:
     def __init__(self, response, token_logprobs=()):
