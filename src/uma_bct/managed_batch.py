@@ -962,6 +962,7 @@ def build_managed_pipeline(
     pipeline = build_pipeline(
         detector_name=arguments.detector,
         transcriber_name=arguments.transcriber,
+        date_detector_name=arguments.date_detector,
         model_name=arguments.model,
         work_directory=working_root,
         minimum_detector_confidence=arguments.min_detector_confidence,

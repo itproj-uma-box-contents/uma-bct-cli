@@ -93,6 +93,8 @@ def fill_prefix(start: str, end: str) -> str:
 
 @dataclass
 class RegexDateDetector:
+    name: str = "regex"
+
     date_range_delineators: tuple[str, ...] = field(default=DEFAULT_RANGE_DELINIATORS)
     date_delineators: tuple[str, ...] = field(default=DEFAULT_DATE_DELINIATORS)
     date_formats: tuple[str, ...] = field(default=DEFAULT_DATE_FORMATS)
@@ -211,7 +213,6 @@ class RegexDateDetector:
     def extract_dates(self, string: str) -> tuple[str, ...]:
         dates: list[re.Match]  = []
         matches: list[re.Match] = []
-        name: str = "regex"
 
         #find all possible dates, added in order given in documentation:
 
@@ -247,5 +248,5 @@ class RegexDateDetector:
         #sort back to original order
         dates.sort(key = lambda x: x.start())
 
-        return (self.standardise_match_result(date) for date in dates)
+        return tuple(self.standardise_match_result(date) for date in dates)
 

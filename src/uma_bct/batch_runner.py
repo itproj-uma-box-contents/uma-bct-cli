@@ -145,6 +145,7 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         pipeline = build_pipeline(
             detector_name=arguments.detector,
             transcriber_name=arguments.transcriber,
+            date_detector_name=arguments.date_detector,
             model_name=arguments.model,
             work_directory=arguments.path_to_box_images,
             minimum_detector_confidence=arguments.min_detector_confidence,

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DETECTORS, TRANSCRIBERS
+from .bootstrap import DETECTORS, TRANSCRIBERS, DATE_DETECTORS
 from .constants import IMAGE_EXTENSIONS
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
@@ -108,6 +108,9 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen", help="text transcriber (default: %(default)s)"
+    )
+    parser.add_argument(
+        "-u", "--date-detector", choices=tuple(DATE_DETECTORS), default="regex", help="date extraction method (default: %(default)s)"
     )
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -276,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     arguments = parser.parse_args(raw_arguments)
+
     if arguments.command == "setup":
         if raw_arguments[0] != "setup":
             parser.error("setup must be the first argument")

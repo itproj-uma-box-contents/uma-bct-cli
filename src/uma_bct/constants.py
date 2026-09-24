@@ -5,6 +5,7 @@ OUTPUT_COLUMNS = [
     "Node Type",
     "Node Title",
     "Description",
+    "Dates",
     "Date Range",
     "Transcription Confidence (%)",
     "Review Flags",
