@@ -58,16 +58,24 @@ class TerminalProgress:
     # Rich refreshes the current stage and elapsed time in place on a terminal.
     def __enter__(self) -> TerminalProgress:
         if self.console is not None and self.console.is_terminal:
-            columns = [SpinnerColumn(), TextColumn("{task.description}")]
-            if self.total is not None:
-                columns.extend((BarColumn(bar_width=18), MofNCompleteColumn()))
-            columns.append(TimeElapsedColumn())
-            self._progress = Progress(
-                *columns, console=self.console, refresh_per_second=2, transient=True,
-                redirect_stdout=False, redirect_stderr=True,
-            )
-            self._task_id = self._progress.add_task(self.current, total=self.total)
-            self._progress.start()
+            try:
+                columns = [SpinnerColumn(), TextColumn("{task.description}")]
+                if self.total is not None:
+                    columns.extend((BarColumn(bar_width=18), MofNCompleteColumn()))
+                columns.append(TimeElapsedColumn())
+                self._progress = Progress(
+                    *columns, console=self.console, refresh_per_second=2, transient=True,
+                    redirect_stdout=False, redirect_stderr=True,
+                )
+                self._task_id = self._progress.add_task(self.current, total=self.total)
+                self._progress.start()
+            except Exception:
+                self.close()
+                self._write("Live display unavailable; showing milestone updates.")
+                self._write(
+                    "Preparing UMA BCT" if self.total is None
+                    else f"UMA BCT: {self.total} photo{'s' if self.total != 1 else ''} queued."
+                )
         elif self.total is None:
             self._write("Preparing UMA BCT")
         else:
@@ -84,10 +92,19 @@ class TerminalProgress:
 
     def _show(self) -> None:
         description = f"{self.photo_label} | {self.current}" if self.photo_label else self.current
-        if self._progress is not None and self._task_id is not None:
-            self._progress.update(self._task_id, description=description, refresh=True)
-        else:
+        if not self._update_live(description=description):
             self._write(description)
+
+    def _update_live(self, **changes: object) -> bool:
+        if self._progress is None or self._task_id is None:
+            return False
+        try:
+            self._progress.update(self._task_id, refresh=True, **changes)
+        except Exception:
+            self.close()
+            self._write("Live display unavailable; showing milestone updates.")
+            return False
+        return True
 
     def elapsed_seconds(self) -> float:
         return max(0.0, self.clock() - self.started)
@@ -98,32 +115,31 @@ class TerminalProgress:
 
     def reused(self, count: int) -> None:
         self.completed = count
-        if self._progress is not None and self._task_id is not None:
-            self._progress.update(self._task_id, completed=count, refresh=True)
-        elif count:
+        if not self._update_live(completed=count) and count:
             self._write(f"Resuming: {count} photo{'s' if count != 1 else ''} already finished.")
 
     def photo_started(self, index: int, path: Path) -> None:
         self.photo_label = f"Photo {index} of {self.total}: {terminal_text(path.name)}"
         self.current = "Detecting boxes"
-        if self._progress is not None:
-            self._show()
-        else:
+        if not self._update_live(description=f"{self.photo_label} | {self.current}"):
             self._write(f"Processing {self.photo_label}")
 
     def photo_finished(self, index: int, status: str, boxes: int) -> None:
         self.completed += 1
         self.photo_label = ""
         self.current = f"Finished {self.completed} of {self.total} photos"
-        if self._progress is not None and self._task_id is not None:
-            self._progress.update(self._task_id, advance=1, description=self.current, refresh=True)
-        else:
+        if not self._update_live(advance=1, description=self.current):
             self._write(f"Photo {index} finished: {status} | {boxes} box{'es' if boxes != 1 else ''} found")
 
     def close(self) -> None:
-        if self._progress is not None:
-            self._progress.stop()
-            self._progress = None
+        progress = self._progress
+        self._progress = None
+        self._task_id = None
+        if progress is not None:
+            try:
+                progress.stop()
+            except Exception:
+                self._write("Warning: could not cleanly stop the live display.")
 
 
 def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted: int | None = None) -> str:

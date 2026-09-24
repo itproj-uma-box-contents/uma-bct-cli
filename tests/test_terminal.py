@@ -4,7 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
 
@@ -72,3 +72,40 @@ class TerminalProgressTest(unittest.TestCase):
                 reporter.photo_finished(1, "complete", 1)
         self.assertIn("Processing Photo 1 of 1: shelf.jpg", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
+
+    # A display error must not turn a successful photo into a failed one.
+    def test_live_display_error_falls_back_to_milestones(self):
+        output = io.StringIO()
+        live = Mock()
+        live.update.side_effect = OSError("terminal unavailable")
+        with TerminalProgress(1, stream=output) as reporter:
+            reporter._progress = live
+            reporter._task_id = 1
+            reporter.phase("Transcribing box 1 of 2")
+            reporter.photo_finished(1, "complete", 2)
+        live.stop.assert_called_once_with()
+        self.assertIn("Live display unavailable", output.getvalue())
+        self.assertIn("Transcribing box 1 of 2", output.getvalue())
+        self.assertIn("Photo 1 finished: complete", output.getvalue())
+
+    # Startup and cleanup errors in Rich must leave the transcription usable.
+    def test_live_start_and_stop_errors_do_not_abort(self):
+        output = io.StringIO()
+        with patch("uma_bct.terminal.Progress") as make_progress:
+            live = make_progress.return_value
+            live.add_task.return_value = 1
+            live.start.side_effect = OSError("terminal unavailable")
+            with TerminalProgress(1, stream=output, force_terminal=True) as reporter:
+                reporter.photo_started(1, Path("shelf.jpg"))
+            live.stop.assert_called_once_with()
+        self.assertIn("Live display unavailable", output.getvalue())
+        self.assertIn("Processing Photo 1 of 1", output.getvalue())
+
+        output = io.StringIO()
+        with patch("uma_bct.terminal.Progress") as make_progress:
+            live = make_progress.return_value
+            live.add_task.return_value = 1
+            live.stop.side_effect = OSError("cannot clear")
+            with TerminalProgress(1, stream=output, force_terminal=True):
+                pass
+        self.assertIn("could not cleanly stop", output.getvalue())
