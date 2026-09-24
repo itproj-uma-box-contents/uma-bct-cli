@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from ..ports import VisionModelClient
+from ..util.date_util import Date, DateRange
 from .ollama_client import OllamaVisionModel
 
 
@@ -84,13 +85,16 @@ DATE_RESULT_SCHEMA = {
     "required": ["dates", "date_ranges"],
 }
 
-def parse_qwen_result(result: dict[str, any]) -> tuple[str, ...]:
+def parse_qwen_result(result: dict[str, any]) -> tuple[Date | DateRange, ...]:
     results_with_position = []
     for date_result in result["dates"]:
-        results_with_position.append((f"{date_result.get("day", "")}/{date_result.get("month", "")}/{date_result.get("year", "")}", date_result['starting_index']))
+        results_with_position.append((Date(day=date_result.get("day", ""), month=date_result.get("month", ""), year=date_result.get("year", "")), date_result["starting_index"]))
 
     for date_result in result["date_ranges"]:
-        results_with_position.append((f"{date_result['start_date'].get("day", "")}/{date_result['start_date'].get("month", "")}/{date_result['start_date'].get("year", "")} - {date_result['end_date'].get("day", "")}/{date_result['end_date'].get("month", "")}/{date_result['end_date'].get("year", "")}", date_result['starting_index']))
+        results_with_position.append((DateRange(
+            start = Date(day=date_result["start_date"].get("day", ""), month=date_result["start_date"].get("month", ""), year=date_result["start_date"].get("year", "")),
+            end = Date(day=date_result["end_date"].get("day", ""), month=date_result["end_date"].get("month", ""), year=date_result["end_date"].get("year", ""))
+        ), date_result["starting_index"]))
 
     results_with_position.sort(key = lambda x: x[1])
     return tuple(result[0] for result in results_with_position)
@@ -100,6 +104,6 @@ class QwenDateDetector:
     client: VisionModelClient
     name: str = "qwen"
 
-    def extract_dates(self, string: str) -> tuple[str, ...]:
+    def extract_dates(self, string: str) -> tuple[Date | DateRange, ...]:
         result = self.client.query(None, DATE_EXTRACTION_PROMPT+string, DATE_RESULT_SCHEMA, validator=None, logprobs=False)
         return parse_qwen_result(result.value)

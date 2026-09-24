@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from .util.date_util import Date, DateRange
 from .domain import Box, BoxTranscription, DetectedRegion, InputImage
 
 
@@ -41,7 +42,7 @@ class DateDetector(Protocol):
 
     name: str
 
-    def extract_dates(self, text: str) -> tuple[str, ...]: ...
+    def extract_dates(self, text: str) -> tuple[Date | DateRange, ...]: ...
 
 
 @runtime_checkable

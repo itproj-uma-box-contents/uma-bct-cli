@@ -114,7 +114,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     representative = best_observation(group, lambda value: value.typed_lines)
     typed = representative.transcription.typed_lines
     handwritten_source = best_observation(group, lambda value: value.handwritten_lines)
-    dates_source = best_observation(group, lambda value: value.dates)
+    dates_source = best_observation(group, lambda value: value.handwritten_lines)
     identifier_source = best_observation(group, lambda value: value.record_identifiers)
     auxiliary_source = best_observation(group, lambda value: value.auxiliary_annotations)
     unit_source = max(

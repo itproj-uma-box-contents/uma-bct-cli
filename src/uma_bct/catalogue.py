@@ -206,7 +206,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Node Type": "Unit",
         "Node Title": title,
         "Description": description(transcription),
-        "Dates": "; ".join(transcription.dates),
+        "Dates": "; ".join([date.to_string() for date in transcription.dates]),
         "Date Range": "",
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),

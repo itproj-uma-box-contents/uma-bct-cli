@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from ..util.date_util import Date, DateRange
+
 import re
 
 ESCAPE_SQEUNCE = "#"
@@ -148,7 +150,7 @@ class RegexDateDetector:
         return "(?:" + regex + ")"
 
     #turns a match result from a date format regex to a date of the form dd/mm/yyyy or a date range dd/mm/yyyy-dd/mm/yyyy
-    def standardise_match_result(self, match: re.Match) -> str:
+    def standardise_match_result(self, match: re.Match) -> Date | DateRange:
             dates = [{"d": "", "m": "", "y": ""}, {"d": "", "m": "", "y": ""}]
 
             def add_to_dates(part, value):
@@ -195,9 +197,12 @@ class RegexDateDetector:
                 for component in dates[1]:
                     if dates[1][component] == "": dates[1][component] = dates[0][component]
 
-                return f"{dates[0]['d']}/{dates[0]['m']}/{dates[0]['y']} - {dates[1]['d']}/{dates[1]['m']}/{dates[1]['y']}"
+                return DateRange(
+                    start = Date(day=dates[0]['d'], month=dates[0]['m'], year=dates[0]['y']),
+                    end = Date(day=dates[1]['d'], month=dates[1]['m'], year=dates[1]['y'])
+                )
             else:
-                return f"{dates[0]['d']}/{dates[0]['m']}/{dates[0]['y']}"
+                return Date(day=dates[0]['d'], month=dates[0]['m'], year=dates[0]['y'])
 
     """
     Extacts dates from the provided string. 
@@ -210,7 +215,7 @@ class RegexDateDetector:
     Custom date formats are prioritised over automatically generated formats 
     Dates with another date or date range are not returned, but two partly overlapping potential dates/date ranges are both returned 
     """
-    def extract_dates(self, string: str) -> tuple[str, ...]:
+    def extract_dates(self, string: str) -> tuple[Date | DateRange, ...]:
         dates: list[re.Match]  = []
         matches: list[re.Match] = []
 

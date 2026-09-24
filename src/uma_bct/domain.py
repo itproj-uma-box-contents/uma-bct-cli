@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from .util.date_util import Date, DateRange
 from pathlib import Path
 
 
@@ -93,7 +94,7 @@ class BoxTranscription:
     unit_number: str = ""
     typed_lines: tuple[str, ...] = ()
     handwritten_lines: tuple[str, ...] = ()
-    dates: tuple[str, ...] = ()
+    dates: tuple[Date | DateRange, ...] = ()
     auxiliary_annotations: tuple[str, ...] = ()
     needs_review: bool = False
 
@@ -111,7 +112,7 @@ class BoxTranscription:
             "unit": self.unit_number,
             "typed": list(self.typed_lines),
             "handwritten": list(self.handwritten_lines),
-            "dates": list(self.dates),
+            "dates": list([date.to_string() for date in self.dates]),
             "auxiliary_annotations": list(self.auxiliary_annotations),
             "transcription_confidence": self.confidence,
         }
