@@ -29,6 +29,7 @@ from .identity import (
     identity_only_line,
     normalise_identifier,
     normalise_unit_claim,
+    unit_type_text,
 )
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
@@ -38,11 +39,11 @@ class CatalogueRow(dict[str, str | int]):
     """A row with read-only lookup aliases for the v0.1 draft headings."""
 
     LOOKUP_ALIASES = {
-        "Transcription Confidence (0-100)": "Transcription Confidence (%)",
         "Review Notes": "Review Flags",
         "Crop Image": "Cropped Box Image Link",
     }
 
+    # Handle the missing step.
     def __missing__(self, key: str) -> str | int:
         alias = self.LOOKUP_ALIASES.get(key)
         if alias is None:
@@ -65,10 +66,12 @@ def append_flag(current: str, flag: str) -> str:
     return "; ".join(flags)
 
 
+# Collect the non empty lines.
 def non_empty_lines(lines: Iterable[str]) -> tuple[str, ...]:
     return tuple(visual_line.strip() for value in lines for visual_line in value.splitlines() if visual_line.strip())
 
 
+# Handle the structured identifiers step.
 def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], bool]:
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()
@@ -86,6 +89,7 @@ def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(explicit_identifiers), invalid
 
 
+# Check for a raw identifier mismatch.
 def raw_identifier_mismatch(transcription: BoxTranscription, explicit_identifiers: tuple[str, ...]) -> bool:
     typed_identifiers, malformed_typed = identifier_evidence_details(transcription.typed_lines)
     handwritten_identifiers, malformed_handwritten = identifier_evidence_details(transcription.handwritten_lines)
@@ -121,6 +125,7 @@ def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...]
     return identifiers, False, False
 
 
+# Normalize the unit.
 def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
     raw_unit = transcription.unit_number.strip()
     if not raw_unit:
@@ -134,6 +139,7 @@ def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bo
     return normalized, None, False
 
 
+# Handle the image reference step.
 def image_reference(image_file_path: str | Path, catalogue_path: str | Path | None) -> str:
     image_path = Path(image_file_path)
     if catalogue_path is None:
@@ -167,6 +173,7 @@ def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Pa
     return f'=HYPERLINK("{target}","{label}")'
 
 
+# Handle the description step.
 def description(transcription: BoxTranscription) -> str:
     values = (*non_empty_lines(transcription.handwritten_lines), *non_empty_lines(transcription.auxiliary_annotations))
     visible = (
@@ -182,10 +189,12 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-    identifier = identifiers[0] if identifiers else ""
+    unit_type = unit_type_text(transcription.typed_lines)
     flags: list[str] = []
-    if not identifiers:
+    if not unit_type:
         flags.append(AMBIGUOUS_IDENTIFIER_FLAG if ambiguous_identifier else MISSING_IDENTIFIER_FLAG)
+    elif ambiguous_identifier:
+        flags.append(AMBIGUOUS_IDENTIFIER_FLAG)
     elif len(identifiers) > 1:
         flags.append(MULTIPLE_IDENTIFIERS_FLAG)
     if unit_flag:
@@ -194,7 +203,6 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    title = f"{identifier} Unit {unit_number}" if identifier and unit_number else ""
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")
@@ -203,9 +211,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         image = escape_spreadsheet_formula(image_reference(image_file_path, catalogue_path))
 
     record: dict[str, str | int] = {
-        "Node ID": "",
-        "Node Type": "Unit",
-        "Node Title": title,
+        "Unit Type": escape_spreadsheet_formula(unit_type),
+        "Unit Number": unit_number,
         "Description": description(transcription),
         "Dates": "; ".join([date.to_string() for date in transcription.dates]),
         "Date Range": f"{get_earliest_date(transcription.dates).to_string()} to {get_latest_date(transcription.dates).to_string()}",

@@ -47,6 +47,7 @@ numpy==2.5.2 \
     --hash=sha256:d6a48072864e3324e194a8fbb3c657bcc5b5c869dbc64c9537b1d5c862572c0a
     # via
     #   opencv-python-headless
+    #   rawpy
     #   uma-bct-cli
 ollama==0.6.2 \
     --hash=sha256:3ad7daab28e5a973445c36a73882a3ef698c2ebb00e21e308652741577509f7d \
@@ -62,6 +63,31 @@ opencv-python-headless==5.0.0.93 \
     --hash=sha256:b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c \
     --hash=sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9 \
     --hash=sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37
+    # via uma-bct-cli
+pillow==12.3.0 \
+    --hash=sha256:0dd2064cbc55aaec028ef5fbb60fa47bb6c3e7918e07ff17935284b227a9d2df \
+    --hash=sha256:331b624368d4f1d069149002f25f44bc61c8919ce8ddb3c45bdad8f6e2d89510 \
+    --hash=sha256:3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce \
+    --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91 \
+    --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09 \
+    --hash=sha256:ba09209fbe443b4acccebe845d8a138b89a8f4fbaeedd44953490b5315d5e965 \
+    --hash=sha256:d9c7f76c0673154f044e9d78c8655fb4213f6ca31a836df48b40fe5d187717b9 \
+    --hash=sha256:dbce0b29841537a2fa4a214c2bbf14de3587c9680caa9b4e217568472490b28f \
+    --hash=sha256:e491916b378fba47242221bb9ead245211b70d504f495d105d17b14a24b4907c \
+    --hash=sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7
+    # via
+    #   pillow-heif
+    #   uma-bct-cli
+pillow-heif==1.7.0 \
+    --hash=sha256:1caa5a97364665d45056d25be302e586c39df64ee42ce55241e3735e089809ed \
+    --hash=sha256:78d77d94456d95444683b4539ffe3946554bcc25cad97564b60ae5cc7d22286c \
+    --hash=sha256:7c4751fcffb55f555a7559cfa6721bdfb30f50f14b7f0cbd2b1cba3b5d5961b7 \
+    --hash=sha256:a1f1d001576e4cc2a37f1a7a3c06b3241e7966be16670789daba428a3edf8e30 \
+    --hash=sha256:b156781538370f3b30a3d2e9899d71a5bc1c89c7e5264123e55d21153e0aa555 \
+    --hash=sha256:b37df3c08df3401085737e7ed68026398046eb01a8850df27b7a461e9045ed92 \
+    --hash=sha256:bf8e46cfe653a9a43830a7e9993ddf70dcf3877c474b7f1c1e8364d0c85214a5 \
+    --hash=sha256:cba79f030caf9e543b6c9a7c77cd8df465785bc6dcc1361b3fd5f905b3ca4e01 \
+    --hash=sha256:f23113505672a6c55e88d7c96cbd82f3d8a5f902d31a3c071be96a9a7e98c5dc
     # via uma-bct-cli
 pydantic==2.13.5 \
     --hash=sha256:346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73 \
@@ -89,6 +115,17 @@ pydantic-core==2.46.5 \
     --hash=sha256:efd62a42486f1bda5d24cb4f63d15a3c7768375fe83d36f9417b4ad7a2fb20b3 \
     --hash=sha256:f7b0ec93a2893de856652154d73b7ba622f26fa97726487dcac373de5f4c6084
     # via pydantic
+rawpy==0.25.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin' \
+    --hash=sha256:de1eb5dc43b8d8f64815458a6e3cbd54b2d0a661963f8d545c8b8028ed4dbdd8
+    # via uma-bct-cli
+rawpy==0.27.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin' \
+    --hash=sha256:3194d64ff690ac945e1a43237edae8a18f1f493751924de1ae2bcef473c0fb79 \
+    --hash=sha256:621a957ebfcd05522b95ad1b2a5831cdfcc5a5962017a31ccb9931a8aa6d6837 \
+    --hash=sha256:74be7654be9bbb19c3d1b86159d6d59f00811f2196e7296d589d3d9002d56274 \
+    --hash=sha256:88bc8f7ac8418249afffa7323063d3e886d4eddc65b930aea714e8736e3af75b \
+    --hash=sha256:9c5c7b396283301ddd8e04100091624a371c4f9bb2ee79fd33d21e1b6c244009 \
+    --hash=sha256:e9d9c83cd0422e84b2052a02eb9d612839ac68dfae4d6d3751740e08024599b1
+    # via uma-bct-cli
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5

@@ -14,6 +14,7 @@ from helpers import make_box, make_image, make_result, make_transcription
 from uma_bct.atomic import rename_exclusive, rename_new_file
 from uma_bct.batch_runner import export_results_into, run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
+from uma_bct.constants import IMAGE_EXTENSIONS
 from uma_bct.domain import BoxResult
 from uma_bct.export import export_catalogue
 from uma_bct.path_safety import check_path
@@ -27,13 +28,16 @@ from uma_bct.run_artifacts import (
 )
 
 
+# Create an isolated temporary root.
 @contextlib.contextmanager
 def temporary_root():
     with tempfile.TemporaryDirectory() as directory:
         yield Path(directory).resolve()
 
 
+# Handle the manifest disk failure step.
 def manifest_disk_failure(manifest: Path | None = None):
+    # Raise the simulated failure.
     def fail(destination, value, *, replace_existing=True):
         if destination == manifest or destination.name.startswith(".uma-bct-json-publish-"):
             raise OSError("manifest disk failure")
@@ -42,13 +46,16 @@ def manifest_disk_failure(manifest: Path | None = None):
     return fail
 
 
+# Provide a controllable batch pipeline test double.
 class FakeBatchPipeline:
+    # Store the state this object needs.
     def __init__(self, failing_name=None, empty=False):
         self.failing_name = failing_name
         self.empty = empty
         self.work_directory = Path("crops")
         self.model_metadata = {"model": "qwen-test", "model_digest": "sha256:test", "ollama_host": "http://127.0.0.1:11434"}
 
+    # Process the current input.
     def process(self, path):
         if path.name == self.failing_name:
             raise RuntimeError("model failed")
@@ -59,6 +66,7 @@ class FakeBatchPipeline:
         return make_result(BoxResult(box, make_transcription(box)))
 
 
+# Build the command arguments.
 def arguments(root: Path, *, force=False):
     return argparse.Namespace(
         detector="qwen",
@@ -74,7 +82,9 @@ def arguments(root: Path, *, force=False):
     )
 
 
+# Group the CLI checks.
 class CliTest(unittest.TestCase):
+    # Check that parser keeps defaults and existing aliases.
     def test_parser_keeps_defaults_and_existing_aliases(self):
         defaults = parse_args([])
         aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
@@ -82,9 +92,14 @@ class CliTest(unittest.TestCase):
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
         self.assertEqual(defaults.min_detector_confidence, 0.6)
         self.assertEqual(defaults.min_transcription_confidence, 80)
+        self.assertTrue(defaults.detect_missing_boxes)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
 
+    def test_can_disable_missing_box_detection(self):
+        self.assertFalse(parse_args(["--no-missing-box-detection"]).detect_missing_boxes)
+
+    # Check that confidence options keep their distinct meanings.
     def test_confidence_options_keep_their_distinct_meanings(self):
         legacy_detector = parse_args(["--min-confidence", "0.7"])
         explicit_detector = parse_args(["--min-detector-confidence", "0.8"])
@@ -96,6 +111,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(short_transcription.min_transcription_confidence, 70)
         self.assertEqual(explicit_transcription.min_transcription_confidence, 75)
 
+    # Check that the code discovers supported images in stable order.
     def test_discovers_supported_images_in_stable_order(self):
         with temporary_root() as root:
             (root / "b.jpg").write_bytes(b"x")
@@ -103,6 +119,13 @@ class CliTest(unittest.TestCase):
             (root / "notes.txt").write_text("ignore", encoding="utf-8")
             self.assertEqual([path.name for path in discover_images(root)], ["A.JPG", "b.jpg"])
 
+    # Check that every documented image extension is discovered case-insensitively.
+    def test_discovers_every_documented_image_extension_case_insensitively(self):
+        with temporary_root() as root:
+            for number, extension in enumerate(sorted(IMAGE_EXTENSIONS)):
+                (root / f"{number:02d}{extension.upper()}").write_bytes(b"x")
+            self.assertEqual({path.suffix.casefold() for path in discover_images(root)}, IMAGE_EXTENSIONS)
+    # Check that the code rejects redirected input.
     def test_rejects_redirected_input(self):
         with temporary_root() as root:
             source = root / "source.jpg"
@@ -115,6 +138,7 @@ class CliTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symbolic link"):
                 discover_images(linked)
 
+    # Check that the code rejects an input beneath a redirected parent.
     def test_rejects_an_input_beneath_a_redirected_parent(self):
         with temporary_root() as root:
             outside = root / "outside"
@@ -129,6 +153,7 @@ class CliTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "parent must not be a symbolic link"):
                 discover_images(linked / "shelf.jpg")
 
+    # Check that the code rejects a redirected component before dot dot.
     def test_rejects_a_redirected_component_before_dot_dot(self):
         with temporary_root() as root:
             outside = root / "outside"
@@ -147,6 +172,7 @@ class CliTest(unittest.TestCase):
                 write_json_atomic(linked / "../escaped/catalogue.run.json", {"status": "failed"})
             self.assertFalse((outside / "escaped/catalogue.run.json").exists())
 
+    # Check that the code rejects a redirected parent of a new output.
     def test_rejects_a_redirected_parent_of_a_new_output(self):
         with temporary_root() as root:
             inputs = root / "inputs"
@@ -183,6 +209,7 @@ class CliTest(unittest.TestCase):
             self.assertFalse((nested / "catalogue.run.json").exists())
             batch.assert_not_called()
 
+    # Check that the code rejects a redirected parent of a new crop root.
     def test_rejects_a_redirected_parent_of_a_new_crop_root(self):
         with temporary_root() as root:
             inputs = root / "inputs"
@@ -218,6 +245,7 @@ class CliTest(unittest.TestCase):
             self.assertFalse((nested / "crops").exists())
             batch.assert_not_called()
 
+    # Check that manifest writer rechecks a parent swapped after validation.
     def test_manifest_writer_rechecks_a_parent_swapped_after_validation(self):
         with temporary_root() as root:
             outputs = root / "outputs"
@@ -235,6 +263,7 @@ class CliTest(unittest.TestCase):
                 write_json_atomic(manifest, {"status": "failed"})
             self.assertFalse((outside / "catalogue.run.json").exists())
 
+    # Check that manifest writer does not replace a new unexpected file.
     def test_manifest_writer_does_not_replace_a_new_unexpected_file(self):
         with temporary_root() as root:
             manifest = root / "catalogue.run.json"
@@ -244,16 +273,19 @@ class CliTest(unittest.TestCase):
                 write_json_atomic(manifest, {"status": "failed"}, replace_existing=False)
             self.assertEqual(manifest.read_text(encoding="utf-8"), '{"owner": "other process"}\n')
 
+    # Check that manifest bytes are portable across platforms.
     def test_manifest_bytes_are_portable_across_platforms(self):
         with temporary_root() as root:
             manifest = root / "catalogue.run.json"
             write_json_atomic(manifest, {"status": "complete"})
             self.assertNotIn(b"\r\n", manifest.read_bytes())
 
+    # Check that manifest writer does not replace a file appearing at the publication syscall.
     def test_manifest_writer_does_not_replace_a_file_appearing_at_the_publication_syscall(self):
         with temporary_root() as root:
             manifest = root / "catalogue.run.json"
 
+            # Create the competing destination used by this race check.
             def late_destination(source, destination):
                 destination.write_text('{"owner": "late process"}\n', encoding="utf-8")
                 return rename_exclusive(source, destination)
@@ -266,12 +298,14 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(manifest.read_text(encoding="utf-8"), '{"owner": "late process"}\n')
 
+    # Check that parent reparse detection is not platform dependent.
     def test_parent_reparse_detection_is_not_platform_dependent(self):
         with temporary_root() as root:
             parent = root / "outputs"
             parent.mkdir()
             target = parent / "catalogue.csv"
 
+            # Return the simulated path kind.
             def fake_kind(path, metadata):
                 return "reparse point" if path == parent else None
 
@@ -279,6 +313,7 @@ class CliTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "reparse point"):
                     check_path(target, "Catalogue output")
 
+    # Check that path check wraps reparse inspection errors.
     def test_path_check_wraps_reparse_inspection_errors(self):
         with temporary_root() as root:
             target = root / "catalogue.csv"
@@ -288,25 +323,30 @@ class CliTest(unittest.TestCase):
             ):
                 check_path(target, "Catalogue output")
 
+    # Check that the code routes setup without starting a batch.
     def test_routes_setup_without_starting_a_batch(self):
         with patch("uma_bct.cli.run_setup", return_value=0) as setup:
             self.assertEqual(main(["setup"]), 0)
         setup.assert_called_once_with()
 
+    # Check that the code routes custom managed setup paths.
     def test_routes_custom_managed_setup_paths(self):
         with patch("uma_bct.cli.run_setup", return_value=0) as setup:
             self.assertEqual(main(["setup", "--path-to-inputs", "Photos", "--results-directory", "Results"]), 0)
         setup.assert_called_once_with(input_directory=Path("Photos"), results_directory=Path("Results"))
 
+    # Check that managed options conflict with direct outputs and force.
     def test_managed_options_conflict_with_direct_outputs_and_force(self):
         for extra in (("-o", "out.csv"), ("--work-dir", "crops"), ("--force",)):
             with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 main(["--results-directory", "Results", *extra])
 
+    # Check that reprocess requires a results directory.
     def test_reprocess_requires_a_results_directory(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["--reprocess"])
 
+    # Check that CLI routes a managed batch.
     def test_cli_routes_a_managed_batch(self):
         with temporary_root() as root:
             inputs = root / "photos"
@@ -318,11 +358,13 @@ class CliTest(unittest.TestCase):
             self.assertEqual(status, 0)
             batch.assert_called_once_with(batch.call_args.args[0], [inputs / "shelf.jpg"], results)
 
+    # Check that CLI rejects XLSX before processing.
     def test_cli_rejects_xlsx_before_processing(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             main(["--path-to-outputs", "catalogue.xlsx"])
         self.assertEqual(raised.exception.code, 2)
 
+    # Check that CLI routes a valid batch.
     def test_cli_routes_a_valid_batch(self):
         with temporary_root() as root:
             inputs = root / "inputs"
@@ -334,6 +376,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(batch.call_args.args[1], [inputs / "shelf.jpg"])
 
+    # Check that CLI rejects catalogue inside review crop directory.
     def test_cli_rejects_catalogue_inside_review_crop_directory(self):
         with temporary_root() as root:
             inputs = root / "inputs"
@@ -351,6 +394,7 @@ class CliTest(unittest.TestCase):
             self.assertIn("catalogue output must not be inside the review-crop directory", stderr.getvalue())
             batch.assert_not_called()
 
+    # Check that CLI rejects review crops inside catalogue or manifest paths.
     def test_cli_rejects_review_crops_inside_catalogue_or_manifest_paths(self):
         with temporary_root() as root:
             inputs = root / "inputs"
@@ -376,10 +420,12 @@ class CliTest(unittest.TestCase):
                 self.assertIn("review-crop", stderr.getvalue())
                 batch.assert_not_called()
 
+    # Check that the code rejects cross drive windows output layouts.
     def test_rejects_cross_drive_windows_output_layouts(self):
         with self.assertRaisesRegex(ValueError, "same Windows drive"):
             validate_output_layout(r"C:\results\catalogue.csv", r"C:\results\catalogue.run.json", r"D:\review\crops")
 
+    # Check that output layout compares physical macOS alias paths.
     @unittest.skipUnless(sys.platform == "darwin", "macOS system alias test")
     def test_output_layout_compares_physical_macos_alias_paths(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -393,7 +439,9 @@ class CliTest(unittest.TestCase):
                 )
 
 
+# Group the batch runner checks.
 class BatchRunnerTest(unittest.TestCase):
+    # Run the with.
     def run_with(self, root, pipeline, images, *, force=False, preserve=False):
         args = arguments(root, force=force)
         stdout = io.StringIO()
@@ -412,6 +460,7 @@ class BatchRunnerTest(unittest.TestCase):
             )
         return status, json.loads(stdout.getvalue()), stderr.getvalue()
 
+    # Prepare the outputs.
     def prepare_outputs(
         self, root: Path, *, catalogue_content: str | None = "old catalogue",
         manifest_content: str | None = "old manifest"
@@ -426,6 +475,7 @@ class BatchRunnerTest(unittest.TestCase):
             manifest.write_text(manifest_content, encoding="utf-8")
         return outputs, catalogue, manifest
 
+    # Check that run interrupted.
     def assert_run_interrupted(self, root: Path, catalogue: Path, manifest: Path, *patches) -> None:
         args = arguments(root, force=True)
         with contextlib.ExitStack() as stack:
@@ -443,6 +493,7 @@ class BatchRunnerTest(unittest.TestCase):
                 preserve_existing_manifest_on_failure=True,
             )
 
+    # Check that existing output edit is preserved.
     def assert_existing_output_edit_is_preserved(self, output_kind: str, *, during_publication: bool) -> None:
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
@@ -452,6 +503,7 @@ class BatchRunnerTest(unittest.TestCase):
             if during_publication:
                 raced = False
 
+                # Handle the inject step.
                 def inject(first, second, purpose):
                     nonlocal raced
                     matches = same_regular_file_content(first, second, purpose)
@@ -462,6 +514,7 @@ class BatchRunnerTest(unittest.TestCase):
 
                 fault = patch("uma_bct.run_artifacts.same_regular_file_content", side_effect=inject)
             else:
+                # Handle the inject step.
                 def inject(paths):
                     backups = backup_existing_results(paths)
                     target.write_text(edit, encoding="utf-8")
@@ -481,6 +534,7 @@ class BatchRunnerTest(unittest.TestCase):
                 self.assertEqual(catalogue.read_text(encoding="utf-8"), "old catalogue")
                 self.assertIn(".failed-", summary["run_manifest"])
 
+    # Check that the code writes CSV manifest and clean JSON summary.
     def test_writes_csv_manifest_and_clean_json_summary(self):
         with temporary_root() as root:
             image = root / "inputs/shelf.jpg"
@@ -498,6 +552,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest["configuration"]["minimum_detector_confidence"], 0.6)
             self.assertIn("Processing", progress)
 
+    # Check that the code continues after one image failure.
     def test_continues_after_one_image_failure(self):
         with temporary_root() as root:
             images = [root / "good.jpg", root / "bad.jpg"]
@@ -507,6 +562,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(summary["catalogue_records"], 1)
             self.assertEqual(summary["failure_count"], 1)
 
+    # Check that empty forced run preserves previous results.
     def test_empty_forced_run_preserves_previous_results(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
@@ -519,6 +575,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertIn(".failed-", summary["run_manifest"])
             self.assertEqual(summary["failure_count"], 1)
 
+    # Check that forced success keeps timestamped previous results.
     def test_forced_success_keeps_timestamped_previous_results(self):
         with temporary_root() as root:
             self.prepare_outputs(root)
@@ -528,6 +585,7 @@ class BatchRunnerTest(unittest.TestCase):
             for path in summary["previous_results"]:
                 self.assertTrue(Path(path).is_file())
 
+    # Check that preflight failure is reported once and releases the lock.
     def test_preflight_failure_is_reported_once_and_releases_the_lock(self):
         with temporary_root() as root:
             args = arguments(root)
@@ -552,6 +610,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertIn("Preflight failed: not enough memory", stderr.getvalue())
             self.assertFalse(catalogue_lock_path(args.path_to_outputs).exists())
 
+    # Check that existing lock rejects the batch before model work.
     def test_existing_lock_rejects_the_batch_before_model_work(self):
         with temporary_root() as root:
             args = arguments(root)
@@ -580,6 +639,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertTrue(lock_path.exists())
             pipeline_builder.assert_not_called()
 
+    # Check that manifest failure restores old CSV and writes a failed run manifest.
     def test_manifest_failure_restores_old_csv_and_writes_a_failed_run_manifest(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
@@ -596,6 +656,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(len(summary["previous_results"]), 2)
             self.assertIn("Manifest write failed", progress)
 
+    # Check that manifest interruption restores the previous CSV.
     def test_manifest_interruption_restores_the_previous_csv(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
@@ -608,10 +669,12 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
             self.assertFalse(catalogue_lock_path(catalogue).exists())
 
+    # Check that interruption after CSV staging does not cross the manifest boundary.
     def test_interruption_after_csv_staging_does_not_cross_the_manifest_boundary(self):
         with temporary_root() as root:
             outputs, catalogue, manifest = self.prepare_outputs(root)
 
+            # Handle the interrupt after staging step.
             def interrupt_after_staging(*call_args, **call_kwargs):
                 export_catalogue(*call_args, **call_kwargs)
                 raise KeyboardInterrupt
@@ -625,9 +688,11 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
             self.assertEqual(tuple(outputs.glob(".uma-bct-catalogue-*")), ())
 
+    # Check that interruption after export return uses the callers transaction state.
     def test_interruption_after_export_return_uses_the_callers_transaction_state(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
+            # Handle the interrupt after return step.
             def interrupt_after_return(*call_args, **call_kwargs):
                 export_results_into(*call_args, **call_kwargs)
                 raise KeyboardInterrupt
@@ -640,9 +705,11 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "old catalogue")
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
 
+    # Check that interruption after manifest rename restores both previous files.
     def test_interruption_after_manifest_rename_restores_both_previous_files(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
+            # Handle the interrupt after manifest step.
             def interrupt_after_manifest(staging, destination, backup, purpose):
                 replace_backed_file(staging, destination, backup, purpose)
                 if purpose == "Run manifest":
@@ -656,6 +723,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "old catalogue")
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
 
+    # Check that interruption after backed file quarantine restores both previous files.
     def test_interruption_after_backed_file_quarantine_restores_both_previous_files(self):
         for interrupted_name in ("catalogue.csv", "catalogue.run.json"):
             with self.subTest(interrupted_name=interrupted_name), temporary_root() as root:
@@ -664,6 +732,7 @@ class BatchRunnerTest(unittest.TestCase):
                 real_replace = os.replace
                 interrupted = False
 
+                # Handle the interrupt after quarantine step.
                 def interrupt_after_quarantine(
                     source, destination, real_replace=real_replace, interrupted_path=interrupted_path
                 ):
@@ -684,6 +753,7 @@ class BatchRunnerTest(unittest.TestCase):
                 self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
                 self.assertEqual(tuple(outputs.glob(".uma-bct-rollback-*")), ())
 
+    # Check that manifest failure removes a new CSV.
     def test_manifest_failure_removes_a_new_csv(self):
         with temporary_root() as root:
             manifest = root / "outputs/catalogue.run.json"
@@ -695,6 +765,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertFalse((root / "outputs/catalogue.csv").exists())
             self.assertTrue(Path(summary["run_manifest"]).is_file())
 
+    # Check that rollback failure reports partial and retains the recovery path.
     def test_rollback_failure_reports_partial_and_retains_the_recovery_path(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
@@ -710,6 +781,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertIn(summary["recovery_path"], summary["previous_results"])
             self.assertIn("Rollback failed", progress)
 
+    # Check that new CSV rollback failure reports the CSV as the recovery path.
     def test_new_csv_rollback_failure_reports_the_csv_as_the_recovery_path(self):
         with temporary_root() as root:
             manifest = root / "outputs/catalogue.run.json"
@@ -724,6 +796,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(summary["recovery_path"], str(root / "outputs/catalogue.csv"))
             self.assertTrue(Path(summary["recovery_path"]).is_file())
 
+    # Check that recovery manifest failure keeps stdout valid JSON.
     def test_recovery_manifest_failure_keeps_stdout_valid_json(self):
         with temporary_root() as root:
             _outputs, catalogue, _manifest = self.prepare_outputs(root, manifest_content=None)
@@ -737,6 +810,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertGreaterEqual(summary["failure_count"], 2)
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "old catalogue")
 
+    # Check that lock cleanup failure keeps JSON and returns lock error status.
     def test_lock_cleanup_failure_keeps_json_and_returns_lock_error_status(self):
         with temporary_root() as root:
             with patch("uma_bct.batch_runner.CatalogueLock.release", side_effect=OSError("cleanup denied")):
@@ -752,10 +826,12 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest["failures"], [{"stage": "lock_cleanup", "error": "cleanup denied"}])
             self.assertEqual(list((root / "outputs").glob("*.run.json")), [root / "outputs/catalogue.run.json"])
 
+    # Check that lock cleanup failure does not overwrite a late manifest edit.
     def test_lock_cleanup_failure_does_not_overwrite_a_late_manifest_edit(self):
         with temporary_root() as root:
             manifest = root / "outputs/catalogue.run.json"
 
+            # Handle the edit manifest then fail step.
             def edit_manifest_then_fail(_lock):
                 manifest.write_text("late unbacked manifest edit", encoding="utf-8")
                 raise OSError("cleanup denied")
@@ -769,6 +845,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest.read_text(encoding="utf-8"), "late unbacked manifest edit")
             self.assertIn("was not updated", progress)
 
+    # Check that preflight and lock cleanup failures still emit one JSON document.
     def test_preflight_and_lock_cleanup_failures_still_emit_one_json_document(self):
         with temporary_root() as root:
             args = arguments(root)
@@ -793,10 +870,12 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(summary["failure_count"], 2)
             self.assertIn("Lock cleanup failed", stderr.getvalue())
 
+    # Check that forced backup race does not restore a manifest as CSV.
     def test_forced_backup_race_does_not_restore_a_manifest_as_csv(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
 
+            # Handle the catalogue disappears step.
             def catalogue_disappears(paths):
                 catalogue.unlink()
                 return backup_existing_results(paths)
@@ -812,10 +891,12 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
             self.assertTrue(all(not path.casefold().endswith(".csv") for path in summary["previous_results"]))
 
+    # Check that forced backup race restores a catalogue that appears.
     def test_forced_backup_race_restores_a_catalogue_that_appears(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root, catalogue_content=None)
 
+            # Handle the catalogue appears step.
             def catalogue_appears(paths):
                 catalogue.write_text("raced catalogue", encoding="utf-8")
                 return backup_existing_results(paths)
@@ -829,10 +910,12 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "raced catalogue")
 
+    # Check that catalogue appearing after backup is not overwritten.
     def test_catalogue_appearing_after_backup_is_not_overwritten(self):
         with temporary_root() as root:
             _outputs, catalogue, _manifest = self.prepare_outputs(root, catalogue_content=None)
 
+            # Handle the appear after backup step.
             def appear_after_backup(paths):
                 backups = backup_existing_results(paths)
                 catalogue.write_text("late catalogue", encoding="utf-8")
@@ -845,18 +928,22 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "late catalogue")
             self.assertIsNone(summary["catalogue_output"])
 
+    # Check that existing catalogue changed after backup is not overwritten.
     def test_existing_catalogue_changed_after_backup_is_not_overwritten(self):
         self.assert_existing_output_edit_is_preserved("Catalogue output", during_publication=False)
 
+    # Check that interrupt after restoring a late catalogue edit does not roll it back.
     def test_interrupt_after_restoring_a_late_catalogue_edit_does_not_roll_it_back(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(root)
 
+            # Handle the edit after backup step.
             def edit_after_backup(paths):
                 backups = backup_existing_results(paths)
                 catalogue.write_text("late unbacked edit", encoding="utf-8")
                 return backups
 
+            # Handle the interrupt after restore step.
             def interrupt_after_restore(source, destination, *, existing_message):
                 result = rename_new_file(source, destination, existing_message=existing_message)
                 if Path(source).name.startswith(".uma-bct-rollback-"):
@@ -872,20 +959,25 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "late unbacked edit")
             self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
 
+    # Check that existing catalogue changed at publication syscall is not overwritten.
     def test_existing_catalogue_changed_at_publication_syscall_is_not_overwritten(self):
         self.assert_existing_output_edit_is_preserved("Catalogue output", during_publication=True)
 
+    # Check that existing manifest changed after backup is not overwritten.
     def test_existing_manifest_changed_after_backup_is_not_overwritten(self):
         self.assert_existing_output_edit_is_preserved("Run manifest", during_publication=False)
 
+    # Check that existing manifest changed at publication syscall is not overwritten.
     def test_existing_manifest_changed_at_publication_syscall_is_not_overwritten(self):
         self.assert_existing_output_edit_is_preserved("Run manifest", during_publication=True)
 
+    # Check that catalogue changed at rollback syscall is not overwritten.
     def test_catalogue_changed_at_rollback_syscall_is_not_overwritten(self):
         with temporary_root() as root:
             _outputs, catalogue, _manifest = self.prepare_outputs(root)
             raced = False
 
+            # Calculate the edit after displaced digest.
             def edit_after_displaced_digest(path, purpose):
                 nonlocal raced
                 digest = regular_file_sha256(path, purpose)
@@ -907,12 +999,14 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(encoding="utf-8"), "late rollback edit")
             self.assertEqual(summary["status"], "partial")
 
+    # Check that manifest appearing after backup is not overwritten.
     def test_manifest_appearing_after_backup_is_not_overwritten(self):
         with temporary_root() as root:
             _outputs, catalogue, manifest = self.prepare_outputs(
                 root, catalogue_content=None, manifest_content=None
             )
 
+            # Handle the appear after backup step.
             def appear_after_backup(paths):
                 backups = backup_existing_results(paths)
                 manifest.write_text("late manifest", encoding="utf-8")

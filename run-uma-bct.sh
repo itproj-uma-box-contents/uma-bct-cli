@@ -19,7 +19,7 @@ APP_PYTHON="$APP_ENV/bin/python"
 APP_CLI="$APP_ENV/bin/uma-bct"
 BUNDLED_UV_VERSION="0.12.9"
 BUNDLED_UV_RELEASE_URL="https://releases.astral.sh/github/uv/releases/download/$BUNDLED_UV_VERSION"
-OLLAMA_VERSION="0.30.8"
+OLLAMA_VERSION="0.32.9"
 MINIMUM_OLLAMA_VERSION="$OLLAMA_VERSION"
 OLLAMA_RELEASE_URL="https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION"
 MINIMUM_GLIBC_VERSION="2.28"
@@ -250,7 +250,7 @@ has_input_images() {
     for image in "$INPUTS"/*; do
         [ -f "$image" ] || continue
         case "$image" in
-            *.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp])
+            *.[Aa][Vv][Ii][Ff]|*.[Bb][Mm][Pp]|*.[Dd][Nn][Gg]|*.[Gg][Ii][Ff]|*.[Hh][Ee][Ii][Cc]|*.[Hh][Ee][Ii][Ff]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Tt][Ii][Ff]|*.[Tt][Ii][Ff][Ff]|*.[Ww][Ee][Bb][Pp])
                 return 0
                 ;;
         esac
@@ -473,17 +473,17 @@ install_ollama() {
     case "$(uname -s)-$(uname -m)" in
         Darwin-*)
             ollama_archive_name="ollama-darwin.tgz"
-            ollama_archive_sha256="52acbca4e89c53db9abc586a22b5633fd101db293177264b9a0fe5d64a42a064"
+            ollama_archive_sha256="17a5b096d4515d00a6415012db847a2b353b389ed7ab33d025e3b98c2f05b49c"
             ollama_archive_type="gzip"
             ;;
         Linux-x86_64|Linux-amd64)
             ollama_archive_name="ollama-linux-amd64.tar.zst"
-            ollama_archive_sha256="ffe2b2c2f2f5f5b30c081ec353c2e0bb2d9ead516064a8e22663b24b8fd8dca0"
+            ollama_archive_sha256="5d747a43369f61e38f20b5a39fcc5c90647e562cdc61e2e56034f1c5b113d540"
             ollama_archive_type="zstd"
             ;;
         Linux-arm64|Linux-aarch64)
             ollama_archive_name="ollama-linux-arm64.tar.zst"
-            ollama_archive_sha256="668a6f934b0b0455128bb4a76c9e50b9e5f274f9dc7710a066b7073e5bd36588"
+            ollama_archive_sha256="79617139521db251c716d6229505d7530171ff4d68e476d0c22dabc15726a237"
             ollama_archive_type="zstd"
             ;;
         *) fail "No verified Ollama download is available for this computer." ;;
@@ -686,7 +686,7 @@ if [ "$private_data_present" -eq 0 ]; then
 fi
 
 if ! has_input_images; then
-    printf 'Add JPG, PNG, TIF, or WEBP photos to the folder that just opened.\n'
+    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened.\n'
     open_folder "$INPUTS"
     if [ -t 0 ]; then
         printf 'Press Enter after the photos have finished copying: '

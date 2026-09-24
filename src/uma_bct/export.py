@@ -8,21 +8,106 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
 from .atomic import rename_new_file
-from .catalogue import append_flag, map_catalogue_record
-from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, OUTPUT_COLUMNS
+from .catalogue import CatalogueRow, append_flag, map_catalogue_record
+from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS
 from .path_safety import check_path
 from .pipeline import ImageResult
 
+UNIT_NUMBER = re.compile(r"^\d{1,4}$")
+MAX_GAP_SIZE = 100
 
-def catalogue_records(results: Iterable[ImageResult], *, minimum_confidence: int = 80, catalogue_path: str | Path | None = None,
-    trusted_crop_links: bool = False) -> list[dict[str, str | int]]:
-    """Build catalogue rows and keep the physical box order."""
+
+def _missing_box_row(prefix: str, unit: int) -> CatalogueRow:
+    """Build a blank catalogue row for one predicted missing unit."""
+
+    return CatalogueRow({
+        **{column: "" for column in OUTPUT_COLUMNS},
+        "Unit Type": prefix,
+        "Unit Number": f"{unit:04d}",
+        "Review Flags": MISSING_BOX_FLAG,
+    })
+
+
+def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str]]:
+    """Return blank review rows for gaps within each identifier prefix."""
+
+    units_by_prefix: dict[str, set[int]] = {}
+
+    for record in records:
+        prefix = str(record["Unit Type"]).strip()
+        unit = str(record["Unit Number"]).strip()
+        if prefix and UNIT_NUMBER.fullmatch(unit):
+            units_by_prefix.setdefault(prefix, set()).add(int(unit))
+
+    return [
+        _missing_box_row(prefix, unit)
+        for prefix in sorted(units_by_prefix, key=str.casefold)
+        for unit in range(min(units_by_prefix[prefix]), max(units_by_prefix[prefix]) + 1)
+        if unit not in units_by_prefix[prefix]
+    ]
+
+
+def _sorted_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str | int]]:
+    """Sort valid box titles by prefix and unit, leaving unparseable rows last."""
+
+    indexed_records = list(enumerate(records))
+
+    def sort_key(item: tuple[int, dict[str, str | int]]) -> tuple[int, str, int, int]:
+        # Keep incomplete rows stable after sortable unit rows.
+        index, record = item
+        prefix = str(record["Unit Type"]).strip()
+        unit = str(record["Unit Number"]).strip()
+        if not prefix or UNIT_NUMBER.fullmatch(unit) is None:
+            return (1, "", 0, index)
+        return (0, prefix.casefold(), int(unit), index)
+
+    return [record for _, record in sorted(indexed_records, key=sort_key)]
+
+
+def _insert_missing_box_records(records: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
+    """Insert missing rows between consecutive units in each prefix group, unless the gap exceeds MAX_GAP_SIZE."""
+
+    output: list[dict[str, str | int]] = []
+    for index, record in enumerate(records):
+        output.append(record)
+        current_prefix = str(record["Unit Type"]).strip()
+        current_unit = str(record["Unit Number"]).strip()
+        if not current_prefix or UNIT_NUMBER.fullmatch(current_unit) is None or index + 1 == len(records):
+            continue
+        following_prefix = str(records[index + 1]["Unit Type"]).strip()
+        following_unit = str(records[index + 1]["Unit Number"]).strip()
+        if (
+            not following_prefix
+            or UNIT_NUMBER.fullmatch(following_unit) is None
+            or following_prefix.casefold() != current_prefix.casefold()
+        ):
+            continue
+
+        gap_size = int(following_unit) - int(current_unit) - 1
+        if gap_size <= 0 or gap_size > MAX_GAP_SIZE:
+            continue
+
+        for unit in range(int(current_unit) + 1, int(following_unit)):
+            output.append(_missing_box_row(current_prefix, unit))
+    return output
+
+
+def catalogue_records(
+    results: Iterable[ImageResult],
+    *,
+    minimum_confidence: int = 80,
+    catalogue_path: str | Path | None = None,
+    detect_missing_boxes: bool = True,
+    trusted_crop_links: bool = False,
+) -> list[dict[str, str | int]]:
+    """Build catalogue rows sorted by box prefix and unit number."""
 
     if not 0 <= minimum_confidence <= 100:
         raise ValueError("Low-confidence threshold must be between 0 and 100.")
@@ -43,24 +128,36 @@ def catalogue_records(results: Iterable[ImageResult], *, minimum_confidence: int
                 )
             )
 
-    # Duplicate titles can only be found after every row has been built.
+    records = _sorted_records(records)
+    if detect_missing_boxes:
+        records = _insert_missing_box_records(records)
     title_counts = Counter(
-        str(record["Node Title"]).strip().casefold() for record in records if str(record["Node Title"]).strip()
+        (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
+        for record in records
+        if str(record["Unit Type"]).strip() and str(record["Unit Number"]).strip()
     )
     for record in records:
-        title = str(record["Node Title"]).strip()
+        identity = (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
         flags = str(record["Review Flags"])
-        if title and title_counts[title.casefold()] > 1:
+        if identity[0] and identity[1] and title_counts[identity] > 1:
             flags = append_flag(flags, DUPLICATE_FLAG)
-        if int(record["Transcription Confidence (%)"]) < minimum_confidence:
+        confidence = record["Transcription Confidence (%)"]
+        if confidence != "" and int(confidence) < minimum_confidence:
             flags = append_flag(flags, LOW_CONFIDENCE_FLAG)
         record["Review Flags"] = flags
 
     return records
 
 
-def export_catalogue(results: Iterable[ImageResult], output_path: str | Path, *, minimum_confidence: int = 80,
-    replace_existing: bool = True, trusted_crop_links: bool = False) -> list[dict[str, str | int]]:
+def export_catalogue(
+    results: Iterable[ImageResult],
+    output_path: str | Path,
+    *,
+    minimum_confidence: int = 80,
+    replace_existing: bool = True,
+    detect_missing_boxes: bool = True,
+    trusted_crop_links: bool = False,
+) -> list[dict[str, str | int]]:
     """Safely write the UTF-8 CSV and return its rows."""
 
     destination = Path(output_path)
@@ -68,10 +165,7 @@ def export_catalogue(results: Iterable[ImageResult], output_path: str | Path, *,
         raise ValueError("Catalogue output must end in .csv.")
 
     records = catalogue_records(
-        results,
-        minimum_confidence=minimum_confidence,
-        catalogue_path=destination,
-        trusted_crop_links=trusted_crop_links,
+        results, minimum_confidence=minimum_confidence, catalogue_path=destination, detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links,
     )
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
