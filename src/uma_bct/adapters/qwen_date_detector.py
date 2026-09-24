@@ -6,11 +6,6 @@ from .ollama_client import OllamaVisionModel
 
 DATE_EXTRACTION_PROMPT = """You will be provided with text taken from a box in a University archive.
 The box contains a number of dates (e.g. 19/12/1950) and ranges of dates (e.g. 2024-5). Extract these from the text and report them in the provided json format.
-In the case of incomplete dates, ommit the missing parts, do not attempt to guess ambiguous cases.
-Also ensure you include the original date or date range string under the raw_text field, and the position of the first character under starting_index.
-All dates and date ranges should be non overlapping
-Dates which are a part of a date range should not be listed as indivial dates.
-Indivual dates should have a start date entered and end date left empty
 
 For example, the string "10/12/1950. In 5/1921, 1850. Confrence 3.1930 to 5.1933, then 2021-23, 5-9/1811" becomes:
 {
@@ -24,6 +19,22 @@ For example, the string "10/12/1950. In 5/1921, 1850. Confrence 3.1930 to 5.1933
 ]
 }
 
+Expect date range format including but not limited to:
+"dd/mm/yyyy-dd/mm/yyyy"
+"mm/yyyy-mm/yyyy"
+"yyyy-yyyy"
+"dd-dd/mm/yyyy",
+"dd-dd/mm",
+"mm-mm/yyyy",
+"mm-mm/yy",
+"yyyy-y",
+
+In the case of incomplete dates, ommit the missing parts, do not attempt to guess ambiguous cases.
+Also ensure you include the original date or date range string under the raw_text field, and the position of the first character under starting_index.
+All dates and date ranges should be non overlapping
+Dates which are a part of a date range should not be listed as indivial dates.
+Indivual dates should have a start date entered and end date left empty
+Ensure end dates come later than start dates
 
 Extract the dates from the folllowing string:
 """
