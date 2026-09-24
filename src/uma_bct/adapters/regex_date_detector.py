@@ -244,7 +244,9 @@ class RegexDateDetector:
         #select matches
         while i<len(matches):
             #remove substrings (i.e dd/mm/yyyy contains the reduntant match dd/mm) 
-            dates.append(matches[i])
+            if self.standardise_match_result(matches[i]).is_valid():
+                dates.append(matches[i])
+            
             for j in reversed(range(i+1, len(matches))):
                 if matches[j].start()>=matches[i].start() and matches[j].end()<=matches[i].end():
                     matches.pop(j)
