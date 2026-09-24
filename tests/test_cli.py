@@ -79,6 +79,7 @@ def arguments(root: Path, *, force=False):
         path_to_outputs=root / "outputs/catalogue.csv",
         path_to_box_images=root / "outputs/crops",
         force=force,
+        json=True,
     )
 
 
@@ -94,6 +95,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(defaults.min_transcription_confidence, 80)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
+        self.assertFalse(defaults.json)
+        self.assertTrue(parse_args(["--json"]).json)
         self.assertTrue(parse_args(["--human"]).human)
 
     # Check that confidence options keep their distinct meanings.
@@ -361,6 +364,38 @@ class CliTest(unittest.TestCase):
             main(["--path-to-outputs", "catalogue.xlsx"])
         self.assertEqual(raised.exception.code, 2)
 
+    # The no-flag command should end with the report the client can read.
+    def test_default_run_shows_a_readable_summary(self):
+        with temporary_root() as root:
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "shelf.jpg").write_bytes(b"fixture")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                contextlib.chdir(root),
+                patch("uma_bct.cli.keep_awake", return_value=contextlib.nullcontext()),
+                patch("uma_bct.batch_runner.build_pipeline", return_value=FakeBatchPipeline()),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = main([])
+            self.assertEqual(status, 0)
+            self.assertIn("Finished\nPhotos finished: 1 of 1", stdout.getvalue())
+            self.assertIn("Catalogue: 1 rows", stdout.getvalue())
+            self.assertNotIn('"schema_version"', stdout.getvalue())
+
+            json_stdout = io.StringIO()
+            with (
+                contextlib.chdir(root),
+                patch("uma_bct.cli.keep_awake", return_value=contextlib.nullcontext()),
+                patch("uma_bct.batch_runner.build_pipeline", return_value=FakeBatchPipeline()),
+                contextlib.redirect_stdout(json_stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                json_status = main(["--json", "--force"])
+            self.assertEqual(json_status, 0)
+            self.assertEqual(json.loads(json_stdout.getvalue())["catalogue_records"], 1)
+
     # Check that CLI routes a valid batch.
     def test_cli_routes_a_valid_batch(self):
         with temporary_root() as root:
@@ -551,7 +586,7 @@ class BatchRunnerTest(unittest.TestCase):
 
             # The opt-in report uses the same published result without changing JSON mode.
             human_args = arguments(root, force=True)
-            human_args.human = True
+            human_args.json = False
             human_stdout = io.StringIO()
             with (
                 patch("uma_bct.batch_runner.build_pipeline", return_value=FakeBatchPipeline()),

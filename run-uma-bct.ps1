@@ -684,7 +684,7 @@ try {
         }
 
         # The CLI owns the progress lines and the final client report.
-        $Arguments = "--human --path-to-inputs " + (Quote-NativeArgument $Inputs) +
+        $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
         $RunStatus = Invoke-OwnedApp $Arguments
     } finally {

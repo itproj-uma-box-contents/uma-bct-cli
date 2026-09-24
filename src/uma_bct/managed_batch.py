@@ -35,7 +35,7 @@ from .constants import IMAGE_EXTENSIONS
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
-from .pipeline import ImageResult, warning_text
+from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
 
@@ -1780,7 +1780,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
     interruption_context = managed_interruption_handlers()
     interruption_context.__enter__()
     try:
-        reporter.phase("Checking input photos and saved progress...")
+        reporter.phase("Checking input photos and saved progress")
         lock.acquire()
         request_timeout = arguments.request_timeout
         if request_timeout is None:
@@ -1790,7 +1790,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             arguments, results_root, snapshot, request_timeout
         )
         if completed is not None:
-            reporter.phase("Checking the completed batch...")
+            reporter.phase("Checking the completed batch")
             completed_batch, completed_details = completed
             batch_directory = completed_batch
             validate_sources_and_crops(completed_details, completed_batch, snapshot)
@@ -1814,8 +1814,10 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
                     progress["phase"] = progress.pop("interrupted_phase", "processing")
                 write_progress(batch_directory, progress)
 
-            reporter.phase("Checking the local model...")
+            reporter.phase("Checking the local model")
             pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+            if isinstance(pipeline, BoxTranscriptionPipeline):
+                pipeline.on_stage = reporter.phase
             validate_model_resume(progress, model_metadata, batch_directory)
             progress["model"] = model_metadata
             progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
@@ -1823,7 +1825,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
                 processed = process_pending_images(arguments, images, progress, batch_directory, pipeline, reporter)
-            reporter.phase("Finalizing results...")
+            reporter.phase("Finalizing results")
             details = finalize_batch(arguments, progress, batch_directory)
             summary = managed_public_summary(
                 details,
@@ -1881,5 +1883,5 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             exit_code = 2
 
     reporter.close()
-    print_run_summary(summary, human=getattr(arguments, "human", False), elapsed_seconds=reporter.elapsed_seconds())
+    print_run_summary(summary, human=not getattr(arguments, "json", False), elapsed_seconds=reporter.elapsed_seconds())
     return exit_code

@@ -378,6 +378,15 @@ class OllamaClientTest(unittest.TestCase):
         with patch.dict("os.environ", {"UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1"}, clear=True):
             self.assertEqual(normalize_ollama_host("http://ollama:11434"), "http://ollama:11434")
 
+    # Keep model chunks from adding dots to the client's progress display.
+    def test_streamed_response_does_not_print_dots(self):
+        chunks = [{"message": {"content": '{"boxes": []}'}}] + [{"message": {"content": ""}}] * 60
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            content, _thinking, _content_logprobs, _thinking_logprobs = ollama_client.collect_stream_text(chunks)
+        self.assertEqual(content, '{"boxes": []}')
+        self.assertEqual(stderr.getvalue(), "")
+
     # Check that query collects streamed JSON with safe client settings.
     def test_query_collects_streamed_json_with_safe_client_settings(self):
         chunks = [{"message": {"content": '{"boxes":'}}, {"message": {"content": " []}"}}]

@@ -398,6 +398,7 @@ class ClientDeliveryTest(unittest.TestCase):
     def test_compose_disables_ollama_cloud_for_every_service(self):
         compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
         self.assertEqual(compose.count('OLLAMA_NO_CLOUD: "1"'), 3)
+        self.assertIn("- --json", compose)
 
     # Check that delivery paths and fixtures agree on the Ollama version.
     def test_delivery_paths_and_fixtures_agree_on_the_ollama_version(self):
@@ -509,8 +510,8 @@ class ClientDeliveryTest(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(["sh", "-n", str(ROOT / "run-uma-bct.sh")], check=True, capture_output=True, text=True)
-        self.assertIn('"$APP_CLI" --human --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
-        self.assertIn('"--human --path-to-inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
+        self.assertIn('"$APP_CLI" --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
+        self.assertIn('"--path-to-inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
 
     # Check that macOS asks Finder for the photo folder and gives its path if opening fails.
     @unittest.skipIf(os.name == "nt", "POSIX shell fixture")

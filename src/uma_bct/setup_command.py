@@ -99,13 +99,13 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
     lock: CatalogueLock | ResultsRootLock | None = None
     status = 0
     try:
-        reporter.phase("Checking local folders...")
+        reporter.phase("Checking local folders")
         validate_setup_layout(inputs, outputs)
         warn_about_permissions(inputs, ensure_directory(inputs))
         warn_about_permissions(outputs, ensure_directory(outputs))
         lock = ResultsRootLock(outputs) if results_directory is not None else CatalogueLock(outputs / "catalogue.csv")
         lock.acquire()
-        reporter.phase("Checking or downloading the local model...")
+        reporter.phase("Checking or downloading the local model")
         OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
         message = safe_error(error)

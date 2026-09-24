@@ -20,17 +20,18 @@ local; it does not upload them.
 The launcher prints the photo folder's full path. If it does not open
 automatically, open that path yourself before pressing Enter.
 
-The terminal shows the current photo, completed counts, and a "still working"
-update every 30 seconds during long model requests. When the run ends, a short
-report shows photo outcomes, catalogue rows, elapsed time, and the Results
-location. Keep the terminal open until that report appears.
+The terminal updates one live progress display with the current photo and box,
+completed photo count, and elapsed time. Captured logs show short milestones
+instead. When the run ends, a short report shows photo outcomes, catalogue
+rows, elapsed time, and the Results location. Keep the terminal open until that
+report appears.
 
-During model setup and photo processing, the CLI asks the operating system to
-prevent automatic idle sleep. It releases that request when the CLI exits. If
-the computer cannot provide this protection, the terminal warns you and the
-run continues. Keep the laptop lid open: manual sleep or low battery can still
-interrupt work. Some screen saver or lock policies may still turn off the
-display while processing continues. If the warning appears, adjust the
+During model setup and photo processing, the CLI requests protection against
+automatic idle sleep and releases it when the CLI exits. macOS confirms the
+request before work starts. If the computer rejects it, the terminal warns you
+and the run continues. Keep the laptop lid open: manual sleep or low battery
+can still interrupt work. Some screen saver or lock policies may still turn
+off the display while processing continues. If a warning appears, adjust the
 computer's power settings before a long batch.
 
 The first run needs an internet connection because it installs the verified
@@ -126,6 +127,10 @@ top-level catalogues, manifests, and crops are not changed. If both the friendly
 and legacy directory pairs contain data, the launcher stops and names both; it
 never merges, moves, or deletes private files.
 
+An older offline runtime without the live display dependency still processes
+photos and shows short milestone lines. A fresh extracted bundle installs the
+live display before photographs are added.
+
 Only numeric loopback Ollama endpoints are accepted by default. Direct CLI use
 still defaults to `127.0.0.1:11434`. A developer may use an approved managed
 endpoint only with HTTPS and `UMA_BCT_ALLOW_REMOTE_OLLAMA=1`; image pixels then
@@ -142,9 +147,9 @@ uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/r
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
 
-Direct CLI runs continue to write one JSON summary to stdout, with live
-progress on stderr. Add `--human` to show the same readable final report as
-the launcher instead of JSON.
+Direct CLI runs show the same readable final report as the launcher. Add
+`--json` when a script needs one JSON summary on stdout; progress and warnings
+still go to stderr. The `--human` flag remains accepted for older commands.
 
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
 Without it, every existing direct-CLI default, alias, and Docker workflow stays

@@ -51,6 +51,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False) -> argparse.Namesp
         force=False,
         results_directory=root / "Results",
         reprocess=reprocess,
+        json=True,
     )
 
 
@@ -243,7 +244,7 @@ class ManagedBatchTest(unittest.TestCase):
         with self.prepared_root("01.jpg", "02.jpg") as root:
             self.run_with(root, ManagedPipeline(interrupt_name="02.jpg"))
             arguments = managed_arguments(root)
-            arguments.human = True
+            arguments.json = False
             images = sorted(arguments.path_to_inputs.glob("*.jpg"))
             stdout, stderr = io.StringIO(), io.StringIO()
             with (
@@ -255,7 +256,7 @@ class ManagedBatchTest(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertIn("Resuming: 1 photo already finished", stderr.getvalue())
-            self.assertIn("Processing photo 2 of 2", stderr.getvalue())
+            self.assertIn("Processing Photo 2 of 2", stderr.getvalue())
             self.assertIn("Finished\nPhotos finished: 2 of 2", stdout.getvalue())
             self.assertIn("Catalogue: 2 rows", stdout.getvalue())
             self.assertNotIn('"schema_version"', stdout.getvalue())

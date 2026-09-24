@@ -23,7 +23,7 @@ from .atomic import rename_new_file
 from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import check_path
-from .pipeline import ImageResult, warning_text
+from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import (
     CatalogueLock,
     backup_existing_results,
@@ -368,10 +368,12 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     preserve_existing_manifest_on_failure: bool, progress: TerminalProgress) -> tuple[dict[str, Any], bool]:
 
     failures: list[dict[str, str]] = []
-    progress.phase("Checking the local model...")
+    progress.phase("Checking the local model")
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
+    if isinstance(pipeline, BoxTranscriptionPipeline):
+        pipeline.on_stage = progress.phase
     results = process_images(pipeline, images, failures, progress) if pipeline else []
-    progress.phase("Finalizing results..." if pipeline else "Saving run details...")
+    progress.phase("Finalizing results" if pipeline else "Saving run details")
     export_state = ExportState()
     manifest: Path | None = None
     summary: dict[str, Any] | None = None
@@ -453,7 +455,7 @@ def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: P
         lock.acquire()
     except Exception as error:
         summary = lock_failure_summary(arguments, error)
-        emit_summary(summary, len(images), arguments.model, progress, human=getattr(arguments, "human", False))
+        emit_summary(summary, len(images), arguments.model, progress, human=not getattr(arguments, "json", False))
         return 2
 
     release_error: str | None = None
@@ -488,7 +490,7 @@ def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: P
                 summary["run_manifest"] = None
                 print(f"Manifest was not updated after lock cleanup failed: {message}", file=sys.stderr)
 
-    emit_summary(summary, len(images), arguments.model, progress, human=getattr(arguments, "human", False))
+    emit_summary(summary, len(images), arguments.model, progress, human=not getattr(arguments, "json", False))
     if release_error is not None:
         return 2
     if not pipeline_ready:

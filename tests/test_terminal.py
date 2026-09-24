@@ -1,30 +1,31 @@
 import contextlib
 import io
 import json
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
 
 
 class TerminalProgressTest(unittest.TestCase):
-    # Check that a slow photo stays visible and the final numbers remain honest.
-    def test_heartbeat_and_human_report_use_plain_committed_counts(self):
+    # Check that captured output stays short and the final numbers remain honest.
+    def test_captured_progress_and_human_report_use_plain_committed_counts(self):
         moment = [100.0]
         output = io.StringIO()
         with TerminalProgress(2, stream=output, clock=lambda: moment[0]) as reporter:
-            self.assertEqual(reporter.heartbeat_seconds, 30)
             reporter.photo_started(1, Path("shelf\nphoto.jpg"))
+            reporter.phase("Transcribing box 1 of 2")
             moment[0] = 131.0
-            reporter.heartbeat()
             reporter.photo_finished(1, "complete", 2)
-            reporter.phase("Saving the catalogue...")
+            reporter.phase("Saving the catalogue")
 
         progress = output.getvalue()
-        self.assertIn("Processing photo 1 of 2: shelf?photo.jpg", progress)
-        self.assertIn("Still working: photo 1 of 2", progress)
-        self.assertIn("0 of 2 finished | 0m 31s elapsed", progress)
-        self.assertIn("1 of 2 finished", progress)
+        self.assertIn("Processing Photo 1 of 2: shelf?photo.jpg", progress)
+        self.assertIn("Photo 1 of 2: shelf?photo.jpg | Transcribing box 1 of 2", progress)
+        self.assertIn("Photo 1 finished: complete | 2 boxes found", progress)
+        self.assertNotIn("Still working:", progress)
 
         summary = {
             "status": "partial", "images_total": 2, "images_complete": 1,
@@ -48,3 +49,26 @@ class TerminalProgressTest(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             print_run_summary(summary, human=False, elapsed_seconds=1)
         self.assertEqual(json.loads(stdout.getvalue()), summary)
+
+    # Check that a real terminal redraws one live status instead of appending heartbeats.
+    def test_live_progress_redraws_in_place(self):
+        output = io.StringIO()
+        with TerminalProgress(1, stream=output, force_terminal=True) as reporter:
+            reporter.photo_started(1, Path("shelf.jpg"))
+            reporter.phase("Transcribing box 1 of 6")
+            print("Warning: check this photo", file=sys.stderr)
+            reporter.photo_finished(1, "complete", 6)
+        self.assertIn("Transcribing box 1 of 6", output.getvalue())
+        self.assertIn("Warning: check this photo", output.getvalue())
+        self.assertIn("\x1b[", output.getvalue())
+        self.assertNotIn("Still working:", output.getvalue())
+
+    # Older offline bundles keep working if their runtime lacks Rich.
+    def test_missing_rich_uses_milestones(self):
+        output = io.StringIO()
+        with patch("uma_bct.terminal.Console", None):
+            with TerminalProgress(1, stream=output, force_terminal=True) as reporter:
+                reporter.photo_started(1, Path("shelf.jpg"))
+                reporter.photo_finished(1, "complete", 1)
+        self.assertIn("Processing Photo 1 of 1: shelf.jpg", output.getvalue())
+        self.assertNotIn("\x1b[", output.getvalue())

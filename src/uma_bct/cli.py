@@ -161,7 +161,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create another managed batch for a photo set that is already complete",
     )
-    parser.add_argument("--human", action="store_true", help="show a readable transcription report instead of JSON")
+    output_format = parser.add_mutually_exclusive_group()
+    output_format.add_argument("--json", action="store_true", help="write the final transcription result as JSON")
+    output_format.add_argument("--human", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")

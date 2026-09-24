@@ -1,14 +1,21 @@
-"""Show calm, readable progress without changing the CLI's JSON default."""
+"""Keep a small live terminal status and a readable final report."""
 
 from __future__ import annotations
 
 import json
 import sys
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
+
+try:
+    from rich.console import Console
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+except ImportError:
+    # An older offline client runtime may have the new wheel but not Rich yet.
+    Console = None
+    Progress = None
 
 
 def terminal_text(value: object) -> str:
@@ -27,7 +34,7 @@ def elapsed_text(seconds: float) -> str:
 
 
 class TerminalProgress:
-    """Print milestones and a 30-second heartbeat while model calls are busy."""
+    """Refresh one terminal display, or print milestones when output is captured."""
 
     def __init__(
         self,
@@ -35,87 +42,88 @@ class TerminalProgress:
         *,
         stream: TextIO | None = None,
         clock: Callable[[], float] = time.monotonic,
-        heartbeat_seconds: float = 30,
+        force_terminal: bool | None = None,
     ) -> None:
         self.total = total
         self.stream = sys.stderr if stream is None else stream
         self.clock = clock
-        self.heartbeat_seconds = heartbeat_seconds
         self.started = clock()
         self.completed = 0
         self.current = "Preparing the run"
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        self.photo_label = ""
+        self.console = Console(file=self.stream, force_terminal=force_terminal) if Console is not None else None
+        self._progress: Progress | None = None
+        self._task_id: int | None = None
 
-    # Start one background timer so a slow model request never looks stuck.
+    # Rich refreshes the current stage and elapsed time in place on a terminal.
     def __enter__(self) -> TerminalProgress:
-        if self.total is None:
-            self._write("Preparing UMA BCT...")
+        if self.console is not None and self.console.is_terminal:
+            columns = [SpinnerColumn(), TextColumn("{task.description}")]
+            if self.total is not None:
+                columns.extend((BarColumn(bar_width=18), MofNCompleteColumn()))
+            columns.append(TimeElapsedColumn())
+            self._progress = Progress(
+                *columns, console=self.console, refresh_per_second=2, transient=True,
+                redirect_stdout=False, redirect_stderr=True,
+            )
+            self._task_id = self._progress.add_task(self.current, total=self.total)
+            self._progress.start()
+        elif self.total is None:
+            self._write("Preparing UMA BCT")
         else:
             self._write(f"UMA BCT: {self.total} photo{'s' if self.total != 1 else ''} queued.")
-        self._thread = threading.Thread(target=self._heartbeat_loop, name="uma-bct-progress", daemon=True)
-        self._thread.start()
         return self
 
-    # Stop the timer before the final report or any exception leaves this run.
+    # Clear the live display before printing the final report.
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         self.close()
 
     def _write(self, message: str) -> None:
-        with self._lock:
-            self._write_locked(message)
-
-    def _write_locked(self, message: str) -> None:
         self.stream.write(f"{message}\n")
         self.stream.flush()
 
-    def _heartbeat_loop(self) -> None:
-        while not self._stop.wait(self.heartbeat_seconds):
-            self.heartbeat()
-
-    def heartbeat(self) -> None:
-        """Give a time and completed count even when the model is still busy."""
-
-        with self._lock:
-            finished = f" | {self.completed} of {self.total} finished" if self.total is not None else ""
-            self._write_locked(
-                f"Still working: {self.current}{finished} | {elapsed_text(self.elapsed_seconds())} elapsed"
-            )
+    def _show(self) -> None:
+        description = f"{self.photo_label} | {self.current}" if self.photo_label else self.current
+        if self._progress is not None and self._task_id is not None:
+            self._progress.update(self._task_id, description=description, refresh=True)
+        else:
+            self._write(description)
 
     def elapsed_seconds(self) -> float:
         return max(0.0, self.clock() - self.started)
 
     def phase(self, message: str) -> None:
-        with self._lock:
-            self.current = terminal_text(message)
-            self._write_locked(self.current)
+        self.current = terminal_text(message)
+        self._show()
 
     def reused(self, count: int) -> None:
-        with self._lock:
-            self.completed = count
-            if count:
-                self._write_locked(f"Resuming: {count} photo{'s' if count != 1 else ''} already finished.")
+        self.completed = count
+        if self._progress is not None and self._task_id is not None:
+            self._progress.update(self._task_id, completed=count, refresh=True)
+        elif count:
+            self._write(f"Resuming: {count} photo{'s' if count != 1 else ''} already finished.")
 
     def photo_started(self, index: int, path: Path) -> None:
-        with self._lock:
-            self.current = f"photo {index} of {self.total}: {terminal_text(path.name)}"
-            self._write_locked(f"Processing photo {index} of {self.total}: {terminal_text(path.name)}")
+        self.photo_label = f"Photo {index} of {self.total}: {terminal_text(path.name)}"
+        self.current = "Detecting boxes"
+        if self._progress is not None:
+            self._show()
+        else:
+            self._write(f"Processing {self.photo_label}")
 
     def photo_finished(self, index: int, status: str, boxes: int) -> None:
-        with self._lock:
-            self.completed += 1
-            self.current = "Preparing the next photo"
-            self._write_locked(
-                f"Photo {index} finished: {status} | {boxes} box{'es' if boxes != 1 else ''} found | "
-                f"{self.completed} of {self.total} finished"
-            )
+        self.completed += 1
+        self.photo_label = ""
+        self.current = f"Finished {self.completed} of {self.total} photos"
+        if self._progress is not None and self._task_id is not None:
+            self._progress.update(self._task_id, advance=1, description=self.current, refresh=True)
+        else:
+            self._write(f"Photo {index} finished: {status} | {boxes} box{'es' if boxes != 1 else ''} found")
 
     def close(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
+        if self._progress is not None:
+            self._progress.stop()
+            self._progress = None
 
 
 def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted: int | None = None) -> str:

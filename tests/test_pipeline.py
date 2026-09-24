@@ -136,10 +136,14 @@ class PipelineTest(unittest.TestCase):
 
     # Check that the code processes a normal Qwen crop.
     def test_processes_a_normal_qwen_crop(self):
-        result = self.process(self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber(["record"])))
+        pipeline = self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber(["record"]))
+        stages: list[str] = []
+        pipeline.on_stage = stages.append
+        result = self.process(pipeline)
         self.assertEqual(result.status, "complete")
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.fallback_path, ("qwen",))
+        self.assertEqual(stages, ["Transcribing box 1 of 1"])
 
     # Check that the code falls back from Qwen to OpenCV.
     def test_falls_back_from_qwen_to_opencv(self):

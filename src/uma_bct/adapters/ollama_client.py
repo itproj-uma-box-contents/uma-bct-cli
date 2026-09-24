@@ -191,7 +191,7 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
     content_logprobs: list[tuple[str, float]] = []
     thinking_logprobs: list[tuple[str, float]] = []
     characters = 0
-    for number, chunk in enumerate(stream, start=1):
+    for chunk in stream:
         chunk_content = message_text(chunk, "content")
         chunk_thinking = message_text(chunk, "thinking")
         characters += len(chunk_content) + len(chunk_thinking)
@@ -204,8 +204,6 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
             content_logprobs.extend(chunk_token_logprobs(chunk))
         elif chunk_thinking:
             thinking_logprobs.extend(chunk_token_logprobs(chunk))
-        if number % 20 == 0:
-            print(".", end="", file=sys.stderr, flush=True)
     return ("".join(content).strip(), "".join(thinking).strip(), tuple(content_logprobs), tuple(thinking_logprobs))
 
 

@@ -702,8 +702,8 @@ fi
 has_input_images || fail "No supported photos were found in $INPUTS"
 
 set +e
-# Let the CLI show one readable report while retaining JSON for direct users.
-"$APP_CLI" --human --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
+# Let the CLI show its readable report in this client terminal.
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
 APP_PID=$!
 wait "$APP_PID"
 status=$?

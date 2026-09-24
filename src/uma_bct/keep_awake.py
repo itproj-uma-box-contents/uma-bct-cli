@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import selectors
 import subprocess
 import sys
@@ -32,21 +31,54 @@ def stop_helper(process: subprocess.Popen[str]) -> None:
 
 
 def start_mac_awake() -> Callable[[], None]:
-    """Tie macOS's idle and display assertions to this Python process."""
+    """Ask macOS for confirmed idle-system and display assertions."""
 
-    process = subprocess.Popen(
-        ["/usr/bin/caffeinate", "-di", "-w", str(os.getpid())],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if process.poll() is not None:
-        raise OSError("caffeinate exited before sleep protection started")
+    core = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+    core.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    core.CFStringCreateWithCString.restype = ctypes.c_void_p
+    core.CFRelease.argtypes = [ctypes.c_void_p]
+    iokit.IOPMAssertionCreateWithName.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)
+    ]
+    iokit.IOPMAssertionCreateWithName.restype = ctypes.c_int32
+    iokit.IOPMAssertionRelease.argtypes = [ctypes.c_uint32]
+    iokit.IOPMAssertionRelease.restype = ctypes.c_int32
+
+    # Keep both requests owned by this process, so macOS releases them if it exits.
+    def cf_string(value: bytes) -> int:
+        reference = core.CFStringCreateWithCString(None, value, 0x08000100)
+        if not reference:
+            raise OSError("macOS could not create a power-assertion label")
+        return reference
+
+    reason = cf_string(b"UMA BCT is processing archive photos")
+    assertions: list[int] = []
+    try:
+        for name in (b"PreventUserIdleSystemSleep", b"PreventUserIdleDisplaySleep"):
+            kind = cf_string(name)
+            try:
+                assertion = ctypes.c_uint32()
+                status = iokit.IOPMAssertionCreateWithName(kind, 255, reason, ctypes.byref(assertion))
+                if status != 0:
+                    raise OSError(f"macOS rejected the idle-sleep request (code {status})")
+                assertions.append(assertion.value)
+            finally:
+                core.CFRelease(kind)
+    except BaseException:
+        for assertion_id in reversed(assertions):
+            iokit.IOPMAssertionRelease(assertion_id)
+        raise
+    finally:
+        core.CFRelease(reason)
 
     def release() -> None:
-        if process.poll() is None:
-            process.terminate()
-        stop_helper(process)
+        failures = [
+            assertion_id for assertion_id in reversed(assertions)
+            if iokit.IOPMAssertionRelease(assertion_id) != 0
+        ]
+        if failures:
+            raise OSError("macOS could not release an idle-sleep request")
 
     return release
 
@@ -128,7 +160,7 @@ def keep_awake() -> Iterator[None]:
     except Exception as error:
         print(f"Warning: could not keep this computer awake: {error}", file=sys.stderr)
     else:
-        print("Requested idle-sleep protection for this run.", file=sys.stderr)
+        print("Idle-sleep protection request accepted for this run.", file=sys.stderr)
     try:
         yield
     finally:

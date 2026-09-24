@@ -7,7 +7,7 @@ a warning instead of stopping the whole image.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -80,11 +80,19 @@ class BoxTranscriptionPipeline:
     minimum_detector_confidence: float = 0.60
     fallback_detector: BoxDetector | None = None
     model_metadata: dict[str, str] = field(default_factory=dict)
+    on_stage: Callable[[str], None] | None = None
 
     # Validate the newly created value.
     def __post_init__(self) -> None:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
             raise ValueError("Minimum detector confidence must be between 0 and 1.")
+
+    # Send short stage names to the live terminal, if one is available.
+    def report_stage(self, message: str) -> None:
+        if self.on_stage is not None:
+            self.on_stage(message)
+        else:
+            print(message, file=sys.stderr)
 
     # Handle the retained regions step.
     def retained_regions(self, detector: BoxDetector, regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
@@ -165,6 +173,7 @@ class BoxTranscriptionPipeline:
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{label} is unavailable.")
             return []
+        self.report_stage("Transcribing the full photo")
         try:
             returned = self.transcriber.transcribe_full_image(box)
         except Exception as error:
@@ -180,7 +189,7 @@ class BoxTranscriptionPipeline:
         observations: list[ObservedBox] = []
         unresolved = 0
         for index, box in enumerate(boxes, start=1):
-            print(f"Transcribing box {index} of {len(boxes)}...", file=sys.stderr)
+            self.report_stage(f"Transcribing box {index} of {len(boxes)}")
             try:
                 returned = self.transcriber.transcribe(box)
             except Exception as error:
