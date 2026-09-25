@@ -22,7 +22,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 box = make_box()
                 transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+                self.assertEqual(list(record)[:5], ["Unit Type", "Unit Number", "Description", "Dates","Date Range"])
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
                 self.assertEqual(record["Date Range"], "")
@@ -334,6 +334,7 @@ class CsvExportTest(unittest.TestCase):
                     "Unit Type",
                     "Unit Number",
                     "Description",
+                    "Dates",
                     "Date Range",
                     "Transcription Confidence (%)",
                     "Review Flags",
