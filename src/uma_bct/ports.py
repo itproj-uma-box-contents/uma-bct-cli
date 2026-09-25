@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .util.date_util import Date, DateRange
 from .domain import Box, BoxTranscription, DetectedRegion, InputImage
+from .util.date_util import Date, DateRange
 
 
 class BoxDetector(Protocol):

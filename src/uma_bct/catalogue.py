@@ -11,7 +11,6 @@ import re
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
-from .util.date_util import get_earliest_date, get_latest_date
 from .constants import (
     AMBIGUOUS_IDENTIFIER_FLAG,
     INVALID_UNIT_FLAG,
@@ -31,6 +30,7 @@ from .identity import (
     normalise_unit_claim,
     unit_type_text,
 )
+from .util.date_util import get_earliest_date, get_latest_date
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
 

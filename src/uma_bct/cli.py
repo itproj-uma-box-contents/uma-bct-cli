@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DETECTORS, TRANSCRIBERS, DATE_DETECTORS
+from .bootstrap import DATE_DETECTORS, DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind

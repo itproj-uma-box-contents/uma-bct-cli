@@ -31,7 +31,6 @@ from uma_bct.adapters.qwen_transcriber import (
 from uma_bct.bootstrap import build_pipeline
 from uma_bct.ports import ModelResponse
 
-from uma_bct.adapters.qwen_date_detector import QwenDateDetector
 
 # Provide a controllable vision test double.
 class FakeVision:

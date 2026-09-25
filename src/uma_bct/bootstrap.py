@@ -9,10 +9,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from .adapters import OllamaVisionModel, OpenCVBoxDetector, QwenBoxDetector, QwenTextTranscriber, RegexDateDetector, QwenDateDetector, EmptyDateDetector
+from .adapters import (
+    EmptyDateDetector,
+    OllamaVisionModel,
+    OpenCVBoxDetector,
+    QwenBoxDetector,
+    QwenDateDetector,
+    QwenTextTranscriber,
+    RegexDateDetector,
+)
 from .imaging import OpenCVBoxCropper
 from .pipeline import BoxTranscriptionPipeline
-from .ports import BoxDetector, TextTranscriber, DateDetector, VisionModelClient
+from .ports import BoxDetector, DateDetector, TextTranscriber, VisionModelClient
 
 DetectorFactory = Callable[[VisionModelClient], BoxDetector]
 TranscriberFactory = Callable[[VisionModelClient], TextTranscriber]

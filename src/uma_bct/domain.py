@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from .util.date_util import Date, DateRange
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .util.date_util import Date, DateRange
 
 
 @dataclass(frozen=True)

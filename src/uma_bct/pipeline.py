@@ -8,15 +8,13 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
-from dataclasses import replace
 
 from .domain import Box, BoxResult, DetectedRegion, InputImage
-from .imaging import create_full_image_box
-from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber, DateDetector
 from .imaging import create_full_image_box, prepare_input_image
+from .ports import BoxCropper, BoxDetector, DateDetector, FullImageTextTranscriber, TextTranscriber
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]

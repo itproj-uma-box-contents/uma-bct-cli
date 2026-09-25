@@ -1,8 +1,7 @@
 from dataclasses import dataclass
+
 from ..ports import VisionModelClient
 from ..util.date_util import Date, DateRange
-from .ollama_client import OllamaVisionModel
-
 
 DATE_EXTRACTION_PROMPT = """You will be provided with text taken from a box in a University archive.
 The box contains a number of dates (e.g. 19/12/1950) and ranges of dates (e.g. 2024-5). Extract these from the text and report them in the provided json format.

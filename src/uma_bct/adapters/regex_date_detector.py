@@ -1,7 +1,7 @@
-from dataclasses import dataclass, field
-from ..util.date_util import Date, DateRange
-
 import re
+from dataclasses import dataclass, field
+
+from ..util.date_util import Date, DateRange
 
 ESCAPE_SQEUNCE = "#"
 
@@ -85,12 +85,15 @@ DEFAULT_CUSTOM_RANGE_FORMATS = (
 #take two integers of length n, and use the first to deduce the second, secifically in the context of date ranges, i.e. given 1942-49 or 1942-9 obtain 1949
 #only continues if second number is a greater suffixs, i.e. 1945-41, 1945-1 don't work, they return end instead
 def fill_prefix(start: str, end: str) -> str:
-    if start=="": return end
-    if end=="": return start
+    if start=="": 
+        return end
+    if end=="": 
+        return start
     start_suffix = start[len(start)-len(end):]
     if int(start_suffix)<int(end):
         return start[:len(start)-len(end)]+end
-    else: return end
+    else: 
+        return end
 
 
 @dataclass
@@ -154,8 +157,10 @@ class RegexDateDetector:
             dates = [{"d": "", "m": "", "y": ""}, {"d": "", "m": "", "y": ""}]
 
             def add_to_dates(part, value):
-                if dates[0][part] == "": dates[0][part]=value
-                else: dates[1][part]=value
+                if dates[0][part] == "": 
+                    dates[0][part]=value
+                else: 
+                    dates[1][part]=value
 
             #populate two dates, assume the first day/month/year you encounter is for the first date, and second for the second date
             for (part,value) in match.groupdict().items():
@@ -195,7 +200,8 @@ class RegexDateDetector:
 
                 #Complete empty
                 for component in dates[1]:
-                    if dates[1][component] == "": dates[1][component] = dates[0][component]
+                    if dates[1][component] == "": 
+                        dates[1][component] = dates[0][component]
 
                 return DateRange(
                     start = Date(day=dates[0]['d'], month=dates[0]['m'], year=dates[0]['y']),
