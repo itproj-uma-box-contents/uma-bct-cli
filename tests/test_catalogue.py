@@ -25,7 +25,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 self.assertEqual(list(record)[:5], ["Unit Type", "Unit Number", "Description", "Dates","Date Range"])
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
-                self.assertEqual(record["Date Range"], "")
+                self.assertEqual(record["Date Range"], "// to //")
 
     def test_accepts_a_prefix_on_the_line_before_unit_number(self):
         box = make_box()
