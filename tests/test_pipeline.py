@@ -110,6 +110,7 @@ class PipelineTest(unittest.TestCase):
             fallback_detector=fallback,
             cropper=FakeCropper(),
             transcriber=transcriber,
+            date_detector="none",
             work_directory=Path("crops"),
             model_metadata={"model": "qwen-test"},
         )
