@@ -10,6 +10,7 @@ from helpers import make_box, make_image, make_transcription
 
 from uma_bct.adapters.ollama_client import OllamaVisionModel
 from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
+from uma_bct.adapters.empty_date_detector import EmptyDateDetector
 from uma_bct.domain import BoundingBox, Box, DetectedRegion
 from uma_bct.pipeline import BoxTranscriptionPipeline
 
@@ -110,7 +111,7 @@ class PipelineTest(unittest.TestCase):
             fallback_detector=fallback,
             cropper=FakeCropper(),
             transcriber=transcriber,
-            date_detector="none",
+            date_detector=EmptyDateDetector(),
             work_directory=Path("crops"),
             model_metadata={"model": "qwen-test"},
         )
