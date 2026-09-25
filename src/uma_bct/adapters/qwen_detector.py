@@ -104,9 +104,10 @@ class QwenBoxDetector:
     name: str = "qwen"
     dropped_proposal_warnings: tuple[str, ...] = field(default=(), init=False)
 
-    # Detect boxes in the current image.
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         self.dropped_proposal_warnings = ()
+        # Qwen needs only pixels for grounding. The temporary PNG prevents
+        # source EXIF from entering the model request.
         with sanitized_detection_image(image) as image_path:
             response = self.client.query(
                 image_path, GROUNDING_QUESTION, GROUNDING_SCHEMA, validator=validate_grounding_proposals
@@ -114,6 +115,8 @@ class QwenBoxDetector:
         normalized_boxes, dropped = validate_grounding_proposals(response.value)
         regions: list[DetectedRegion] = []
         conversion_warnings: list[str] = []
+        # Grounding coordinates use a 0-1000 scale; round outward in source
+        # pixels so the eventual crop does not cut the detected box short.
         for index, (x1, y1, x2, y2) in enumerate(normalized_boxes, start=1):
             left = math.floor(x1 * image.width / 1000.0)
             top = math.floor(y1 * image.height / 1000.0)

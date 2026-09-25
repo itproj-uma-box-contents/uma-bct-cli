@@ -45,7 +45,6 @@ def start_mac_awake() -> Callable[[], None]:
     iokit.IOPMAssertionRelease.argtypes = [ctypes.c_uint32]
     iokit.IOPMAssertionRelease.restype = ctypes.c_int32
 
-    # Keep both requests owned by this process, so macOS releases them if it exits.
     def cf_string(value: bytes) -> int:
         reference = core.CFStringCreateWithCString(None, value, 0x08000100)
         if not reference:
@@ -54,6 +53,8 @@ def start_mac_awake() -> Callable[[], None]:
 
     reason = cf_string(b"UMA BCT is processing archive photos")
     assertions: list[int] = []
+    # Both macOS requests belong to this process. If the second fails, release
+    # the first immediately instead of claiming sleep protection was granted.
     try:
         for name in (b"PreventUserIdleSystemSleep", b"PreventUserIdleDisplaySleep"):
             kind = cf_string(name)
@@ -148,6 +149,8 @@ def keep_awake() -> Iterator[None]:
     """Continue safely if the host cannot provide an idle-sleep lock."""
 
     release: Callable[[], None] | None = None
+    # Power management is best effort. The transcription result and JSON
+    # stdout must not change just because this local OS request failed.
     try:
         if sys.platform == "darwin":
             release = start_mac_awake()

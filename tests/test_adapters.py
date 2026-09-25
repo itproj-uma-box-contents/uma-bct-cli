@@ -32,15 +32,12 @@ from uma_bct.bootstrap import build_pipeline
 from uma_bct.ports import ModelResponse
 
 
-# Provide a controllable vision test double.
 class FakeVision:
-    # Store the state this object needs.
     def __init__(self, response, token_logprobs=()):
         self.response = response
         self.token_logprobs = token_logprobs
         self.calls = []
 
-    # Run the model query.
     def query(self, image_path, prompt, schema, *, validator=None, logprobs=False):
         self.calls.append((image_path, prompt, schema, logprobs))
         if validator is not None:
@@ -48,7 +45,6 @@ class FakeVision:
         return ModelResponse(value=self.response, token_logprobs=self.token_logprobs if logprobs else ())
 
 
-# Build a model record with useful defaults.
 def record(**changes):
     value = {
         "position": "middle-left",
@@ -74,14 +70,11 @@ def confident_token_logprobs(response, low_confidence_characters=""):
     return tuple((character, -6.0 if character in low_confidence_characters else -0.0001) for character in raw_text)
 
 
-# Group the Qwen adapter checks.
 class QwenAdapterTest(unittest.TestCase):
-    # Check that wrap boxes keeps the normal reply unchanged.
     def test_wrap_boxes_keeps_the_normal_reply_unchanged(self):
         response = {"boxes": [record()]}
         self.assertIs(wrap_boxes(response), response)
 
-    # Check that transcription accepts complete equivalent response envelopes.
     def test_transcription_accepts_complete_equivalent_response_envelopes(self):
         first = record(handwritten=["Café 📦; O'Brien"], auxiliary_annotations=["Fragile; retain [brackets]"])
         second = record(position="middle-right", unit="5", typed=["1960.0009", "Unit 5"])
@@ -101,7 +94,6 @@ class QwenAdapterTest(unittest.TestCase):
                 parsed = json_from_text(raw)
                 self.assertEqual(validate_transcription_result(parsed), expected)
 
-    # Check that detector accepts complete equivalent response envelopes.
     def test_detector_accepts_complete_equivalent_response_envelopes(self):
         proposal = {"bbox_2d": [100, 200, 500, 800]}
         for response in (proposal, [proposal], {"boxes": [proposal]}):
@@ -110,7 +102,6 @@ class QwenAdapterTest(unittest.TestCase):
                 self.assertEqual(boxes, [(100.0, 200.0, 500.0, 800.0)])
                 self.assertEqual(warnings, ())
 
-    # Check that detector keeps valid boxes and reports malformed proposals.
     def test_detector_keeps_valid_boxes_and_reports_malformed_proposals(self):
         response = {"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]}
         client = FakeVision(response)
@@ -123,7 +114,6 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(regions[0].bounding_box.as_xywh(), (20, 60, 80, 180))
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
 
-    # Check that detector rejects an entirely invalid response.
     def test_detector_rejects_an_entirely_invalid_response(self):
         for response in (
             {"boxes": []},
@@ -135,7 +125,6 @@ class QwenAdapterTest(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises((TypeError, ValueError)):
                 validate_grounding_proposals(response)
 
-    # Check that transcriber maps multiple records and marks uncertainty.
     def test_transcriber_maps_multiple_records_and_marks_uncertainty(self):
         box = make_box()
         response = {"boxes": [record(), record(unit="5", typed=["1960.0009", "Unit 5?"])]}
@@ -149,7 +138,6 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertIn("x=10, y=20, width=80, height=160", client.calls[0][1])
         self.assertTrue(client.calls[0][3], "transcription requests must ask for logprobs")
 
-    # Check that transcriber recovers one unambiguous raw unit for run details.
     def test_transcriber_recovers_one_unambiguous_raw_unit_for_run_details(self):
         box = make_box()
         # Cover printed labels, preserved padding, and matching handwriting.
@@ -176,7 +164,6 @@ class QwenAdapterTest(unittest.TestCase):
                 self.assertEqual(transcription.to_dict()["unit"], expected)
                 self.assertTrue(transcription.needs_review)
 
-    # Check that transcriber leaves unsafe raw unit evidence blank.
     def test_transcriber_leaves_unsafe_raw_unit_evidence_blank(self):
         box = make_box()
         cases = (
@@ -203,7 +190,6 @@ class QwenAdapterTest(unittest.TestCase):
                 self.assertEqual(transcription.to_dict()["unit"], "")
                 self.assertTrue(transcription.needs_review)
 
-    # Check that transcriber scores confidence from the least confident character.
     def test_transcriber_scores_confidence_from_the_least_confident_character(self):
         box = make_box()
         response = {"boxes": [record()]}
@@ -215,7 +201,6 @@ class QwenAdapterTest(unittest.TestCase):
         # hedged/empty text and a totally unavailable score.
         self.assertFalse(results[0].needs_review)
 
-    # Check that transcriber treats unavailable token confidence as zero and flags review.
     def test_transcriber_treats_unavailable_token_confidence_as_zero_and_flags_review(self):
         box = make_box()
         client = FakeVision({"boxes": [record()]})  # no logprobs supplied
@@ -223,7 +208,6 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(results[0].confidence, 0)
         self.assertTrue(results[0].needs_review)
 
-    # Check that transcription validator rejects bad shape.
     def test_transcription_validator_rejects_bad_shape(self):
         for response in (
             {"boxes": [{}]},
@@ -234,14 +218,12 @@ class QwenAdapterTest(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises((TypeError, ValueError)):
                 validate_transcription_result(response)
 
-    # Check that transcription rejects excessive records after rewrapping.
     def test_transcription_rejects_excessive_records_after_rewrapping(self):
         response = [record(unit=str(index)) for index in range(101)]
         self.assertEqual(MAX_TRANSCRIPTION_RECORDS, 100)
         with self.assertRaisesRegex(ValueError, "at most 100"):
             validate_transcription_result(response)
 
-    # Check that response parser rejects incomplete or ambiguous JSON.
     def test_response_parser_rejects_incomplete_or_ambiguous_json(self):
         valid_record = json.dumps(record())
         invalid_responses = (
@@ -267,7 +249,6 @@ class QwenAdapterTest(unittest.TestCase):
             with self.subTest(raw=raw[:80]), self.assertRaises(ValueError):
                 json_from_text(raw)
 
-    # Check that response parser bounds ambiguous container scanning.
     def test_response_parser_bounds_ambiguous_container_scanning(self):
         with (
             patch.object(ollama_client, "prefix_is_safe", wraps=ollama_client.prefix_is_safe) as balance_check,
@@ -276,12 +257,10 @@ class QwenAdapterTest(unittest.TestCase):
             json_from_text("[" * 4096)
         self.assertLessEqual(balance_check.call_count, 1)
 
-    # Check that response parser preserves the four MiB safety limit.
     def test_response_parser_preserves_the_four_mib_safety_limit(self):
         with self.assertRaisesRegex(ValueError, "4 MiB"):
             json_from_text("x" * (MAX_MODEL_RESPONSE_CHARACTERS + 1))
 
-    # Check that transcription rejects unrelated and mixed JSON values.
     def test_transcription_rejects_unrelated_and_mixed_json_values(self):
         envelope = json.dumps({"boxes": [record()]})
         bare = json.dumps(record(unit="5"))
@@ -295,20 +274,17 @@ class QwenAdapterTest(unittest.TestCase):
             with self.subTest(raw=raw[:80]), self.assertRaises((TypeError, ValueError)):
                 validate_transcription_result(json_from_text(raw))
 
-    # Check that crop prompt contains the client identity fields.
     def test_crop_prompt_contains_the_client_identity_fields(self):
         prompt = crop_question(make_box())
         for field in ("record_identifiers", "unit", "typed", "handwritten"):
             self.assertIn(field, prompt)
 
-    # Check that Qwen prompts require one boxes envelope.
     def test_qwen_prompts_require_one_boxes_envelope(self):
         for prompt in (GROUNDING_QUESTION, QUESTION, crop_question(make_box())):
             with self.subTest(prompt=prompt[:40]):
                 self.assertIn("exactly one JSON object", prompt)
                 self.assertIn('top-level "boxes" array', prompt)
 
-    # Check that box object spans ignores braces inside string content.
     def test_box_object_spans_ignores_braces_inside_string_content(self):
         raw_text = '{"boxes":[{"typed":["a { b"]},{"unit":"9"}]}'
         spans = box_object_spans(raw_text)
@@ -316,7 +292,6 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(raw_text[spans[0][0] : spans[0][1]], '{"typed":["a { b"]}')
         self.assertEqual(raw_text[spans[1][0] : spans[1][1]], '{"unit":"9"}')
 
-    # Check that box object spans finds nothing in a noncanonical reply.
     def test_box_object_spans_finds_nothing_in_a_noncanonical_reply(self):
         # A bare array or adjacent objects (no {"boxes": [...]} wrapper) is
         # tolerated by json_from_text/wrap_boxes but is not scored: there is
@@ -324,16 +299,13 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(box_object_spans('[{"unit":"1"},{"unit":"2"}]'), [])
         self.assertEqual(box_object_spans('{"unit":"1"}\n{"unit":"2"}'), [])
 
-    # Check that box token confidences falls back to none on span mismatch.
     def test_box_token_confidences_falls_back_to_none_on_span_mismatch(self):
         self.assertEqual(box_token_confidences((), 2), [None, None])
         mismatched = (("{", -0.1), ("}", -0.1))
         self.assertEqual(box_token_confidences(mismatched, 2), [None, None])
 
 
-# Group the Ollama client checks.
 class OllamaClientTest(unittest.TestCase):
-    # Run a fake model query and return its response.
     def query_response(self, content, *, thinking="", validator=None, content_logprobs=None, thinking_logprobs=None):
         # Real streams never carry content and thinking in the same chunk;
         # split into up to two chunks so attached logprobs land unambiguously.
@@ -354,7 +326,6 @@ class OllamaClientTest(unittest.TestCase):
         with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
             return OllamaVisionModel().query(Path("box.png"), "prompt", {"type": "object"}, logprobs=True, **kwargs)
 
-    # Check that endpoint policy defaults to numeric loopback.
     def test_endpoint_policy_defaults_to_numeric_loopback(self):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(normalize_ollama_host("localhost"), DEFAULT_OLLAMA_HOST)
@@ -362,14 +333,12 @@ class OllamaClientTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "numeric loopback"):
                 normalize_ollama_host("http://model.example:11434")
 
-    # Check that endpoint policy rejects empty user information and port zero.
     def test_endpoint_policy_rejects_empty_user_information_and_port_zero(self):
         with patch.dict("os.environ", {}, clear=True):
             for endpoint in ("http://@127.0.0.1", "http://127.0.0.1:0"):
                 with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
                     normalize_ollama_host(endpoint)
 
-    # Check that remote and compose endpoints require explicit opt in.
     def test_remote_and_compose_endpoints_require_explicit_opt_in(self):
         with patch.dict("os.environ", {"UMA_BCT_ALLOW_REMOTE_OLLAMA": "1"}, clear=True):
             self.assertEqual(normalize_ollama_host("https://model.example"), "https://model.example:11434")
@@ -378,7 +347,6 @@ class OllamaClientTest(unittest.TestCase):
         with patch.dict("os.environ", {"UMA_BCT_ALLOW_CONTAINER_OLLAMA": "1"}, clear=True):
             self.assertEqual(normalize_ollama_host("http://ollama:11434"), "http://ollama:11434")
 
-    # Keep model chunks from adding dots to the client's progress display.
     def test_streamed_response_does_not_print_dots(self):
         chunks = [{"message": {"content": '{"boxes": []}'}}] + [{"message": {"content": ""}}] * 60
         stderr = io.StringIO()
@@ -387,7 +355,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(content, '{"boxes": []}')
         self.assertEqual(stderr.getvalue(), "")
 
-    # Check that query collects streamed JSON with safe client settings.
     def test_query_collects_streamed_json_with_safe_client_settings(self):
         chunks = [{"message": {"content": '{"boxes":'}}, {"message": {"content": " []}"}}]
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
@@ -400,7 +367,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(client.chat.call_args.kwargs["stream"], True)
         self.assertEqual(client.chat.call_args.kwargs["logprobs"], False)
 
-    # Check that query requests and returns content logprobs.
     def test_query_requests_and_returns_content_logprobs(self):
         chunks = [
             {"message": {"content": '{"unit"'}, "logprobs": [{"token": '{"unit"', "logprob": -12.0}]},
@@ -414,7 +380,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(result.token_logprobs, (('{"unit"', -12.0), (':"4"}', -0.01)))
         self.assertEqual(client.chat.call_args.kwargs["logprobs"], True)
 
-    # Check that query returns thinking logprobs when thinking wins.
     def test_query_returns_thinking_logprobs_when_thinking_wins(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
         thinking_text = json.dumps({"boxes": [expected]})
@@ -427,7 +392,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(validate_transcription_result(result.value), [expected])
         self.assertEqual(result.token_logprobs, ((thinking_text, -3.0),))
 
-    # Check that query uses valid thinking when content fails the validator.
     def test_query_uses_valid_thinking_when_content_fails_the_validator(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
         result = self.query_response(
@@ -437,7 +401,6 @@ class OllamaClientTest(unittest.TestCase):
         )
         self.assertEqual(validate_transcription_result(result.value), [expected])
 
-    # Check that query rejects incomplete noncanonical detector content.
     def test_query_rejects_incomplete_noncanonical_detector_content(self):
         first = {"bbox_2d": [1, 2, 3, 4]}
         expected = {"bbox_2d": [10, 20, 30, 40]}
@@ -455,7 +418,6 @@ class OllamaClientTest(unittest.TestCase):
                 self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
                 self.assertEqual(warnings, ())
 
-    # Check that query uses thinking when detector content overflows.
     def test_query_uses_thinking_when_detector_content_overflows(self):
         huge_integer = "9" * 309
         content = f'{{"boxes":[{{"bbox_2d":[0,0,{huge_integer},1]}}]}}'
@@ -467,7 +429,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(boxes, [(10.0, 20.0, 30.0, 40.0)])
         self.assertEqual(warnings, ())
 
-    # Check that query prefers valid content over valid thinking.
     def test_query_prefers_valid_content_over_valid_thinking(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
         ignored = record(unit="9", typed=["1960.0009", "Unit 9"])
@@ -476,7 +437,6 @@ class OllamaClientTest(unittest.TestCase):
         )
         self.assertEqual(validate_transcription_result(result.value), [expected])
 
-    # Check that query reports bounded channel errors without response text.
     def test_query_reports_bounded_channel_errors_without_response_text(self):
         private_text = "private archive text " * 300
         with self.assertRaises(ValueError) as raised:
@@ -489,7 +449,6 @@ class OllamaClientTest(unittest.TestCase):
         self.assertLessEqual(len(message), 1024)
         self.assertNotIn(private_text, message)
 
-    # Check that setup pull rechecks and returns model identity.
     def test_setup_pull_rechecks_and_returns_model_identity(self):
         missing = SimpleNamespace(list=Mock(return_value={"models": []}), close=Mock())
         pull = SimpleNamespace(pull=Mock(return_value=iter([{"status": "downloading"}])), close=Mock())
@@ -510,7 +469,6 @@ class OllamaClientTest(unittest.TestCase):
             stream=False,
         )
 
-    # Check that preflight proves the model can load without exposing its reply.
     def test_preflight_proves_the_model_can_load_without_exposing_its_reply(self):
         inventory = SimpleNamespace(
             list=Mock(return_value={"models": [{"model": "qwen-test", "digest": "sha256:test"}]}), close=Mock()
@@ -532,14 +490,12 @@ class OllamaClientTest(unittest.TestCase):
             stream=False,
         )
 
-    # Check that inference probe reports model load failures once.
     def test_inference_probe_reports_model_load_failures_once(self):
         client = SimpleNamespace(chat=Mock(side_effect=RuntimeError("not enough memory")), close=Mock())
         with patch.object(OllamaVisionModel, "client", return_value=client):
             with self.assertRaisesRegex(RuntimeError, "inference preflight.*not enough memory"):
                 OllamaVisionModel(model="qwen-test").probe()
 
-    # Check that bootstrap builds Qwen with OpenCV fallback.
     def test_bootstrap_builds_qwen_with_opencv_fallback(self):
         client = Mock()
         client.preflight.return_value = {"model": "qwen-test"}

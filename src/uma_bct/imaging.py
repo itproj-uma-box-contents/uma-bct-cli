@@ -33,7 +33,6 @@ from .domain import BoundingBox, Box, DetectedRegion, InputImage
 from .path_safety import check_path
 
 
-# Read the image.
 def read_image(path: Path) -> np.ndarray:
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None or image.size == 0:
@@ -41,14 +40,12 @@ def read_image(path: Path) -> np.ndarray:
     return image
 
 
-# Read the normalized input when one was prepared.
 def read_input_image(image: InputImage) -> np.ndarray:
     """Read the private normalized copy when one was prepared."""
 
     return read_image(image.readable_file_path)
 
 
-# Decode a Pillow-supported source image.
 def pillow_image(path: Path) -> np.ndarray:
     """Decode the main still image, applying orientation and removing alpha."""
 
@@ -72,7 +69,6 @@ def pillow_image(path: Path) -> np.ndarray:
         raise ValueError(f"Could not read image: {path}: {error}") from error
 
 
-# Develop a RAW source image.
 def raw_image(path: Path) -> np.ndarray:
     """Develop a full-resolution RAW source into oriented 8-bit sRGB."""
 
@@ -91,7 +87,6 @@ def raw_image(path: Path) -> np.ndarray:
     return cv2.cvtColor(rgb[:, :, :3], cv2.COLOR_RGB2BGR)
 
 
-# Select the decoder for a newly supported format.
 def decode_new_image(path: Path) -> np.ndarray:
     extension = path.suffix.casefold()
     if extension in PILLOW_IMAGE_EXTENSIONS:
@@ -101,7 +96,6 @@ def decode_new_image(path: Path) -> np.ndarray:
     raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
 
 
-# Prepare one input image for the shared pipeline.
 @contextmanager
 def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
     """Yield one source image with a private normalized path when required."""
@@ -111,6 +105,8 @@ def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
         yield load_input_image(file_path)
         return
 
+    # The source path remains the catalogue identity. Formats OpenCV cannot
+    # read directly use a short-lived PNG without carrying source metadata on.
     pixels = decode_new_image(file_path)
     height, width = pixels.shape[:2]
     with tempfile.TemporaryDirectory(prefix="uma-bct-input-") as directory:
@@ -128,7 +124,6 @@ def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
             processing_file_path=processing_path,
         )
 
-# Load the input image.
 def load_input_image(path: str | Path) -> InputImage:
     file_path = Path(path)
     image = read_image(file_path)
@@ -136,7 +131,6 @@ def load_input_image(path: str | Path) -> InputImage:
     return InputImage(file_path=file_path, width=width, height=height)
 
 
-# Handle the intersection area step.
 def intersection_area(first: BoundingBox, second: BoundingBox) -> int:
     left = max(first.x, second.x)
     top = max(first.y, second.y)
@@ -145,7 +139,6 @@ def intersection_area(first: BoundingBox, second: BoundingBox) -> int:
     return max(0, right - left) * max(0, bottom - top)
 
 
-# Handle the iou step.
 def iou(first: BoundingBox, second: BoundingBox) -> float:
     intersection = intersection_area(first, second)
     if not intersection:
@@ -155,9 +148,10 @@ def iou(first: BoundingBox, second: BoundingBox) -> float:
     return intersection / float(first_area + second_area - intersection)
 
 
-# Suppress the overlaps.
 def suppress_overlaps(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     retained: list[DetectedRegion] = []
+    # Containment catches duplicate proposals of very different sizes; IoU
+    # catches proposals whose outlines mostly coincide.
     for region in sorted(regions, key=lambda item: item.confidence, reverse=True):
         region_area = region.bounding_box.width * region.bounding_box.height
         should_suppress = False
@@ -175,11 +169,12 @@ def suppress_overlaps(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]
     return retained
 
 
-# Sort detected boxes into visual rows.
 def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     if not regions:
         return []
 
+    # Compare vertical centres using the typical box height so uneven shelves
+    # still read top to bottom, then left to right within each row.
     median_height = float(np.median([item.bounding_box.height for item in regions]))
     row_tolerance = max(1.0, median_height * 0.35)
     rows: list[list[DetectedRegion]] = []
@@ -201,14 +196,12 @@ def sort_in_rows(regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
     return [region for row in rows for region in sorted(row, key=lambda item: item.bounding_box.x)]
 
 
-# Handle the position hint step.
 def position_hint(box: BoundingBox, image_width: int, image_height: int) -> str:
     column = min(2, int(((box.x + box.width / 2.0) / image_width) * 3))
     row = min(2, int(((box.y + box.height / 2.0) / image_height) * 3))
     return f"{('top', 'middle', 'bottom')[row]}-{('left', 'middle', 'right')[column]}"
 
 
-# Handle the clipped box step.
 def clipped_box(box: BoundingBox, image_width: int, image_height: int) -> BoundingBox | None:
     x1 = max(0, min(image_width, box.top_left[0]))
     y1 = max(0, min(image_height, box.top_left[1]))
@@ -264,7 +257,6 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
 class OpenCVBoxCropper:
     """Create clean PNG crops from detected boxes."""
 
-    # Create the boxes.
     def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]:
         original = read_input_image(image)
         valid_regions: list[DetectedRegion] = []
@@ -273,6 +265,8 @@ class OpenCVBoxCropper:
             if clipped:
                 valid_regions.append(DetectedRegion(clipped, region.confidence))
 
+        # Assign stable crop numbers only after clipping, overlap removal, and
+        # visual ordering; the CSV will inherit this physical reading order.
         ordered = sort_in_rows(suppress_overlaps(valid_regions))
         source_key = image_key(image.file_path)
         crop_directory = output_directory / source_key
@@ -286,6 +280,8 @@ class OpenCVBoxCropper:
 
         for index, region in enumerate(ordered, start=1):
             box = region.bounding_box
+            # A little surrounding shelf gives a reviewer context around the
+            # label, including boxes near an image edge.
             padding_x = max(round(box.width * PADDING_FRACTION), minimum_padding)
             padding_y = max(round(box.height * PADDING_FRACTION), minimum_padding)
             x1 = max(0, box.x - padding_x)

@@ -10,7 +10,6 @@ from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
 
 
 class TerminalProgressTest(unittest.TestCase):
-    # Check that captured output stays short and the final numbers remain honest.
     def test_captured_progress_and_human_report_use_plain_committed_counts(self):
         moment = [100.0]
         output = io.StringIO()
@@ -50,7 +49,6 @@ class TerminalProgressTest(unittest.TestCase):
             print_run_summary(summary, human=False, elapsed_seconds=1)
         self.assertEqual(json.loads(stdout.getvalue()), summary)
 
-    # Check that a real terminal redraws one live status instead of appending heartbeats.
     def test_live_progress_redraws_in_place(self):
         output = io.StringIO()
         with TerminalProgress(1, stream=output, force_terminal=True) as reporter:
@@ -63,7 +61,6 @@ class TerminalProgressTest(unittest.TestCase):
         self.assertIn("\x1b[", output.getvalue())
         self.assertNotIn("Still working:", output.getvalue())
 
-    # Older offline bundles keep working if their runtime lacks Rich.
     def test_missing_rich_uses_milestones(self):
         output = io.StringIO()
         with patch("uma_bct.terminal.Console", None):
@@ -73,7 +70,6 @@ class TerminalProgressTest(unittest.TestCase):
         self.assertIn("Processing Photo 1 of 1: shelf.jpg", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
 
-    # A display error must not turn a successful photo into a failed one.
     def test_live_display_error_falls_back_to_milestones(self):
         output = io.StringIO()
         live = Mock()
@@ -88,7 +84,6 @@ class TerminalProgressTest(unittest.TestCase):
         self.assertIn("Transcribing box 1 of 2", output.getvalue())
         self.assertIn("Photo 1 finished: complete", output.getvalue())
 
-    # Startup and cleanup errors in Rich must leave the transcription usable.
     def test_live_start_and_stop_errors_do_not_abort(self):
         output = io.StringIO()
         with patch("uma_bct.terminal.Progress") as make_progress:

@@ -9,7 +9,6 @@ from uma_bct.keep_awake import keep_awake, start_mac_awake, start_windows_awake
 
 
 class KeepAwakeTest(unittest.TestCase):
-    # Confirm both macOS requests before reporting success, and release partial work on error.
     def test_mac_assertions_are_confirmed_and_released(self):
         core = SimpleNamespace(CFStringCreateWithCString=Mock(side_effect=[11, 12, 13]), CFRelease=Mock())
         assertion_ids = iter((101, 102))
@@ -42,7 +41,6 @@ class KeepAwakeTest(unittest.TestCase):
                 start_mac_awake()
         iokit.IOPMAssertionRelease.assert_called_once_with(101)
 
-    # Check that every supported host releases its request and errors stay nonfatal.
     def test_idle_request_lifecycle_and_unavailable_control(self):
         for platform, starter in (
             ("darwin", "start_mac_awake"),

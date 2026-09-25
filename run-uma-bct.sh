@@ -1,5 +1,7 @@
 #!/bin/sh
 
+# Keep new client files private and resolve bootstrap commands from trusted
+# system locations before the launcher touches photos or downloads.
 set -eu
 umask 077
 PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -85,6 +87,8 @@ read_launcher_owner() {
 }
 
 select_data_directories() {
+    # Existing legacy folders stay in place. Mixed layouts need a person to
+    # choose the source of truth before this launcher can safely resume.
     friendly_data=0
     legacy_data=0
     if directory_has_data "$FRIENDLY_INPUTS" || directory_has_data "$FRIENDLY_OUTPUTS"; then
@@ -106,6 +110,8 @@ select_data_directories() {
 }
 
 reserve_bundle() {
+    # The directory reservation covers setup and transcription together.
+    # Recover a dead owner only after validating and rechecking its identity.
     if ! mkdir -m 700 "$LAUNCH_LOCK" 2>/dev/null; then
         [ -d "$LAUNCH_LOCK" ] && [ ! -L "$LAUNCH_LOCK" ] || \
             fail "The launcher reservation is malformed and was not recovered: $LAUNCH_LOCK"
@@ -158,6 +164,8 @@ reserve_bundle() {
 }
 
 release_bundle() {
+    # Remove only the reservation this process created; a swapped entry may
+    # belong to another launcher and must remain available for recovery.
     [ "$LAUNCH_LOCK_HELD" -eq 1 ] || return 0
     LAUNCH_LOCK_HELD=0
     [ -n "$LAUNCH_LOCK_IDENTITY" ] || return 0
@@ -227,6 +235,8 @@ cleanup() {
 }
 
 forward_interrupt() {
+    # Let the foreground CLI checkpoint the interruption before the exit trap
+    # stops the Ollama child owned by this extracted bundle.
     exit_code=$1
     signal_name=$2
     if [ -n "$APP_PID" ]; then
@@ -278,6 +288,8 @@ open_folder() {
 }
 
 download_script() {
+    # Online preparation happens before photos are added. Each download is
+    # accepted only after its pinned SHA-256 matches the expected release.
     url=$1
     destination=$2
     expected_sha256=$3
@@ -365,6 +377,8 @@ finally:
 }
 
 start_owned_ollama() {
+    # Give each launch a fresh loopback port and confirm the same child stays
+    # healthy twice before sending any private image through its API.
     [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
     [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
     if ! : >"$OLLAMA_LOG"; then
@@ -527,6 +541,8 @@ install_ollama() {
         ollama_version_is_supported "$staged_ollama" || \
         fail "The staged Ollama runtime is incomplete or unsupported. Runtime log: $OLLAMA_LOG"
 
+    # Promote the verified runtime from staging. Keep the previous directory
+    # until the new one is in place so a failed promotion can be reversed.
     rm -rf "$ollama_previous"
     if [ -d "$ollama_directory" ]; then
         mv "$ollama_directory" "$ollama_previous"
@@ -593,6 +609,8 @@ esac
 select_data_directories
 reserve_bundle
 
+# Check the entire private workspace before creating or repairing a runtime;
+# a linked directory could otherwise send files outside this bundle.
 for directory in \
     "$INPUTS" "$OUTPUTS" "$RUNTIME" "$RUNTIME/bin" \
     "$RUNTIME/uv-cache" "$RUNTIME/python" "$APP_ENV" "$RUNTIME/ollama" \
@@ -617,6 +635,8 @@ done
 [ "$wheel_count" -eq 1 ] || fail "The supplied folder must contain exactly one UMA BCT wheel."
 [ -f "$CONSTRAINTS" ] && [ ! -L "$CONSTRAINTS" ] || fail "The supplied dependency lock is missing or redirected."
 
+# Ignore inherited installer settings and endpoint overrides. The bundle
+# selects its own pinned tools, local cache, and isolated Ollama service.
 for variable in $(env | sed -n 's/^\(UV_[A-Za-z0-9_]*\)=.*/\1/p'); do
     unset "$variable"
 done
@@ -645,6 +665,7 @@ export OLLAMA_NO_CLOUD=1
 unset UMA_BCT_ALLOW_REMOTE_OLLAMA UMA_BCT_ALLOW_CONTAINER_OLLAMA 2>/dev/null || true
 
 if [ "$private_data_present" -eq 0 ]; then
+    # Finish all online dependencies before inviting the client to add photos.
     has_private_data && fail "Private files appeared before online preparation finished."
     printf 'Installing the verified application dependencies...\n'
     "$UV" venv --no-config --clear --managed-python --python 3.12 "$APP_ENV"
@@ -702,7 +723,8 @@ fi
 has_input_images || fail "No supported photos were found in $INPUTS"
 
 set +e
-# Let the CLI show its readable report in this client terminal.
+# Leave the CLI attached to this terminal so progress stays on stderr and its
+# final readable report appears here before the Results folder opens.
 "$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
 APP_PID=$!
 wait "$APP_PID"

@@ -43,7 +43,8 @@ def catalogue_records(results: Iterable[ImageResult], *, minimum_confidence: int
                 )
             )
 
-    # Duplicate titles can only be found after every row has been built.
+    # Two boxes can legitimately share a title. Keep both rows and mark them
+    # for review after seeing the complete photo set.
     title_counts = Counter(
         str(record["Node Title"]).strip().casefold() for record in records if str(record["Node Title"]).strip()
     )
@@ -79,7 +80,9 @@ def export_catalogue(results: Iterable[ImageResult], output_path: str | Path, *,
     destination.parent.mkdir(parents=True, exist_ok=True)
     check_path(destination, "Catalogue output")
     temporary_path: Path | None = None
-    # Write beside the final file, then swap it in only when complete.
+    # A sibling temporary file keeps readers from seeing a half-written CSV.
+    # Recheck the destination after writing because another process may have
+    # changed the output path while rows were being built.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",

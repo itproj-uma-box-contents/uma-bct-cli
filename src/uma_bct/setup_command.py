@@ -19,7 +19,6 @@ from .run_artifacts import CatalogueLock
 from .terminal import TerminalProgress
 
 
-# Ensure the directory.
 def ensure_directory(path: Path) -> int:
     try:
         check_path(path, "Setup directory")
@@ -37,7 +36,6 @@ def ensure_directory(path: Path) -> int:
     return metadata.st_mode
 
 
-# Warn when directory permissions are too broad.
 def warn_about_permissions(path: Path, mode: int) -> None:
     if sys.platform != "win32" and mode & (stat.S_IRWXG | stat.S_IRWXO):
         print(
@@ -47,13 +45,11 @@ def warn_about_permissions(path: Path, mode: int) -> None:
         )
 
 
-# Handle the safe error step.
 def safe_error(error: Exception) -> str:
     printable = "".join(character if character.isprintable() else " " for character in str(error))
     return (" ".join(printable.split()) or error.__class__.__name__)[:1000]
 
 
-# Validate the setup layout.
 def validate_setup_layout(inputs: Path, outputs: Path) -> None:
     input_path = os.path.realpath(inputs)
     output_path = os.path.realpath(outputs)
@@ -65,7 +61,6 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
         raise RuntimeError("Setup input and results directories must be separate and non-nested.")
 
 
-# Run the setup.
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
     results_directory: Path | None = None) -> int:
     """Prepare folders and model while showing that a long download is active."""
@@ -98,6 +93,8 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
     }
     lock: CatalogueLock | ResultsRootLock | None = None
     status = 0
+    # Verify private folders and reserve the selected output layout before a
+    # model pull can spend time or write state for the wrong client folder.
     try:
         reporter.phase("Checking local folders")
         validate_setup_layout(inputs, outputs)
@@ -123,6 +120,8 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
                 result.update(status="failed", error=combined[:1000])
                 print(f"Lock cleanup failed: {message}", file=sys.stderr)
                 status = 2
+    # Setup returns exactly one JSON object on stdout. Progress, warnings, and
+    # download updates stay on stderr through the reporter and model client.
     if status == 0:
         reporter.phase("Setup complete.")
     reporter.close()

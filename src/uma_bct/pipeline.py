@@ -29,7 +29,6 @@ def warning_text(value: Exception | str) -> str:
     return message if len(message) <= 240 else f"{message[:237]}..."
 
 
-# Keep the image result behavior together.
 @dataclass(frozen=True)
 class ImageResult:
     input_image: InputImage
@@ -42,7 +41,6 @@ class ImageResult:
     warnings: tuple[str, ...] = ()
     model_metadata: Mapping[str, str] = field(default_factory=dict)
 
-    # Convert this value to a dictionary.
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
             "source_image": str(self.input_image.file_path),
@@ -60,9 +58,10 @@ class ImageResult:
         return value
 
 
-# Keep the localization behavior together.
 @dataclass(frozen=True)
 class Localization:
+    """Carry the chosen crop route into the final review record and status."""
+
     boxes: tuple[Box, ...]
     actual_detector: str
     route: tuple[str, ...]
@@ -70,7 +69,6 @@ class Localization:
     incomplete: bool = False
 
 
-# Keep the box transcription pipeline behavior together.
 @dataclass
 class BoxTranscriptionPipeline:
     detector: BoxDetector
@@ -82,31 +80,29 @@ class BoxTranscriptionPipeline:
     model_metadata: dict[str, str] = field(default_factory=dict)
     on_stage: Callable[[str], None] | None = None
 
-    # Validate the newly created value.
     def __post_init__(self) -> None:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
             raise ValueError("Minimum detector confidence must be between 0 and 1.")
 
-    # Send short stage names to the live terminal, if one is available.
     def report_stage(self, message: str) -> None:
         if self.on_stage is not None:
             self.on_stage(message)
         else:
             print(message, file=sys.stderr)
 
-    # Handle the retained regions step.
     def retained_regions(self, detector: BoxDetector, regions: Sequence[DetectedRegion]) -> list[DetectedRegion]:
         if detector.name.casefold() != "opencv":
             return list(regions)
         return [region for region in regions if region.confidence >= self.minimum_detector_confidence]
 
-    # Handle the detect and crop step.
     def detect_and_crop(self, image: InputImage, detector: BoxDetector, warnings: list[str]) -> tuple[list[Box], str | None, bool]:
         try:
             detected = detector.detect(image)
         except Exception as error:
             return [], f"detection failed: {warning_text(error)}", False
 
+        # Qwen may keep sound proposals while rejecting malformed ones. OpenCV
+        # also has a separate user threshold; both losses must reach review.
         dropped_warnings = tuple(warning_text(value) for value in getattr(detector, "dropped_proposal_warnings", ()))
         warnings.extend(dropped_warnings)
         retained = self.retained_regions(detector, detected)
@@ -131,7 +127,6 @@ class BoxTranscriptionPipeline:
         return boxes, None, bool(dropped_warnings or dropped_for_confidence)
 
 
-    # Handle the full image localization step.
     def full_image_localization(self, image: InputImage, warnings: list[str], detector: BoxDetector,
                                 failure: str | None, route: list[str], incomplete: bool) -> Localization:
 
@@ -148,13 +143,14 @@ class BoxTranscriptionPipeline:
             return Localization((), "full-image", tuple(route), full_image=True, incomplete=True)
         return Localization((full_box,), "full-image", tuple(route), full_image=True, incomplete=incomplete)
 
-    # Handle the localize step.
     def localize(self, image: InputImage, warnings: list[str]) -> Localization:
         route = [self.detector.name]
         boxes, failure, incomplete = self.detect_and_crop(image, self.detector, warnings)
         if boxes:
             return Localization(tuple(boxes), self.detector.name, tuple(route), incomplete=incomplete)
 
+        # A failed primary route can still produce useful boxes via the
+        # fallback. Record every attempted route for the run details.
         last_detector = self.detector
         fallback = self.fallback_detector
         if fallback is not None and fallback.name != self.detector.name:
@@ -168,7 +164,6 @@ class BoxTranscriptionPipeline:
                 return Localization(tuple(boxes), fallback.name, tuple(route), incomplete=incomplete)
         return self.full_image_localization(image, warnings, last_detector, failure, route, incomplete)
 
-    # Transcribe the full image box.
     def transcribe_full_image_box(self, box: Box, warnings: list[str], label: str) -> list[ObservedBox]:
         if not isinstance(self.transcriber, FullImageTextTranscriber):
             warnings.append(f"{label} is unavailable.")
@@ -184,7 +179,6 @@ class BoxTranscriptionPipeline:
             return []
         return observations_from_response(box, returned, 0)
 
-    # Transcribe the crops.
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
         observations: list[ObservedBox] = []
         unresolved = 0
@@ -204,14 +198,14 @@ class BoxTranscriptionPipeline:
         return observations, unresolved
 
 
-    # Recover the failed crops.
     def recover_failed_crops(self, image: InputImage, localization: Localization, observations: list[ObservedBox],
                              unresolved: int, warnings: list[str]) -> tuple[list[ObservedBox], int, str, tuple[str, ...]]:
 
         route = list(localization.route)
         actual_detector = localization.actual_detector
 
-        # Retry the full image only when every crop failed.
+        # A good crop must survive failures in its neighbours. The full-photo
+        # retry is reserved for the case where none yielded a usable reading.
         if localization.full_image or not localization.boxes or observations:
             return observations, unresolved, actual_detector, tuple(route)
         if not isinstance(self.transcriber, FullImageTextTranscriber):
@@ -231,8 +225,9 @@ class BoxTranscriptionPipeline:
             unresolved = 0
         return recovered, unresolved, "full-image", tuple(route)
 
-    # Process the current input.
     def process(self, image_path: str | Path) -> ImageResult:
+        """Finish one photo even when individual crops fail or need review."""
+
         with prepare_input_image(image_path) as image:
             warnings: list[str] = []
             localization = self.localize(image, warnings)
@@ -247,6 +242,8 @@ class BoxTranscriptionPipeline:
                 image, localization, observations, unresolved, warnings
             )
 
+            # Consolidation can remove overlapping readings from different
+            # crops, but the status still reflects unresolved crop work.
             consolidated = deduplicate(observations)
             status: ImageStatus
             if not consolidated:

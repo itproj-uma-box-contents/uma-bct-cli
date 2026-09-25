@@ -55,8 +55,9 @@ class TerminalProgress:
         self._progress: Progress | None = None
         self._task_id: int | None = None
 
-    # Rich refreshes the current stage and elapsed time in place on a terminal.
     def __enter__(self) -> TerminalProgress:
+        # Rich refreshes one line on an interactive terminal. Captured output
+        # gets milestones so logs do not fill with repeated progress frames.
         if self.console is not None and self.console.is_terminal:
             try:
                 columns = [SpinnerColumn(), TextColumn("{task.description}")]
@@ -82,7 +83,6 @@ class TerminalProgress:
             self._write(f"UMA BCT: {self.total} photo{'s' if self.total != 1 else ''} queued.")
         return self
 
-    # Clear the live display before printing the final report.
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         self.close()
 
@@ -101,6 +101,8 @@ class TerminalProgress:
         try:
             self._progress.update(self._task_id, refresh=True, **changes)
         except Exception:
+            # A display failure must never turn a successful model result into
+            # a failed photo; subsequent updates use plain stderr lines.
             self.close()
             self._write("Live display unavailable; showing milestone updates.")
             return False
@@ -162,6 +164,8 @@ def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted:
     complete = int(summary.get("images_complete", 0))
     partial = int(summary.get("images_partial", 0))
     failed = int(summary.get("images_failed", 0))
+    # During interruption the saved summary can include photos not attempted
+    # in this launch. Keep the displayed failed count tied to actual attempts.
     if attempted is not None:
         failed = min(failed, max(0, attempted - complete - partial))
     processed = complete + partial + failed

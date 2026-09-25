@@ -37,9 +37,10 @@ from .run_artifacts import (
 from .terminal import TerminalProgress, print_run_summary
 
 
-# Keep the export state behavior together.
 @dataclass
 class ExportState:
+    """Track what this run owns so interruption can restore prior outputs."""
+
     record_count: int = 0
     catalogue_output: str | None = None
     previous_results: tuple[Path, ...] = ()
@@ -56,7 +57,6 @@ def direct_termination_handlers() -> Iterator[None]:
 
     watched: list[tuple[signal.Signals, Any]] = []
 
-    # Handle the terminate step.
     def terminate(signum: int, _frame: Any) -> None:
         if signum == getattr(signal, "SIGTERM", object()):
             raise SystemExit(143)
@@ -80,7 +80,6 @@ def direct_termination_handlers() -> Iterator[None]:
             signal.signal(signum, previous)
 
 
-# Handle the configuration step.
 def configuration(arguments: argparse.Namespace, work_directory: Path | None, request_timeout_seconds: float | None
 ) -> dict[str, Any]:
     return {
@@ -96,10 +95,11 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
     }
 
 
-# Process the images.
 def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]],
     progress: TerminalProgress) -> list[ImageResult]:
     results: list[ImageResult] = []
+    # A bad photo is recorded and reported on stderr without discarding the
+    # other photos; publication later decides complete, partial, or failed.
     for index, image_path in enumerate(images, start=1):
         progress.photo_started(index, image_path)
         try:
@@ -117,7 +117,6 @@ def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, s
     return results
 
 
-# Build the public summary.
 def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str) -> dict[str, Any]:
     images = summary["images"]
     failed_results = sum(item["status"] == "failed" for item in images)
@@ -143,7 +142,6 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
     return result
 
 
-# Prepare the pipeline.
 def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str]]
 ) -> tuple[Any | None, Path | None, float | None, dict[str, str]]:
 
@@ -172,16 +170,15 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         return None, None, request_timeout, metadata
 
 
-# Export the results.
 def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
                    manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
     return export_results_into(
         arguments, results, output_path, manifest_path, failures, ExportState())
 
 
-# Export results through the active transaction.
 def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
     manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
+    """Publish a staged CSV while retaining enough evidence to undo this run."""
 
     if not sum(len(result.records) for result in results):
         return state
@@ -196,6 +193,8 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
+        # Stage the entire CSV before backing up or replacing a previous run.
+        # A forced run can restore only files whose saved copies still match.
         records = export_catalogue(
             results,
             staging,
@@ -223,6 +222,8 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         return state
 
     except BaseException as error:
+        # A rename can succeed just before an exception or interruption. Treat
+        # an absent staging file as uncertain publication and attempt rollback.
         published_or_uncertain = publication_started and (staging is None or not staging.exists())
         if published_or_uncertain:
             try:
@@ -250,7 +251,6 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             staging.unlink(missing_ok=True)
 
 
-# Write the manifest.
 def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[str, str]], *, replace_existing: bool) -> bool:
     try:
         write_json_atomic(manifest, summary, replace_existing=replace_existing)
@@ -264,14 +264,12 @@ def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[
     return True
 
 
-# Rollback the exported catalogue.
 def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
     if not state.wrote_catalogue or state.catalogue_digest is None:
         return
     rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
 
 
-# Write the backed manifest.
 def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
     staging = manifest.with_name(f".uma-bct-json-publish-{uuid.uuid4().hex}.tmp")
     try:
@@ -291,13 +289,11 @@ def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path,
     return True
 
 
-# Calculate the summary digest.
 def summary_digest(summary: dict[str, Any]) -> str:
     content = (json.dumps(summary, indent=2, ensure_ascii=False) + "\n").encode()
     return hashlib.sha256(content).hexdigest()
 
 
-# Replace the manifest if unchanged.
 def replace_manifest_if_unchanged(path: Path, previous: dict[str, Any], updated: dict[str, Any]) -> None:
     expected = path.with_name(f".uma-bct-json-expected-{uuid.uuid4().hex}.tmp")
     staging = path.with_name(f".uma-bct-json-publish-{uuid.uuid4().hex}.tmp")
@@ -310,7 +306,6 @@ def replace_manifest_if_unchanged(path: Path, previous: dict[str, Any], updated:
         staging.unlink(missing_ok=True)
 
 
-# Build the emit summary.
 def emit_summary(summary: dict[str, Any], image_count: int, model_name: str,
     progress: TerminalProgress, *, human: bool) -> None:
     progress.close()
@@ -322,7 +317,6 @@ def emit_summary(summary: dict[str, Any], image_count: int, model_name: str,
     )
 
 
-# Build the lock failure summary.
 def lock_failure_summary(arguments: argparse.Namespace, error: Exception) -> dict[str, Any]:
     message = warning_text(error)
     print(f"Lock failed: {message}", file=sys.stderr)
@@ -340,9 +334,10 @@ def lock_failure_summary(arguments: argparse.Namespace, error: Exception) -> dic
     }
 
 
-# Recover the manifest failure.
 def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_state: ExportState,
     failures: list[dict[str, str]]) -> None:
+    # A catalogue without its run manifest would mislead reviewers. Restore
+    # the previous CSV where possible and leave a failed-run manifest behind.
     try:
         rollback_exported_catalogue(output_path, export_state)
     except Exception as error:
@@ -362,11 +357,12 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
     write_manifest(recovery_manifest, summary, failures, replace_existing=False)
 
 
-# Build the locked batch summary.
 def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     output_path: Path, normal_manifest_path: Path, *,
     preserve_existing_manifest_on_failure: bool, progress: TerminalProgress) -> tuple[dict[str, Any], bool]:
 
+    # Model work, CSV publication, and manifest publication share one lock;
+    # the manifest records the outcome only after the catalogue transaction.
     failures: list[dict[str, str]] = []
     progress.phase("Checking the local model")
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
@@ -476,6 +472,8 @@ def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: P
             release_error = warning_text(error)
 
     if release_error is not None:
+        # The CSV may be sound even if lock cleanup fails. Update an unchanged
+        # manifest with that failure, and never overwrite a later edit.
         previous_summary = json.loads(json.dumps(summary))
         summary["failures"].append({"stage": "lock_cleanup", "error": release_error})
         summary["status"] = "partial" if summary["catalogue_output"] else "failed"

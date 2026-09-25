@@ -15,7 +15,6 @@ from pathlib import Path
 MACOS_ROOT_ALIASES = frozenset({Path("/etc"), Path("/tmp"), Path("/var")})
 
 
-# Handle the redirected path kind step.
 def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> str | None:
     metadata = metadata or path.lstat()
     if stat.S_ISLNK(metadata.st_mode):
@@ -30,10 +29,11 @@ def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> 
 
 
 def check_path(path: Path, purpose: str) -> None:
-    """Reject a linked path or parent."""
+    """Reject redirection in every existing component of a private path."""
 
     checked_path = path.absolute()
-    # Walk back to the root because the final path may not exist yet.
+    # A new output file has no inode yet, but one of its parents may already
+    # redirect elsewhere. Inspect the lexical path all the way to the root.
     for part in (checked_path, *checked_path.parents):
         try:
             metadata = part.lstat()
