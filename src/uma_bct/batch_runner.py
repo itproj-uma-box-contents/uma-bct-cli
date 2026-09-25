@@ -88,6 +88,7 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
+        "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
         "output": str(arguments.path_to_outputs),
@@ -200,6 +201,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             staging,
             minimum_confidence=arguments.min_transcription_confidence,
             replace_existing=False,
+            detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
         previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
         previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)

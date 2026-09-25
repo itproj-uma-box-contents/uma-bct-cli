@@ -8,6 +8,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -36,7 +37,7 @@ from uma_bct.managed_batch import (
 from uma_bct.pipeline import ImageResult
 
 
-def managed_arguments(root: Path, *, reprocess: bool = False) -> argparse.Namespace:
+def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True) -> argparse.Namespace:
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -50,6 +51,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False) -> argparse.Namesp
         force=False,
         results_directory=root / "Results",
         reprocess=reprocess,
+        detect_missing_boxes=detect_missing_boxes,
         json=True,
     )
 
@@ -104,11 +106,12 @@ class ManagedBatchTest(unittest.TestCase):
         self.assertEqual(ManagedInterruption(143).exit_code, 143)
 
     def run_managed_batch_and_capture_output(
-        self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False, patches=()
+        self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False,
+        detect_missing_boxes: bool = True, patches=()
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
-        arguments = managed_arguments(root, reprocess=reprocess)
+        arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes)
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.ExitStack() as stack:
@@ -132,6 +135,40 @@ class ManagedBatchTest(unittest.TestCase):
             root = Path(directory).resolve()
             self.prepare_inputs(root, *names)
             yield root
+
+    def test_managed_catalogue_honours_missing_box_option(self):
+        class GapPipeline(ManagedPipeline):
+            def process(self, path: Path) -> ImageResult:
+                result = super().process(path)
+                record = result.records[0]
+                unit = "1" if path.name == "01.jpg" else "3"
+                transcription = make_transcription(record.box, unit=unit)
+                return replace(result, records=(BoxResult(record.box, transcription),))
+
+        for detect_missing_boxes, expected_numbers in (
+            (True, ["0001", "0002", "0003"]),
+            (False, ["0001", "0003"]),
+        ):
+            with self.subTest(detect_missing_boxes=detect_missing_boxes), self.prepared_root("01.jpg", "03.jpg") as root:
+                status, summary, _stderr = self.run_managed_batch_and_capture_output(
+                    root, GapPipeline(), detect_missing_boxes=detect_missing_boxes
+                )
+                with (Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME).open(newline="", encoding="utf-8") as source:
+                    rows = list(csv.DictReader(source))
+                self.assertEqual(status, 0)
+                self.assertEqual(summary["catalogue_records"], len(expected_numbers))
+                self.assertEqual([row["Unit Number"] for row in rows], expected_numbers)
+                if detect_missing_boxes:
+                    self.assertEqual(rows[1]["Review Flags"], "Missing Box")
+
+    def test_missing_box_option_change_blocks_resume(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="02.jpg"))
+            status, _summary, stderr = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(), detect_missing_boxes=False
+            )
+            self.assertEqual(status, 2)
+            self.assertIn("processing configuration changed", stderr)
 
     def test_stable_read_rejects_a_short_read_hidden_by_restored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

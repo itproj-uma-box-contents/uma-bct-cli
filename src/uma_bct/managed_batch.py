@@ -221,6 +221,7 @@ def semantic_configuration(arguments: argparse.Namespace, request_timeout: float
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
+        "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout,
     }
 
@@ -1421,6 +1422,7 @@ def stage_catalogue(
                 verification,
                 minimum_confidence=arguments.min_transcription_confidence,
                 replace_existing=False,
+                detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
                 trusted_crop_links=True,
             )
             if file_digest(verification, "Expected pending catalogue") != file_digest(pending, "Pending catalogue"):
@@ -1436,6 +1438,7 @@ def stage_catalogue(
             pending,
             minimum_confidence=arguments.min_transcription_confidence,
             replace_existing=False,
+            detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
             trusted_crop_links=True,
         )
     digest = file_digest(pending, "Pending catalogue")

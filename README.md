@@ -91,15 +91,77 @@ create a separate new batch intentionally.
 The CSV columns are:
 
 ```text
-Node ID
-Node Type
-Node Title
+Unit Type
+Unit Number
 Description
 Date Range
 Transcription Confidence (%)
 Review Flags
 Cropped Box Image Link
 ```
+
+### Unit Type and Unit Number
+
+`Unit Type` contains all printed text visible on the box label in reading
+order, except for the unit-number phrase. Printed names, headings, logos,
+labels such as `Creator:`, and record identifiers are included. Visual line
+breaks and repeated whitespace are converted to single spaces in the CSV cell.
+
+`Unit Number` contains only the detected box or unit number, normalized to four
+digits. The tool recognizes `Unit`, `Box`, `Box No.`, `Box Number`, and `No.`
+labels. A sequence total in a phrase such as `Box 7 of 9` is not part of the
+unit number.
+
+For example:
+
+| Printed label text | Unit Type | Unit Number |
+| --- | --- | --- |
+| `HOME, Roderick Weir` / `2008.0036` / `Unit 7` | `HOME, Roderick Weir 2008.0036` | `0007` |
+| `BURNET, Sir Frank Macfarlane` / `1986.0107 (1989.0034)` / `Unit 22` | `BURNET, Sir Frank Macfarlane 1986.0107 (1989.0034)` | `0022` |
+| `Printing & Allied Trades` / `Employers' Association` / `of Victoria` / `1975.0064 Unit 8` | `Printing & Allied Trades Employers' Association of Victoria 1975.0064` | `0008` |
+| `Victorian Chamber of Mines` / `107/56` / `Box 7 of 9` | `Victorian Chamber of Mines 107/56` | `0007` |
+
+When the unit phrase shares a line with other text, only that phrase is
+removed. For example, `1975.0064 Unit 8` contributes `1975.0064` to `Unit Type`.
+A label containing only `Unit 8` has a blank `Unit Type` and is flagged for
+review.
+
+The model's `typed` transcription is the source for `Unit Type`. Handwriting
+and explicit content or condition annotations are instead considered for
+`Description`; identifier-only and unit-only text is not repeated there.
+Malformed dotted identifiers such as `1960.009` remain visible in `Unit Type`
+but receive `Ambiguous identifier` and `Transcription mismatch` review flags.
+If more than one valid identifier is visible, all printed text remains in
+`Unit Type` and the row receives `Multiple identifiers`.
+
+### Missing-box detection
+
+Missing-box detection is enabled by default. After the photographed boxes are
+transcribed, rows are sorted case-insensitively by `Unit Type` and then
+numerically by `Unit Number`. If two consecutive rows have the same complete
+`Unit Type` and their unit numbers contain an internal gap, the tool inserts a
+blank review row for each missing number.
+
+For example, observed rows `HOME, Roderick Weir 2008.0036 / 0001` and
+`HOME, Roderick Weir 2008.0036 / 0003` produce an inserted `0002` row. The
+inserted row keeps the shared `Unit Type`, has `Missing Box` in `Review Flags`,
+and leaves transcription confidence, description, and cropped-image link
+blank.
+
+Detection is deliberately conservative:
+
+- It only fills gaps between observed unit numbers; it does not infer missing
+  boxes before the lowest or after the highest observed number.
+- Both surrounding rows must have the same complete `Unit Type`, ignoring
+  letter case, and valid numeric unit numbers.
+- Gaps larger than 100 units are not filled.
+- Differing printed headings, identifiers, or other label text create different
+  `Unit Type` groups, so no missing row is inferred between them.
+- Inserted rows are review suggestions, not proof that a physical box is
+  missing.
+
+Advanced CLI users can disable this behavior with
+`--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
 
 The last column is a controlled relative `HYPERLINK` formula to its file under
 `Box Images`. Keep and move the whole batch folder together. Excel,
@@ -111,13 +173,14 @@ Google Sheets cannot open these private local file links and is unsupported.
 Opening a link uses the operating system's registered application; revealing
 and selecting the file in Finder or Explorer is not promised.
 
-Before importing the catalogue, review rows in their original photo and
-left-to-right/top-to-bottom box order:
+Before importing the catalogue, review each row against its crop and source
+photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 - Compare every row with its `Cropped Box Image Link` evidence.
 - Check every non-empty `Review Flags` value and the
   `Transcription Confidence (%)`. Every transcription still needs human review.
-- Keep separate rows for separate physical boxes, even when titles match.
+- Keep separate rows for separate physical boxes, even when their unit type and
+  number match.
 
 ## Compatibility and privacy
 
@@ -154,3 +217,20 @@ still go to stderr. The `--human` flag remains accepted for older commands.
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
 Without it, every existing direct-CLI default, alias, and Docker workflow stays
 available.
+
+Current limitations:
+
+- Results depend on Qwen accurately transcribing all printed text and
+  preserving its reading order.
+- Labels such as `Carton 7`, `Container 7`, and `Package 7` are not recognized
+  as unit numbers.
+- Values such as `Unit 8A`, ranges, and unclear or crossed-out unit numbers are
+  not accepted as ordinary unit numbers.
+- Only malformed dotted standard-looking identifiers are explicitly detected.
+  Malformed UMA-style or slash-style values may still be accepted as arbitrary
+  identifiers.
+- The parser cannot semantically distinguish incidental text such as
+  `Research Unit 8` from an actual unit claim; `Unit 8` would be removed from
+  `Unit Type`.
+- Printed logos, headings, and labels such as `Creator:` are included because
+  the rule is all printed label text.
