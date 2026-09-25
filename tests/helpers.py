@@ -43,8 +43,8 @@ def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",
 
 
 # Build a sample result.
-def make_result(*records: BoxResult, requested: str = "qwen", actual: str = "qwen",
-                route: tuple[str, ...] = ("qwen",), status: str = "complete", warnings: tuple[str, ...] = ()) -> ImageResult:
+def make_result(*records: BoxResult, requested: str = "qwen", actual: str = "qwen", route: tuple[str, ...] = ("qwen",),
+                date: str = "regex", status: str = "complete", warnings: tuple[str, ...] = ()) -> ImageResult:
     image = records[0].box.source_image if records else make_image()
     return ImageResult(
         input_image=image,
@@ -52,6 +52,7 @@ def make_result(*records: BoxResult, requested: str = "qwen", actual: str = "qwe
         actual_detector=actual,
         fallback_path=route,
         transcriber="qwen",
+        date_detector=date,
         status=status,
         records=records,
         warnings=warnings,

@@ -80,7 +80,7 @@ class ManagedPipeline:
         image = make_image(path)
         if path.name in self.failed_names:
             return ImageResult(
-                image, "qwen", "qwen", ("qwen",), "qwen", "failed", (), (), self.model_metadata
+                image, "qwen", "qwen", ("qwen",), "qwen", "none", "failed", (), (), self.model_metadata
             )
         crop = self.work_directory / path.stem / ("full_image.png" if self.full_image else "box_001.png")
         crop.parent.mkdir(parents=True)
@@ -93,6 +93,7 @@ class ManagedPipeline:
             "qwen",
             ("qwen",),
             "qwen",
+            "none",
             "complete",
             (BoxResult(box, make_transcription(box)),),
             (),
