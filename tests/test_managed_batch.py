@@ -107,11 +107,12 @@ class ManagedBatchTest(unittest.TestCase):
 
     def run_managed_batch_and_capture_output(
         self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False,
-        detect_missing_boxes: bool = True, patches=()
+        detect_missing_boxes: bool = True, verification: str | None = None, patches=()
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes)
+        arguments.verification = verification
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.ExitStack() as stack:
@@ -169,6 +170,98 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(pipeline.calls, ["02.jpg"])
             self.assertEqual(summary["images_total"], 2)
 
+    def test_history_reuse_preserves_failures_across_batches(self):
+        with self.prepared_root("01.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(failed_names=("01.jpg",)))
+            (root / "Add Photos Here/02.jpg").write_bytes(b"new photo")
+            _, second, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            pipeline = ManagedPipeline()
+            status, summary, _ = self.run_managed_batch_and_capture_output(root, pipeline)
+
+            self.assertEqual(status, 1)
+            self.assertEqual(summary["status"], "partial")
+            self.assertEqual(summary["images_total"], 2)
+            self.assertEqual(summary["images_reused"], 2)
+            self.assertEqual(summary["images_failed"], 1)
+            self.assertEqual(summary["failure_count"], 1)
+            self.assertEqual(summary["catalogue_records"], 1)
+            self.assertEqual(summary["catalogue_outputs"], [second["catalogue_output"]])
+            self.assertEqual(len(summary["run_manifests"]), 2)
+            self.assertIsNone(summary["batch_directory"])
+            self.assertIsNone(summary["catalogue_output"])
+            self.assertEqual(pipeline.calls, [])
+
+    def test_history_reuse_aggregates_successful_batches_and_current_subsets(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            _, first, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            (root / "Add Photos Here/03.jpg").write_bytes(b"new photo")
+            _, second, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            catalogue = Path(first["catalogue_output"])
+            catalogue.write_bytes(b"human corrections")
+            for removed, count in ((None, 3), ("02.jpg", 2), ("03.jpg", 1)):
+                with self.subTest(removed=removed):
+                    if removed:
+                        (root / "Add Photos Here" / removed).unlink()
+                    pipeline = ManagedPipeline()
+                    status, summary, _ = self.run_managed_batch_and_capture_output(root, pipeline)
+                    self.assertEqual(status, 0)
+                    self.assertEqual(summary["images_total"], count)
+                    self.assertEqual(summary["images_complete"], count)
+                    self.assertEqual(summary["images_processed"], count)
+                    self.assertEqual(summary["images_reused"], count)
+                    self.assertEqual(summary["current_input_records"], count)
+                    self.assertEqual(summary["catalogue_records"], 3 if count > 1 else 2)
+                    self.assertTrue(summary["catalogue_modified"])
+                    self.assertEqual(catalogue.read_bytes(), b"human corrections")
+                    expected = [first["catalogue_output"]]
+                    if count > 1:
+                        expected.append(second["catalogue_output"])
+                        self.assertIsNone(summary["catalogue_output"])
+                        self.assertIsNone(summary["run_manifest"])
+                        self.assertEqual(len(summary["review_outputs"]), 2)
+                    else:
+                        self.assertEqual(summary["catalogue_output"], first["catalogue_output"])
+                        self.assertEqual(summary["batch_directory"], first["batch_directory"])
+                    self.assertCountEqual(summary["catalogue_outputs"], expected)
+                    self.assertEqual(pipeline.calls, [])
+
+    def test_history_reuse_excludes_removed_failures_and_prefers_latest_reprocessing(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(failed_names=("01.jpg",)))
+            (root / "Add Photos Here/01.jpg").unlink()
+            status, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 0)
+            self.assertEqual(summary["images_total"], 1)
+            self.assertEqual(summary["failure_count"], 0)
+            self.assertEqual(summary["images_failed"], 0)
+
+            _, latest, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(failed_names=("02.jpg",)), reprocess=True
+            )
+            status, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 1)
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["images_total"], 1)
+            self.assertEqual(summary["images_failed"], 1)
+            self.assertEqual(summary["batch_directory"], latest["batch_directory"])
+            self.assertEqual(summary["catalogue_outputs"], [])
+
+    def test_history_reuse_preserves_partial_photo_outcomes(self):
+        class PartialPipeline(ManagedPipeline):
+            def process(self, path):
+                return replace(super().process(path), status="partial")
+
+        with self.prepared_root("01.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, PartialPipeline())
+            (root / "Add Photos Here/02.jpg").write_bytes(b"new photo")
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            status, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 1)
+            self.assertEqual(summary["status"], "partial")
+            self.assertEqual(summary["images_partial"], 1)
+            self.assertEqual(summary["images_complete"], 1)
+            self.assertEqual(summary["catalogue_records"], 2)
+
     def test_reviewer_files_metadata_and_csv_edits_are_preserved(self):
         with self.prepared_root("01.jpg") as root:
             _, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
@@ -221,6 +314,81 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(resumed.calls, [])
             self.assertEqual(resumed.transcriber.verify.call_count, 1)
             self.assertTrue(progress_path.with_name("Review.html").is_file())
+
+    def test_cached_verification_readings_finalize_without_model_preflight(self):
+        from uma_bct.managed_batch import write_progress
+
+        for cached_reading in ("second", "third"):
+            with self.subTest(cached_reading=cached_reading), self.prepared_root("01.jpg") as root:
+                pipeline = ManagedPipeline()
+                pipeline.transcriber = Mock()
+                handwriting = ("corrected content",) if cached_reading == "third" else ()
+                pipeline.transcriber.verify.side_effect = lambda box, handwriting=handwriting, **kw: [
+                    make_transcription(box, handwritten=handwriting)
+                ]
+                pipeline.transcriber.resolve_discrepancy.side_effect = lambda box, *a, handwriting=handwriting, **kw: [
+                    make_transcription(box, handwritten=handwriting)
+                ]
+
+                def interrupt_after_reading(batch, progress, cached_reading=cached_reading):
+                    write_progress(batch, progress)
+                    records = progress["inputs"][0].get("result", {}).get("records", [])
+                    audit = records[0].get("verification", {}) if records else {}
+                    if (progress["phase"] == "verifying" and cached_reading in audit
+                            and audit["status"] == "pending"):
+                        raise KeyboardInterrupt
+
+                status, first, _ = self.run_managed_batch_and_capture_output(
+                    root, pipeline, verification="always",
+                    patches=(patch("uma_bct.managed_batch.write_progress", side_effect=interrupt_after_reading),),
+                )
+                self.assertEqual(status, 130)
+                self.assertEqual(pipeline.transcriber.verify.call_count, 1)
+                self.assertEqual(pipeline.transcriber.resolve_discrepancy.call_count, cached_reading == "third")
+                resumed = ManagedPipeline()
+                status, summary, _ = self.run_managed_batch_and_capture_output(
+                    root, resumed, verification="always",
+                    patches=(patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("offline")),),
+                )
+                self.assertEqual(status, 0)
+                self.assertEqual(summary["failure_count"], 0)
+                self.assertEqual(summary["images_reused"], 1)
+                self.assertEqual(resumed.calls, [])
+                batch = Path(first["batch_directory"])
+                details = json.loads((batch / DETAILS_FILE_NAME).read_text())
+                self.assertTrue(details["verification"]["complete"])
+                self.assertEqual(len(details["endpoint_history"]), 1)
+                audit = details["inputs"][0]["result"]["records"][0]["verification"]
+                self.assertEqual(audit["status"], "complete")
+                self.assertTrue((batch / "Review.html").is_file())
+                with (batch / CATALOGUE_FILE_NAME).open(newline="", encoding="utf-8") as source:
+                    row = next(csv.DictReader(source))
+                self.assertEqual(row["Description"], "; ".join(handwriting))
+
+    def test_pending_verification_blocks_changed_model_digest(self):
+        with self.prepared_root("01.jpg") as root:
+            pipeline = ManagedPipeline()
+            pipeline.transcriber = Mock()
+            pipeline.transcriber.verify.side_effect = KeyboardInterrupt
+            status, first, _ = self.run_managed_batch_and_capture_output(root, pipeline, verification="always")
+            self.assertEqual(status, 130)
+            resumed = ManagedPipeline(digest="sha256:changed")
+            resumed.transcriber = Mock()
+            status, summary, stderr = self.run_managed_batch_and_capture_output(
+                root, resumed, verification="always"
+            )
+            self.assertEqual(status, 2)
+            self.assertIn("model digest changed", stderr)
+            self.assertEqual(resumed.calls, [])
+            resumed.transcriber.verify.assert_not_called()
+            self.assertIsNone(summary["catalogue_output"])
+            batch = Path(first["batch_directory"])
+            progress = json.loads((batch / PROGRESS_FILE_NAME).read_text())
+            self.assertEqual(progress["model"]["model_digest"], "sha256:test")
+            self.assertEqual(len(progress["endpoint_history"]), 1)
+            audit = progress["inputs"][0]["result"]["records"][0]["verification"]
+            self.assertEqual(audit["status"], "pending")
+            self.assertFalse((batch / DETAILS_FILE_NAME).exists())
 
     def test_html_publication_interruption_finishes_without_model_work(self):
         from uma_bct.atomic import rename_new_file
@@ -300,6 +468,51 @@ class ManagedBatchTest(unittest.TestCase):
                 self.assertEqual([row["Unit Number"] for row in rows], expected_numbers)
                 if detect_missing_boxes:
                     self.assertEqual(rows[1]["Review Flags"], "Missing Box")
+
+                # Full reuse retains the actual generated row count, including suggestions.
+                status, reused, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(), detect_missing_boxes=detect_missing_boxes
+                )
+                self.assertEqual(status, 0)
+                self.assertEqual(reused["catalogue_records"], len(rows))
+                self.assertEqual(reused["current_input_records"], 2)
+                self.assertEqual(reused["catalogue_record_counts"], {summary["catalogue_output"]: len(rows)})
+
+                # A subset changes the selected photo count, never the saved file's count.
+                (root / "Add Photos Here/03.jpg").unlink()
+                status, subset, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+                self.assertEqual(status, 0)
+                self.assertEqual(subset["images_total"], 1)
+                self.assertEqual(subset["current_input_records"], 1)
+                self.assertEqual(subset["catalogue_records"], len(rows))
+                self.assertEqual(subset["catalogue_output"], summary["catalogue_output"])
+
+                (root / "Add Photos Here/05.jpg").write_bytes(b"new photo")
+                _, second, _ = self.run_managed_batch_and_capture_output(root, GapPipeline())
+                status, aggregate, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+                self.assertEqual(status, 0)
+                self.assertEqual(aggregate["images_total"], 2)
+                self.assertEqual(aggregate["current_input_records"], 2)
+                self.assertEqual(aggregate["catalogue_records"], len(rows) + 1)
+                self.assertEqual(aggregate["catalogue_record_counts"], {
+                    summary["catalogue_output"]: len(rows), second["catalogue_output"]: 1,
+                })
+
+    def test_reused_failed_subset_does_not_inherit_historical_catalogue_success(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            _, original, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(failed_names=("01.jpg",))
+            )
+            (root / "Add Photos Here/02.jpg").unlink()
+            status, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 1)
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["images_total"], 1)
+            self.assertEqual(summary["images_failed"], 1)
+            self.assertEqual(summary["failure_count"], 1)
+            self.assertEqual(summary["current_input_records"], 0)
+            self.assertEqual(summary["catalogue_records"], 1)
+            self.assertEqual(summary["catalogue_record_counts"], {original["catalogue_output"]: 1})
 
     def test_missing_box_option_change_blocks_resume(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:

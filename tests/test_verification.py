@@ -3,15 +3,17 @@ import io
 import os
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from helpers import make_box, make_result, make_transcription
 
+from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records
-from uma_bct.verification import choose_verification, configured_mode, reconcile, verify_image
+from uma_bct.ports import ModelResponse
+from uma_bct.verification import VerificationSetupError, choose_verification, configured_mode, reconcile, verify_image
 
 
 class VerificationTest(unittest.TestCase):
@@ -61,6 +63,134 @@ class VerificationTest(unittest.TestCase):
         selected, _, unresolved = reconcile(self.first, second, second)
         self.assertEqual(selected.unit_number, "4")
         self.assertIn("unit_number", unresolved)
+
+    def test_partial_omissions_keep_original_fields(self):
+        cases = (
+            ("typed_lines", ("1960.0009", "Unit 4", "Department of Chemistry"), ("1960.0009", "Unit 4")),
+            ("handwritten_lines", ("Minutes", "Restricted until 2055"), ("Minutes",)),
+            ("handwritten_lines", ("Minutes not for release",), ("Minutes for release",)),
+            ("handwritten_lines", ("Minutes", "Minutes"), ("Minutes",)),
+            ("handwritten_lines", ("Minutes restricted until 2055",), ("Letters until 2055",)),
+            ("auxiliary_annotations", ("Water damage", "Mould"), ("Water damage",)),
+            ("auxiliary_annotations", ("Severe water damage",), ("Water damage",)),
+        )
+        for field, original, candidate in cases:
+            with self.subTest(field=field, original=original):
+                first = replace(self.first, **{field: original})
+                second = replace(first, **{field: candidate})
+                selected, _, unresolved = reconcile(first, second, second)
+                self.assertEqual(getattr(selected, field), original)
+                self.assertIn(field, unresolved)
+                self.assertTrue(selected.needs_review)
+
+    def test_omitted_identifier_keeps_all_printed_identity(self):
+        first = replace(self.first, record_identifiers=("1960.0009", "1970.0001"),
+                        typed_lines=("1960.0009", "1970.0001", "Unit 4"))
+        selected, _, unresolved = reconcile(first, self.first, self.first)
+        self.assertEqual(selected.record_identifiers, first.record_identifiers)
+        self.assertEqual(selected.typed_lines, first.typed_lines)
+        self.assertIn("record_identifiers", unresolved)
+
+    def test_adapter_handwritten_units_are_reconciled_together(self):
+        def response(unit):
+            return ModelResponse({"boxes": [{
+                "position": "middle-left", "record_identifiers": ["1960.0009"], "unit": unit,
+                "typed": ["1960.0009"], "handwritten": [f"Unit {unit}", "Minutes"],
+                "auxiliary_annotations": [],
+            }]})
+
+        client = Mock()
+        client.query.side_effect = [response("4"), response("5"), response("5")]
+        transcriber = QwenTextTranscriber(client)
+        first = transcriber.transcribe(self.box)[0]
+        result = verify_image(make_result(BoxResult(self.box, first)), transcriber, on_stage=lambda _: None)
+        chosen = result.records[0].transcription
+        self.assertEqual(chosen.unit_number, "5")
+        self.assertEqual(chosen.handwritten_lines, ("Unit 5", "Minutes"))
+        self.assertEqual(catalogue_records([result])[0]["Unit Number"], "0005")
+        self.assertTrue(chosen.needs_review)
+
+    def test_conflicting_handwritten_unit_cannot_blank_valid_original(self):
+        second = replace(self.first, handwritten_lines=("Unit 5",))
+        result, _ = self.run_verification([second], [second])
+        self.assertEqual(result.records[0].transcription.handwritten_lines, ())
+        self.assertEqual(catalogue_records([result])[0]["Unit Number"], "0004")
+        self.assertIn("handwritten_lines", result.records[0].verification["unresolved"])
+
+    def test_handwritten_identifiers_follow_structured_identity(self):
+        first = replace(self.first, typed_lines=("Unit 4",), handwritten_lines=("1960.0009", "Minutes"))
+        second = replace(first, record_identifiers=("1970.0001",), handwritten_lines=("1970.0001", "Minutes"))
+        selected, _, unresolved = reconcile(first, second, second)
+        self.assertEqual(selected.record_identifiers, second.record_identifiers)
+        self.assertEqual(selected.handwritten_lines, second.handwritten_lines)
+        self.assertEqual(unresolved, [])
+
+    def test_identity_correction_with_omission_preserves_entire_original_group(self):
+        first = replace(self.first, typed_lines=("1960.0009",),
+                        handwritten_lines=("Unit 4", "Minutes restricted until 2055"))
+        second = replace(first, unit_number="5", handwritten_lines=("Unit 5", "Minutes"))
+        chosen, _, unresolved = reconcile(first, second, second)
+        result = make_result(BoxResult(self.box, chosen))
+        self.assertEqual(chosen.unit_number, "4")
+        self.assertEqual(chosen.handwritten_lines, first.handwritten_lines)
+        self.assertIn("handwritten_lines", unresolved)
+        self.assertEqual(catalogue_records([result])[0]["Unit Number"], "0004")
+
+    def test_corroborated_token_correction_without_omission_is_allowed(self):
+        first = replace(self.first, handwritten_lines=("Meeting minuets",))
+        second = replace(first, handwritten_lines=("Meeting minutes",))
+        chosen, _, unresolved = reconcile(first, second, second)
+        self.assertEqual(chosen.handwritten_lines, second.handwritten_lines)
+        self.assertEqual(unresolved, [])
+        self.assertTrue(chosen.needs_review)
+
+    def cached_result(self, second, third=None):
+        audit = {"version": 1, "status": "pending", "original": [asdict(self.first)],
+                 "second": [asdict(second)]}
+        if third is not None:
+            audit["third"] = [asdict(third)]
+        return make_result(BoxResult(self.box, self.first, audit))
+
+    def test_cached_readings_do_not_load_transcriber(self):
+        changed = replace(self.first, handwritten_lines=("Minutes",))
+        for result, expected in ((self.cached_result(self.first), ()),
+                                 (self.cached_result(changed, changed), ("Minutes",))):
+            with self.subTest(expected=expected):
+                factory = Mock(side_effect=AssertionError("must not load"))
+                verified = verify_image(result, None, on_stage=lambda _: None, get_transcriber=factory)
+                factory.assert_not_called()
+                self.assertEqual(verified.records[0].transcription.handwritten_lines, expected)
+                self.assertEqual(verified.records[0].verification["status"], "complete")
+
+    def test_missing_requests_load_transcriber_once(self):
+        changed = replace(self.first, handwritten_lines=("Minutes",))
+        for cached_second in (False, True):
+            with self.subTest(cached_second=cached_second):
+                result = self.cached_result(changed) if cached_second else self.result
+                transcriber = Mock()
+                transcriber.verify.return_value = [changed]
+                transcriber.resolve_discrepancy.return_value = [changed]
+                factory = Mock(return_value=transcriber)
+                verified = verify_image(result, None, on_stage=lambda _: None, get_transcriber=factory)
+                factory.assert_called_once_with()
+                self.assertEqual(transcriber.verify.call_count, 0 if cached_second else 1)
+                transcriber.resolve_discrepancy.assert_called_once()
+                self.assertEqual(verified.records[0].transcription.handwritten_lines, ("Minutes",))
+
+    def test_factory_failure_propagates_without_marking_reading_failed(self):
+        changed = replace(self.first, handwritten_lines=("Minutes",))
+        for result in (self.result, self.cached_result(changed)):
+            with self.subTest(cached=bool(result.records[0].verification)):
+                failure = ValueError("model identity changed")
+                factory = Mock(side_effect=failure)
+                saved = []
+                with self.assertRaises(VerificationSetupError) as caught:
+                    verify_image(result, None, on_stage=lambda _: None, checkpoint=saved.append,
+                                 get_transcriber=factory)
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(saved[-1].records[0].verification["status"], "pending")
+                self.assertNotIn("error", saved[-1].records[0].verification)
+                self.assertEqual(saved[-1].records[0].transcription, self.first)
 
     def test_failure_preserves_first_reading_and_partial_status_in_checkpoint(self):
         transcriber = Mock()

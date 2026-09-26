@@ -49,6 +49,34 @@ class TerminalProgressTest(unittest.TestCase):
             print_run_summary(summary, human=False, elapsed_seconds=1)
         self.assertEqual(json.loads(stdout.getvalue()), summary)
 
+    def test_reused_history_report_lists_all_results_and_retains_failures(self):
+        summary = {
+            "already_complete": True, "status": "partial", "images_total": 2,
+            "images_complete": 1, "images_partial": 0, "images_failed": 1,
+            "catalogue_records": 2, "current_input_records": 1, "catalogue_output": None,
+            "catalogue_outputs": ["/results/second/Catalogue.csv"],
+            "batch_directories": ["/results/second", "/results/first"],
+            "review_outputs": ["/results/second/Review.html"],
+            "run_manifests": ["/results/second/Run Details.json", "/results/first/Run Details.json"],
+        }
+        report = human_summary(summary, elapsed_seconds=1)
+        self.assertIn("Already complete with issues", report)
+        self.assertIn("1 complete | 0 partial | 1 failed", report)
+        self.assertIn("Catalogue: 2 recorded rows", report)
+        self.assertIn("Transcribed boxes in current photos: 1", report)
+        self.assertNotIn("Catalogue: not created", report)
+        for path in (*summary["catalogue_outputs"], *summary["review_outputs"], *summary["run_manifests"]):
+            self.assertIn(path, report)
+
+    def test_recovery_report_lists_only_retained_recovery_files(self):
+        summary = {"status": "partial", "catalogue_output": None, "catalogue_records": 0,
+                   "recovery_path": "/results/old-review.html",
+                   "recovery_paths": ["/results/old-review.html"]}
+        report = human_summary(summary, elapsed_seconds=1)
+        self.assertIn("Recovery file: /results/old-review.html", report)
+        self.assertEqual(report.count("Recovery file:"), 1)
+        self.assertIn("Catalogue: not created", report)
+
     def test_live_progress_redraws_in_place(self):
         output = io.StringIO()
         with TerminalProgress(1, stream=output, force_terminal=True) as reporter:

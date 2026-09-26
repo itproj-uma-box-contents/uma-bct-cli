@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from uma_bct.catalogue import map_catalogue_record
@@ -18,6 +18,20 @@ from uma_bct.run_artifacts import write_json_atomic
 from uma_bct.verification import reading
 
 COLUMNS = ("Unit Type", "Unit Number", "Description", "Date Range")
+
+
+def source_filename(value: str) -> str:
+    """Read filenames from either platform's serialized source paths.
+
+    Native Windows paths use backslashes; POSIX paths may contain literal
+    backslashes in filenames. Preserve slash-form paths before interpreting
+    legacy Windows relative paths, independently of the reviewing host OS.
+    """
+
+    windows_path = PureWindowsPath(value)
+    if value.startswith("/") or ("/" in value and not windows_path.drive):
+        return PurePosixPath(value).name
+    return windows_path.name
 
 
 def transcription(box: dict[str, Any]) -> BoxTranscription:
@@ -39,7 +53,7 @@ def prepare(manifest: dict[str, Any]) -> dict[str, Any]:
     images = []
     seen = set()
     for image in manifest.get("images", []):
-        name = Path(image["source_image"]).name
+        name = source_filename(image["source_image"])
         if name in seen:
             raise ValueError(f"Duplicate source filename requires separate reference sets: {name}")
         seen.add(name)
@@ -68,7 +82,7 @@ def compare(reference: dict[str, Any], manifest: dict[str, Any]) -> dict[str, An
     actual = {}
     for image in manifest.get("images", []):
         for box in image.get("boxes", []):
-            key = (Path(image["source_image"]).name, box["box_id"])
+            key = (source_filename(image["source_image"]), box["box_id"])
             if key in actual:
                 raise ValueError("Run contains duplicate physical box IDs.")
             actual[key] = box

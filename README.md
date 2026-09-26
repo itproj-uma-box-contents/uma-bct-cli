@@ -81,6 +81,11 @@ to resume it. Photos already committed as complete, partial, or failed are
 reused; the photo active at interruption is processed again. Photos added while a batch runs are left for the next launch. A later launch processes
 only new or changed photos, using the saved run details to identify earlier work.
 Each batch has its own catalogue; older catalogues are not combined or overwritten.
+If the current photos span several completed batches, the report lists all relevant
+results and includes failures from earlier batches. Recorded catalogue row counts
+refer to the original published files, which can also contain photos since removed
+from the input folder; the report separately counts transcribed boxes for current
+photos. Later CSV edits are not recounted.
 Do not remove, rename, or edit an original photo while its batch is unfinished;
 if that happens, the CLI preserves progress and explains which inputs to restore.
 
@@ -191,9 +196,9 @@ a distinct checking prompt without seeing the first answer. Only crops with
 substantive differences receive a third request. Detection is not repeated.
 
 A correction requires the third reading to corroborate an earlier candidate.
-Unresolved differences, uncertain deletions, and ambiguous matches between boxes
+Unresolved differences, whole or partial content deletions, and ambiguous matches between boxes
 keep the original text and receive review flags. Printed text, identifiers, and
-unit number are reconciled together. Every row still needs human review:
+unit number are reconciled together, including handwritten identity claims. Every row still needs human review:
 agreement between model readings does not prove correctness or raise confidence.
 
 The review page's **Compare readings** sections and run details preserve the

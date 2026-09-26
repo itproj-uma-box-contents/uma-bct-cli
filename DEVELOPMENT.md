@@ -246,12 +246,20 @@ result. First-pass photo commits remain independent of verification checkpoints.
 A checkpoint write failure stops the run; a model request failure retains the
 first reading and flags partial processing. Application version/model identity
 checks still protect resumed inference. Publication-only recovery does not load
-Ollama. Existing records without verification or HTML fields remain readable.
+Ollama. Cached second and third readings also reconcile without loading a model;
+model identity is checked lazily before a missing reading. Existing records without
+verification or HTML fields remain readable.
 
 Managed history uses source directory, filename, and content fingerprint; it does
 not deduplicate separate filenames by pixel content. The active snapshot excludes
 later additions. Completed CSV edits and reviewer files are preserved, while
 application-owned manifests, crops, and in-progress publications remain validated.
+Already-completed summaries aggregate the newest applicable outcomes for each
+current input. `catalogue_outputs`, `review_outputs`, and `run_manifests` list all
+contributing results; singular paths remain populated for one contributing batch.
+`catalogue_records` and `catalogue_record_counts` retain recorded publication row
+counts. `current_input_records` counts saved physical-box rows for only current
+photos, without inferred missing-box rows or recounting later CSV edits.
 Saved verification settings contain no photographs or transcriptions.
 
 Prepare reference drafts locally from a run manifest:

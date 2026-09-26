@@ -8,11 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import unicodedata
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,7 @@ from .atomic import open_stable_file
 from .catalogue import map_catalogue_record
 from .constants import AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTION_MISMATCH_FLAG
 from .domain import BoxTranscription
-from .identity import normalise_unit_claim
+from .identity import collect_unit_evidence, identifier_evidence_details, normalise_unit_claim
 from .pipeline import ImageResult, warning_text
 from .run_artifacts import write_json_atomic
 
@@ -104,13 +106,32 @@ def align(original: list[BoxTranscription], candidates: list[BoxTranscription]) 
     return [by_position[position] for position in positions]
 
 
+def omits_content(original: str, candidate: str) -> bool:
+    """Reject missing tokens, including deletions mixed with other corrections."""
+    old = re.findall(r"\w+|[^\w\s]", original)
+    new = re.findall(r"\w+|[^\w\s]", candidate)
+    return any(tag == "delete" or (tag == "replace" and end_old - start_old > end_new - start_new)
+               for tag, start_old, end_old, start_new, end_new
+               in SequenceMatcher(None, old, new, autojunk=False).get_opcodes())
+
+
+def handwritten_identity(value: BoxTranscription) -> bool:
+    """Use the catalogue's evidence rules to find dependent handwriting."""
+    units = collect_unit_evidence((), value.handwritten_lines)
+    identifiers, malformed = identifier_evidence_details(value.handwritten_lines)
+    return bool(units.candidates or units.ambiguous or identifiers or malformed)
+
+
 def reconcile(first: BoxTranscription, second: BoxTranscription,
               third: BoxTranscription | None) -> tuple[BoxTranscription, list[str], list[str]]:
     selected: dict[str, Any] = {}
     disputed: list[str] = []
     unresolved: list[str] = []
     contributors = [first, second]
-    for fields in GROUPS:
+    groups = ((FIELDS[:4], GROUPS[2]) if any(handwritten_identity(value) for value in (first, second, third)
+                                           if value is not None) else GROUPS)
+    identity_flags = (AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTION_MISMATCH_FLAG)
+    for fields in groups:
         a, b = signature(first, fields), signature(second, fields)
         if a == b:
             continue
@@ -118,18 +139,28 @@ def reconcile(first: BoxTranscription, second: BoxTranscription,
         c = signature(third, fields) if third else None
         if c == a:
             contributors.append(third)
-        elif c == b and not any(old and not new for old, new in zip(a, b, strict=True)):
+        elif c == b and not any(omits_content(old, new) for old, new in zip(a, b, strict=True)):
             candidate = replace(first, **{key: getattr(second, key) for key in fields}, needs_review=False)
             flags = map_catalogue_record(candidate, "crop.png")["Review Flags"]
-            if fields == GROUPS[0] and any(flag in flags for flag in (
-                AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTION_MISMATCH_FLAG
-            )):
+            if fields[0] == "typed_lines" and any(flag in flags for flag in identity_flags):
                 unresolved.extend(fields)
             else:
                 selected.update({key: getattr(second, key) for key in fields})
                 contributors.append(third)
         else:
             unresolved.extend(fields)
+    # Check the assembled evidence as well as each proposed group. Never turn
+    # a valid original identity into a contradictory hybrid of the readings.
+    original_row = map_catalogue_record(replace(first, needs_review=False), "crop.png")
+    final_row = map_catalogue_record(replace(first, **selected, needs_review=False), "crop.png")
+    if ((original_row["Unit Number"] and not final_row["Unit Number"])
+            or any(flag in final_row["Review Flags"] and flag not in original_row["Review Flags"]
+                   for flag in identity_flags)):
+        for key in FIELDS[:4]:
+            if key in selected:
+                del selected[key]
+                if key not in unresolved:
+                    unresolved.append(key)
     return replace(first, **selected, confidence=min(item.confidence for item in contributors),
                    needs_review=bool(disputed) or any(item.needs_review for item in contributors)), disputed, unresolved
 
@@ -138,12 +169,30 @@ class VerificationCheckpointError(RuntimeError):
     """A disk failure must stop verification rather than become a model warning."""
 
 
+class VerificationSetupError(RuntimeError):
+    """Model setup or identity validation failed before a reading request."""
+
+
 def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[str], None],
-                 checkpoint: Callable[[ImageResult], None] = lambda _result: None) -> ImageResult:
+                 checkpoint: Callable[[ImageResult], None] = lambda _result: None,
+                 get_transcriber: Callable[[], Any] | None = None) -> ImageResult:
     records = list(result.records)
     groups: dict[Path, list[int]] = defaultdict(list)
     for index, record in enumerate(records):
         groups[record.box.image_file_path].append(index)
+
+    def model() -> Any:
+        nonlocal transcriber
+        if transcriber is None:
+            try:
+                if get_transcriber is None:
+                    raise ValueError("Verification requires a transcriber for missing readings.")
+                transcriber = get_transcriber()
+                if transcriber is None:
+                    raise ValueError("Verification transcriber factory returned no transcriber.")
+            except Exception as error:
+                raise VerificationSetupError(str(error)) from error
+        return transcriber
 
     def save() -> None:
         status = "partial" if any(r.verification and r.verification.get("status") == "failed" for r in records) else result.status
@@ -172,7 +221,7 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
         try:
             if "second" not in audit:
                 on_stage(f"Verifying crop {number} of {len(groups)}")
-                second = transcriber.verify(box, full_image=full_image)
+                second = model().verify(box, full_image=full_image)
                 audit["second"] = [asdict(value) for value in second]
                 save()
             second = align(first, [reading(value) for value in audit["second"]])
@@ -186,7 +235,7 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
             if differs and "third" not in audit:
                 audit["disputed"] = list(FIELDS)
                 on_stage(f"Checking differences in crop {number} of {len(groups)}")
-                third = transcriber.resolve_discrepancy(box, first, second, full_image=full_image)
+                third = model().resolve_discrepancy(box, first, second, full_image=full_image)
                 audit["third"] = [asdict(value) for value in third]
                 save()
             third = align(first, [reading(value) for value in audit.get("third", [])])
@@ -197,7 +246,7 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
                 disputed_fields.update(disputed)
                 unresolved_fields.update(unresolved)
             audit.update(status="complete", disputed=sorted(disputed_fields), unresolved=sorted(unresolved_fields))
-        except VerificationCheckpointError:
+        except (VerificationCheckpointError, VerificationSetupError):
             raise
         except Exception as error:
             failed = True

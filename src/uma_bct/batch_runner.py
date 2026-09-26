@@ -55,6 +55,7 @@ class ExportState:
     review_digest: str | None = None
     previous_review: Path | None = None
     wrote_review: bool = False
+    recovery_paths: tuple[Path, ...] = ()
 
 
 @contextmanager
@@ -148,6 +149,8 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
         result["review_output"] = summary["review_output"]
     if recovery_path := summary.get("recovery_path"):
         result["recovery_path"] = recovery_path
+    if recovery_paths := summary.get("recovery_paths"):
+        result["recovery_paths"] = recovery_paths
     return result
 
 
@@ -248,26 +251,27 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         # A rename can succeed just before an exception or interruption. Treat
         # an absent staging file as uncertain publication and attempt rollback.
         published_or_uncertain = publication_started and (staging is None or not staging.exists())
+        if review_staging.exists():
+            state.review_output = None
+            state.wrote_review = False
         if published_or_uncertain:
             try:
                 rollback_exported_catalogue(output_path, state)
-                state.record_count = 0
-                state.catalogue_output = None
-                state.wrote_catalogue = False
             except Exception as rollback_error:
+                failures.append({"stage": "rollback", "error": warning_text(rollback_error)})
                 print(
-                    f"Export rollback failed: {warning_text(rollback_error)}. Review {previous_catalogue or output_path}.",
+                    f"Export rollback failed: {warning_text(rollback_error)}. Review {state.recovery_paths}.",
                     file=sys.stderr,
                 )
+        else:
+            state.record_count = 0
+            state.catalogue_output = None
+            state.wrote_catalogue = False
         if not isinstance(error, Exception):
             raise
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
         print(f"Export failed: {message}", file=sys.stderr)
-        state.review_output = None
-        state.record_count = 0
-        state.catalogue_output = None
-        state.wrote_catalogue = False
         return state
 
     finally:
@@ -291,6 +295,7 @@ def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[
 
 def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
     errors = []
+    recovery_paths = []
     artifacts = (
         (state.wrote_review, state.review_output, state.review_digest, state.previous_review, "review"),
         (state.wrote_catalogue, output_path, state.catalogue_digest, state.previous_catalogue, "catalogue"),
@@ -301,10 +306,19 @@ def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
                 rollback_owned_file(path, digest, previous, purpose)
             except Exception as error:
                 errors.append(error)
+                recovery_paths.append(previous or path)
+            else:
+                if purpose == "review":
+                    state.review_output = None
+                    state.wrote_review = False
+                else:
+                    state.catalogue_output = None
+                    state.record_count = 0
+                    state.wrote_catalogue = False
+    # Keep the catalogue first for callers using the original single-path field.
+    state.recovery_paths = tuple(reversed(recovery_paths))
     if errors:
-        raise errors[0]
-    state.review_output = None
-    state.wrote_review = False
+        raise RuntimeError("; ".join(warning_text(error) for error in errors))
 
 
 def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
@@ -379,16 +393,16 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
         rollback_exported_catalogue(output_path, export_state)
     except Exception as error:
         message = warning_text(error)
-        recovery_path = export_state.previous_catalogue or output_path
         failures.append({"stage": "rollback", "error": message})
         summary["status"] = "partial"
-        summary["recovery_path"] = str(recovery_path)
-        print(f"Rollback failed: {message}. Recovery file retained at {recovery_path}.", file=sys.stderr)
+        summary["recovery_paths"] = [str(path) for path in export_state.recovery_paths]
+        summary["recovery_path"] = summary["recovery_paths"][0]
+        print(f"Rollback failed: {message}. Review recovery files: {summary['recovery_paths']}.", file=sys.stderr)
     else:
         summary["status"] = "failed"
-        summary["catalogue_output"] = None
-        summary["review_output"] = None
-        summary["catalogue_records"] = 0
+    summary["catalogue_output"] = export_state.catalogue_output
+    summary["review_output"] = str(export_state.review_output) if export_state.review_output else None
+    summary["catalogue_records"] = export_state.record_count
 
     recovery_manifest = failed_manifest_path(output_path)
     summary["run_manifest"] = str(recovery_manifest)
@@ -442,20 +456,23 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
             "run_manifest": str(manifest),
             "previous_results": [str(path) for path in export_state.previous_results],
         }
-        if export_state.previous_manifest is not None:
+        if export_state.recovery_paths:
+            summary["recovery_paths"] = [str(path) for path in export_state.recovery_paths]
+            summary["recovery_path"] = summary["recovery_paths"][0]
+        if manifest == normal_manifest_path and export_state.previous_manifest is not None:
             manifest_written = write_backed_manifest(
                 manifest, summary, export_state.previous_manifest, failures
             )
         else:
-            manifest_written = write_manifest(manifest, summary, failures, replace_existing=export_state.replace_manifest)
+            manifest_written = write_manifest(manifest, summary, failures, replace_existing=False)
     except BaseException:
-        if export_state.wrote_catalogue:
+        if export_state.wrote_catalogue or export_state.wrote_review:
             try:
                 rollback_exported_catalogue(output_path, export_state)
             except Exception as error:
                 print(
                     f"Rollback after interruption failed: {warning_text(error)}. "
-                    f"Review {export_state.previous_catalogue or output_path}.",
+                    f"Review {export_state.recovery_paths}.",
                     file=sys.stderr,
                 )
         if manifest is not None and summary is not None:
@@ -468,7 +485,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
                     file=sys.stderr,
                 )
         raise
-    if not manifest_written and export_state.wrote_catalogue:
+    if not manifest_written and (export_state.wrote_catalogue or export_state.wrote_review):
         recover_manifest_failure(output_path, summary, export_state, failures)
     return summary, pipeline is not None
 

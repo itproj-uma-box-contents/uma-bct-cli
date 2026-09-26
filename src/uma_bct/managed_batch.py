@@ -597,22 +597,26 @@ def batch_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]])
     return [by_name[item["relative_name"]] for item in expected if item["relative_name"] in by_name]
 
 
+def completed_batch_order_key(item: tuple[Path, dict[str, Any]]) -> tuple[str, str, int]:
+    match = re.fullmatch(r"(Batch \d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: \((\d+)\))?", item[0].name)
+    base = match.group(1) if match else item[0].name
+    collision = int(match.group(2) or 1) if match else 1
+    return str(item[1].get("created_at", "")), base, collision
+
+
 def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
-    if not completed:
-        return None
+    """Keep the existing helper available to callers inspecting batch history."""
 
-    def completed_batch_order_key(item: tuple[Path, dict[str, Any]]) -> tuple[str, str, int]:
-        match = re.fullmatch(r"(Batch \d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: \((\d+)\))?", item[0].name)
-        base = match.group(1) if match else item[0].name
-        collision = int(match.group(2) or 1) if match else 1
-        return str(item[1].get("created_at", "")), base, collision
+    return max(completed, key=completed_batch_order_key, default=None)
 
-    return max(completed, key=completed_batch_order_key)
+
+def input_identity(item: dict[str, Any]) -> tuple[str, int, str]:
+    return item["relative_name"], item["size"], item["sha256"]
 
 
 def select_batch(arguments: argparse.Namespace, results_root: Path,
     snapshot: list[dict[str, Any]], request_timeout: float | None,
-    ) -> tuple[Path | None, dict[str, Any] | None, bool, tuple[Path, dict[str, Any]] | None]:
+    ) -> tuple[Path | None, dict[str, Any] | None, bool, list[tuple[Path, dict[str, Any]]] | None]:
 
     discovered_names = [item["relative_name"] for item in snapshot]
     unfinished, completed = managed_batches(results_root)
@@ -657,24 +661,23 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         # Filenames remain part of identity: identical photographs supplied
         # under separate names must never silently collapse into one input.
         processed: set[tuple[str, int, str]] = set()
-        current_keys = {(item["relative_name"], item["size"], item["sha256"]) for item in snapshot}
+        current_keys = {input_identity(item) for item in snapshot}
         matching_batches = []
-        for path, details in completed:
+        for path, details in sorted(completed, key=completed_batch_order_key, reverse=True):
             source_root = details.get("input_directory")
             if not isinstance(source_root, str) or canonical_lock_name(Path(source_root)) != canonical_lock_name(
                 arguments.path_to_inputs
             ):
                 continue
-            recorded = {(item["relative_name"], item["size"], item["sha256"])
-                        for item in details.get("input_snapshot", [])}
-            if recorded & current_keys:
+            recorded = {input_identity(item) for item in details.get("input_snapshot", [])}
+            if recorded & (current_keys - processed):
                 validate_sources_and_crops(details, path, details["input_snapshot"])
                 validate_completed_catalogue(details, path)
                 matching_batches.append((path, details))
                 processed.update(recorded)
-        remaining = [item for item in snapshot if (item["relative_name"], item["size"], item["sha256"]) not in processed]
+        remaining = [item for item in snapshot if input_identity(item) not in processed]
         if not remaining and matching_batches:
-            return None, None, False, latest_completed(matching_batches)
+            return None, None, False, matching_batches
         snapshot = remaining
 
     batch_directory = create_batch_directory(results_root).absolute()
@@ -1743,11 +1746,17 @@ def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, An
         record.get("verification", {}).get("status") not in {"complete", "failed"}
         for record in item["result"]["records"]
     )]
-    if pending and pipeline is None:
-        pipeline, metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
-        validate_model_resume(progress, metadata, batch_directory)
-        progress["model"] = metadata
-        progress.setdefault("endpoint_history", []).append(metadata["ollama_host"])
+    def load_transcriber() -> Any:
+        nonlocal pipeline
+        if pipeline is None:
+            candidate, metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+            validate_model_resume(progress, metadata, batch_directory)
+            progress["model"] = metadata
+            progress.setdefault("endpoint_history", []).append(metadata["ollama_host"])
+            write_progress(batch_directory, progress)
+            pipeline = candidate
+        return pipeline.transcriber
+
     progress["phase"] = "verifying"
     write_progress(batch_directory, progress)
     for item in pending:
@@ -1759,8 +1768,8 @@ def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, An
             item["state"] = result.status
             write_progress(batch_directory, progress)
 
-        result = verify_image(deserialize_result(item["result"], batch_directory), pipeline.transcriber,
-                              on_stage=reporter.phase, checkpoint=checkpoint)
+        result = verify_image(deserialize_result(item["result"], batch_directory), None,
+                              on_stage=reporter.phase, checkpoint=checkpoint, get_transcriber=load_transcriber)
         checkpoint(result)
     state["complete"] = True
     write_progress(batch_directory, progress)
@@ -1856,6 +1865,58 @@ def already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str, 
     return summary
 
 
+def completed_history_summary(completed: list[tuple[Path, dict[str, Any]]],
+                              snapshot: list[dict[str, Any]]) -> dict[str, Any]:
+    """Count current photo outcomes separately from whole published catalogues.
+
+    catalogue_records and catalogue_record_counts retain the publication's
+    recorded row counts, including missing-box suggestions and historical
+    photos no longer selected. They do not recount subsequent CSV edits.
+    current_input_records counts only saved transcription records for current
+    photos, once each, without synthesizing missing-box suggestions.
+    """
+
+    remaining = {input_identity(item) for item in snapshot}
+    summaries = []
+    for batch, details in completed:
+        inputs = [item for item in details["inputs"] if input_identity(item) in remaining]
+        if not inputs:
+            continue
+        remaining.difference_update(input_identity(item) for item in inputs)
+        value = {**details, "inputs": inputs}
+        current_records = committed_record_count(value)
+        value["status"] = final_status(value, current_records)
+        # Per-photo failures from removed or superseded inputs do not apply.
+        # Run-level failures still apply to the contributing batch.
+        value.pop("failures", None)
+        value["catalogue_output"] = str(batch / CATALOGUE_FILE_NAME) if details.get("catalogue_records") else None
+        item_summary = already_complete_summary(value, batch)
+        item_summary["current_input_records"] = current_records
+        summaries.append(item_summary)
+
+    summary = dict(summaries[0])
+    summary["catalogue_outputs"] = [item["catalogue_output"] for item in summaries if item["catalogue_output"]]
+    summary["catalogue_record_counts"] = {
+        item["catalogue_output"]: item["catalogue_records"] for item in summaries if item["catalogue_output"]
+    }
+    summary["review_outputs"] = [item["review_output"] for item in summaries if item["review_output"]]
+    summary["batch_directories"] = [item["batch_directory"] for item in summaries]
+    summary["run_manifests"] = [item["run_manifest"] for item in summaries]
+    if len(summaries) > 1:
+        for field in ("images_total", "images_processed", "images_complete", "images_partial", "images_failed",
+                      "images_reused", "catalogue_records", "current_input_records", "failure_count"):
+            summary[field] = sum(item[field] for item in summaries)
+        summary["status"] = ("failed" if not summary["current_input_records"] else
+                             "partial" if any(item["status"] != "complete" for item in summaries) else "complete")
+        summary["catalogue_modified"] = any(item["catalogue_modified"] for item in summaries)
+        for field in ("catalogue_output", "review_output", "batch_directory", "run_manifest"):
+            summary[field] = None
+        if len({item["model"] for item in summaries}) > 1:
+            summary["model"] = None
+        summary["previous_results"] = summary["catalogue_outputs"]
+    return summary
+
+
 def processed_since_start(progress: dict[str, Any] | None, processed: int, reused: int) -> int:
     if progress is None:
         return processed
@@ -1929,20 +1990,18 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
         # A completed set can be reused only after its source, crop, and CSV
         # evidence are checked again; a stale path is not enough to trust it.
         if completed is not None:
-            reporter.phase("Checking the completed batch")
-            completed_batch, completed_details = completed
-            batch_directory = completed_batch
-            validate_sources_and_crops(completed_details, completed_batch, completed_details["input_snapshot"])
-            validate_completed_catalogue(completed_details, completed_batch)
-            if completed_details.get("catalogue_records"):
-                completed_details["catalogue_output"] = str(completed_batch / CATALOGUE_FILE_NAME)
+            summary = completed_history_summary(completed, snapshot)
+            if len(completed) == 1:
+                batch_directory = completed[0][0]
             print(
-                f"This photo set was already completed in {completed_batch}. "
+                "This photo set has saved outcomes in:\n"
+                + "\n".join(summary["batch_directories"]) + "\n"
                 "Use --reprocess to create another batch.",
                 file=sys.stderr,
             )
-            summary = already_complete_summary(completed_details, completed_batch)
-            exit_code = 0 if completed_details.get("status") == "complete" else 1
+            for catalogue in summary["catalogue_outputs"]:
+                print(f"Saved catalogue: {catalogue}", file=sys.stderr)
+            exit_code = 0 if summary["status"] == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None
             images = [Path(item["source_path"]) for item in progress["inputs"]]
