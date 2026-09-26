@@ -1,43 +1,26 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-
 class InvalidDate(Exception):
     """Provided parameters do not form a valid date."""
 
+def component_to_string(component: int | None, width: int) -> str:
+    return f"{component:0{width}}" if component != None else ""
+
 @dataclass(frozen=True)
 class Date:
-    day: str = ""
-    month: str = ""
-    year: str = ""
+    day: int | None = None
+    month: int | None = None
+    year: int | None = None
 
     def to_string(self) -> str:
-        return f"{self.day}/{self.month}/{self.year}"
-
-    def __post_init__(self) -> None:
-        try:
-            if self.day: 
-                int(self.day)
-        except ValueError as err: 
-            raise InvalidDate(f"Provided day string is not an integer, {self.day}") from err
-
-        try:
-            if self.month: 
-                int(self.month)
-        except ValueError as err: 
-            raise InvalidDate(f"Provided day string is not an integer, {self.month}") from err
-
-        try:
-            if self.year: 
-                int(self.year)
-        except ValueError as err: 
-            raise InvalidDate(f"Provided day string is not an integer, {self.year}") from err
+        return f"{component_to_string(self.day, 2)}/{component_to_string(self.month, 2)}/{component_to_string(self.year, 4)}"
 
     def is_valid(self) -> bool:
         try: 
-            datetime(int(self.year) if self.year else 2000, 
-                    int(self.month) if self.month else 1, 
-                    int(self.day) if self.day else 1)
+            datetime(self.year if self.year else 2000, 
+                    self.month if self.month else 1, 
+                    self.day if self.day else 1)
         except ValueError: 
             return False
         return True
@@ -75,7 +58,9 @@ def get_earliest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates: 
-        return min(all_dates, key = lambda date: (date.year if date.year else "5000", date.month if date.month else "13", date.day if date.day else "31"))
+        return min(all_dates, key = lambda date: (date.year if date.year != None else 5000, 
+                                                  date.month if date.month != None else 13, 
+                                                  date.day if date.day != None else 31))
     else: 
         return Date()
 
@@ -89,6 +74,8 @@ def get_latest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates: 
-        return max(all_dates, key = lambda date: (date.year if date.year else "0000", date.month if date.month else "00", date.day if date.day else "00"))
+        return max(all_dates, key = lambda date: (date.year if date.year != None else 0,
+                                                  date.month if date.month != None else 0, 
+                                                  date.day if date.day != None else 0))
     else: 
         return Date()

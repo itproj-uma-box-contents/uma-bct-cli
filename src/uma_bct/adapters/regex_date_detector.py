@@ -204,11 +204,17 @@ class RegexDateDetector:
                         dates[1][component] = dates[0][component]
 
                 return DateRange(
-                    start = Date(day=dates[0]['d'], month=dates[0]['m'], year=dates[0]['y']),
-                    end = Date(day=dates[1]['d'], month=dates[1]['m'], year=dates[1]['y'])
+                    start = Date(day=int(dates[0]['d']) if dates[0]['d'] else None, 
+                                 month=int(dates[0]['m']) if dates[0]['m'] else None, 
+                                 year=int(dates[0]['y']) if dates[0]['y'] else None),
+                    end = Date(day=int(dates[1]['d']) if dates[1]['d'] else None, 
+                               month=int(dates[1]['m']) if dates[1]['m'] else None, 
+                               year=int(dates[1]['y']) if dates[1]['y'] else None)
                 )
             else:
-                return Date(day=dates[0]['d'], month=dates[0]['m'], year=dates[0]['y'])
+                return Date(day=int(dates[0]['d']) if dates[0]['d'] else None, 
+                            month=int(dates[0]['m']) if dates[0]['m'] else None, 
+                            year=int(dates[0]['y']) if dates[0]['y'] else None)
 
     """
     Extacts dates from the provided string. 
