@@ -7,6 +7,7 @@ unsafe output layouts, and unsupported files are rejected early.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import ntpath
 import os
@@ -25,6 +26,7 @@ from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
 from .run_artifacts import manifest_path
 from .setup_command import run_setup
+from .verification import MODES, configured_mode
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
@@ -104,6 +106,8 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--verification", choices=MODES, default=None,
+                        help="second reading: ask, always, or never (default: saved preference or ask)")
     parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
@@ -196,12 +200,13 @@ def ensure_readable(path: Path) -> None:
         raise ValueError(f"Input image is not readable: {path}: {error}") from error
 
 
-def discover_images(path: Path) -> list[Path]:
+def discover_images(path: Path, *, check_readable: bool = True) -> list[Path]:
     metadata = path_metadata(path, "Input path")
     if stat.S_ISREG(metadata.st_mode):
         if path.suffix.casefold() not in IMAGE_EXTENSIONS:
             raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
-        ensure_readable(path)
+        if check_readable:
+            ensure_readable(path)
         return [path]
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"Input path is not a file or directory: {path}")
@@ -218,7 +223,8 @@ def discover_images(path: Path) -> list[Path]:
             continue
         metadata = path_metadata(candidate, "Input image")
         if stat.S_ISREG(metadata.st_mode):
-            ensure_readable(candidate)
+            if check_readable:
+                ensure_readable(candidate)
             images.append(candidate)
     return sorted(images, key=lambda item: (item.name.casefold(), item.name))
 
@@ -309,6 +315,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
+    try:
+        configured_mode(arguments)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
     if arguments.results_directory is not None:
         # Managed batches own their catalogue and crop paths. Mixing direct
         # output flags with that layout would make resume ambiguous.
@@ -321,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--results-directory cannot be combined with -o, -b, or --force")
         try:
             validate_output_target(arguments.results_directory, directory=True, purpose="Results directory")
-            images = discover_images(arguments.path_to_inputs)
+            images = discover_images(arguments.path_to_inputs, check_readable=False)
             validate_managed_layout(arguments.path_to_inputs, arguments.results_directory)
         except ValueError as error:
             parser.error(str(error))
@@ -337,26 +347,45 @@ def main(argv: list[str] | None = None) -> int:
     crop_root = arguments.path_to_box_images or output_path.parent / "crops"
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
+    review_path = output_path.with_suffix(".review.html")
     # Check every output before reading photos or starting the model.
     try:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")
+        validate_output_target(review_path, directory=False, purpose="Review output")
         validate_output_target(crop_root, directory=True, purpose="Review-crop root")
         validate_output_layout(output_path, run_manifest, crop_root)
+        validate_output_layout(review_path, run_manifest, crop_root)
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))
     if not images:
         parser.error(f"no supported images found in {arguments.path_to_inputs}")
 
-    existing = next((path for path in (output_path, run_manifest) if path.exists()), None)
+    existing = next((path for path in (output_path, run_manifest, review_path) if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
-    with keep_awake():
-        return run_batch(
-            arguments,
-            images,
-            output_path,
-            run_manifest,
-            preserve_existing_manifest_on_failure=bool(arguments.force and existing),
-        )
+    try:
+        with keep_awake():
+            return run_batch(
+                arguments,
+                images,
+                output_path,
+                run_manifest,
+                preserve_existing_manifest_on_failure=bool(arguments.force and existing),
+            )
+    except KeyboardInterrupt:
+        exit_code = 130
+    except SystemExit as error:
+        if error.code not in {129, 143}:
+            raise
+        exit_code = error.code
+    # Batch cleanup has already run. Do not imply that a new catalogue was
+    # committed, or fabricate per-photo counts after an interrupted direct run.
+    message = "Run interrupted. Check stderr for recovery paths; use --results-directory for resumable batches."
+    if arguments.json:
+        print(json.dumps({"schema_version": 1, "status": "interrupted", "exit_code": exit_code,
+                          "catalogue_output": None, "message": message}))
+    else:
+        print(message, file=sys.stderr)
+    return exit_code

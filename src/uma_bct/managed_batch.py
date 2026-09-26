@@ -36,18 +36,23 @@ from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
+from .review_export import export_review, render_review
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
+from .verification import choose_verification, configured_mode, verify_image
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
 CATALOGUE_FILE_NAME = "Catalogue.csv"
+REVIEW_FILE_NAME = "Review.html"
+PENDING_REVIEW_NAME = ".uma-bct-review-pending.html"
 BOX_IMAGES_DIRECTORY_NAME = "Box Images"
 WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
 MANAGED_SCHEMA_VERSION = 1
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
 ACTIVE_WINDOWS_GUARDS: set[str] = set()
+DESKTOP_METADATA = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
 )
@@ -153,7 +158,7 @@ def input_snapshot(images: list[Path], input_path: Path) -> list[dict[str, Any]]
     return snapshot
 
 
-def rediscover_input_snapshot(input_path: Path) -> list[dict[str, Any]]:
+def rediscover_input_snapshot(input_path: Path, *, names: set[str] | None = None) -> list[dict[str, Any]]:
     """Re-list supported inputs so additions and late changes cannot publish."""
 
     check_path(input_path, "Input path")
@@ -170,7 +175,7 @@ def rediscover_input_snapshot(input_path: Path) -> list[dict[str, Any]]:
             raise ManagedBatchError(f"Could not re-list input directory {input_path}: {error}") from error
         images = []
         for candidate in candidates:
-            if candidate.suffix.casefold() not in IMAGE_EXTENSIONS:
+            if candidate.suffix.casefold() not in IMAGE_EXTENSIONS or (names is not None and candidate.name not in names):
                 continue
             check_path(candidate, "Input image")
             candidate_metadata = candidate.lstat()
@@ -559,6 +564,7 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "resume_count": 0,
         "run_failures": [],
         "publication": {"phase": "not_started"},
+        "verification": {"mode": configured_mode(arguments), "decision": None},
     }
 
 
@@ -575,12 +581,20 @@ def validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> 
         if not isinstance(item, dict) or item.get("state") not in {*TERMINAL_IMAGE_STATES, "pending", "active"}:
             raise ManagedBatchError(f"Run Progress contains an invalid image state: {batch_directory}")
     phase = progress.get("phase")
-    if phase not in {"processing", "interrupted", "staging", "publishing", "finalizing", "final"}:
+    if phase not in {"processing", "interrupted", "staging", "publishing", "finalizing", "final",
+                     "awaiting_verification", "verifying"}:
         raise ManagedBatchError(f"Run Progress contains an invalid publication phase: {batch_directory}")
 
 
 def same_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> bool:
     return expected == snapshot_signature(actual)
+
+
+def batch_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select a batch's original photos, preserving order and deferring additions."""
+
+    by_name = {item["relative_name"]: item for item in actual}
+    return [by_name[item["relative_name"]] for item in expected if item["relative_name"] in by_name]
 
 
 def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
@@ -600,6 +614,7 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
     snapshot: list[dict[str, Any]], request_timeout: float | None,
     ) -> tuple[Path | None, dict[str, Any] | None, bool, tuple[Path, dict[str, Any]] | None]:
 
+    discovered_names = [item["relative_name"] for item in snapshot]
     unfinished, completed = managed_batches(results_root)
     # An unfinished batch has priority. Its inputs, options, and application
     # version must still match before any saved photo can be reused.
@@ -607,7 +622,8 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         batch_directory, progress = unfinished[0]
         validate_progress_shape(progress, batch_directory)
         expected_snapshot = progress.get("input_snapshot")
-        if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, snapshot):
+        original_snapshot = batch_snapshot(expected_snapshot, snapshot) if isinstance(expected_snapshot, list) else []
+        if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, original_snapshot):
             details = describe_snapshot_change(expected_snapshot if isinstance(expected_snapshot, list) else [], snapshot)
             raise ManagedBatchSelectionError(
                 batch_directory,
@@ -615,6 +631,9 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
                 "unfinished batch elsewhere before starting another.",
             )
         current_configuration = semantic_configuration(arguments, request_timeout)
+        requested_verification = getattr(arguments, "verification", None)
+        if requested_verification and requested_verification != progress.get("verification", {}).get("mode", "never"):
+            raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         if progress.get("configuration") != current_configuration:
             raise ManagedBatchSelectionError(
                 batch_directory,
@@ -625,7 +644,7 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
                 batch_directory,
                 f"Cannot resume {batch_directory}: the UMA BCT application version changed.",
             )
-        for saved, current in zip(progress["inputs"], snapshot, strict=True):
+        for saved, current in zip(progress["inputs"], original_snapshot, strict=True):
             if saved.get("source_path") != current["source_path"]:
                 saved.setdefault("original_source_path", saved.get("source_path"))
                 saved["source_path"] = current["source_path"]
@@ -634,13 +653,34 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
 
     # An identical completed set is reported as already done unless the
     # operator explicitly asked for a separate new batch.
-    latest = latest_completed(completed)
-    if latest is not None and same_snapshot(latest[1].get("input_snapshot", []), snapshot) and not arguments.reprocess:
-        return None, None, False, latest
+    if not arguments.reprocess:
+        # Filenames remain part of identity: identical photographs supplied
+        # under separate names must never silently collapse into one input.
+        processed: set[tuple[str, int, str]] = set()
+        current_keys = {(item["relative_name"], item["size"], item["sha256"]) for item in snapshot}
+        matching_batches = []
+        for path, details in completed:
+            source_root = details.get("input_directory")
+            if not isinstance(source_root, str) or canonical_lock_name(Path(source_root)) != canonical_lock_name(
+                arguments.path_to_inputs
+            ):
+                continue
+            recorded = {(item["relative_name"], item["size"], item["sha256"])
+                        for item in details.get("input_snapshot", [])}
+            if recorded & current_keys:
+                validate_sources_and_crops(details, path, details["input_snapshot"])
+                validate_completed_catalogue(details, path)
+                matching_batches.append((path, details))
+                processed.update(recorded)
+        remaining = [item for item in snapshot if (item["relative_name"], item["size"], item["sha256"]) not in processed]
+        if not remaining and matching_batches:
+            return None, None, False, latest_completed(matching_batches)
+        snapshot = remaining
 
     batch_directory = create_batch_directory(results_root).absolute()
     allocate_source_names(snapshot)
     progress = initial_progress(arguments, batch_directory, snapshot, request_timeout)
+    progress["observed_input_names"] = discovered_names
     try:
         write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress, replace_existing=False)
     except BaseException:
@@ -871,10 +911,24 @@ def validate_batch_entries(batch_directory: Path) -> None:
         WORKING_DIRECTORY_NAME,
         PENDING_CATALOGUE_NAME,
         CATALOGUE_FILE_NAME,
+        REVIEW_FILE_NAME,
+        PENDING_REVIEW_NAME,
     }
-    unexpected = [path for path in batch_directory.iterdir() if path.name not in allowed]
+    # Reviewers may save corrected catalogues or notes beside our outputs.
+    # Only application-owned paths participate in recovery and publication.
+    unexpected = [
+        path for path in batch_directory.iterdir()
+        if path.name not in allowed and not harmless_extra_file(path)
+    ]
     if unexpected:
         raise ManagedBatchError(f"Unexpected file in managed batch directory: {unexpected[0]}")
+
+
+def harmless_extra_file(path: Path, *, desktop_only: bool = False) -> bool:
+    if desktop_only and path.name not in DESKTOP_METADATA:
+        return False
+    metadata = path.lstat()
+    return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and not redirected_path_kind(path, metadata)
 
 
 def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
@@ -886,10 +940,11 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     preserve_pending = effective_phase in {"staging", "publishing", "finalizing", "final"}
     for path in batch_directory.iterdir():
         generated_temporary = path.name.startswith(".uma-bct-json-") and path.name.endswith(".tmp")
+        generated_review = path.name.startswith(".uma-bct-review-") and path.name.endswith(".tmp")
         generated_catalogue = path.name.startswith(".uma-bct-catalogue-") and path.name != PENDING_CATALOGUE_NAME
-        if path.name == PENDING_CATALOGUE_NAME and not preserve_pending:
+        if path.name in {PENDING_CATALOGUE_NAME, PENDING_REVIEW_NAME} and not preserve_pending:
             raise ManagedBatchError(f"Unexpected pending catalogue in managed batch: {path}")
-        if not (generated_temporary or generated_catalogue):
+        if not (generated_temporary or generated_catalogue or generated_review):
             continue
         metadata = path.lstat()
         if redirected_path_kind(path, metadata) or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -942,7 +997,7 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     if not stat.S_ISDIR(box_images.lstat().st_mode):
         raise ManagedBatchError(f"Box Images path is not a directory: {box_images}")
     for path in box_images.iterdir():
-        if path not in committed_paths:
+        if path not in committed_paths and not harmless_extra_file(path, desktop_only=True):
             raise ManagedBatchError(f"Unexpected file in managed Box Images directory: {path}")
     return reused
 
@@ -1019,6 +1074,7 @@ def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, An
                     "detector_confidence": record.box.detector_confidence,
                 },
                 "transcription": asdict(record.transcription),
+                **({"verification": record.verification} if record.verification is not None else {}),
             }
         )
     return {
@@ -1066,7 +1122,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
                 "needs_review": bool(transcription_value["needs_review"]),
             }
         )
-        records.append(BoxResult(box, transcription))
+        records.append(BoxResult(box, transcription, item.get("verification")))
     return ImageResult(
         input_image=image,
         requested_detector=value["requested_detector"],
@@ -1332,7 +1388,8 @@ def validate_sources_and_crops(progress: dict[str, Any], batch_directory: Path, 
     """Recheck every source and committed crop before exposing a catalogue."""
 
     validate_batch_entries(batch_directory)
-    if progress.get("input_snapshot") != snapshot_signature(snapshot):
+    expected = progress.get("input_snapshot", [])
+    if expected != snapshot_signature(batch_snapshot(expected, snapshot)):
         raise ManagedBatchError(f"Input photos changed before publication for {batch_directory}")
     expected_paths: set[Path] = set()
     for item in progress["inputs"]:
@@ -1359,7 +1416,7 @@ def validate_sources_and_crops(progress: dict[str, Any], batch_directory: Path, 
     if not stat.S_ISDIR(metadata.st_mode):
         raise ManagedBatchError(f"Box Images path is not a directory: {box_images}")
     for path in box_images.iterdir():
-        if path not in expected_paths:
+        if path not in expected_paths and not harmless_extra_file(path, desktop_only=True):
             raise ManagedBatchError(f"Unexpected file in managed Box Images directory: {path}")
 
 
@@ -1375,6 +1432,9 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
     if path_entry_exists(pending):
         raise ManagedBatchError(f"Completed batch still contains a pending catalogue: {pending}")
     if record_count == 0:
+        for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
+            if path_entry_exists(batch_directory / name):
+                raise ManagedBatchError(f"Zero-row batch unexpectedly contains review output: {batch_directory / name}")
         if path_entry_exists(catalogue):
             raise ManagedBatchError(f"Zero-row completed batch unexpectedly contains a catalogue: {catalogue}")
         if publication.get("phase") != "not_published" or publication.get("record_count") != 0:
@@ -1388,9 +1448,15 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         or not isinstance(digest, str)
     ):
         raise ManagedBatchError(f"Published catalogue metadata is invalid in {batch_directory}")
+    if review := publication.get("review"):
+        if file_digest(batch_directory / REVIEW_FILE_NAME, "Published review") != review.get("sha256"):
+            raise ManagedBatchError(f"Published review changed after completion: {batch_directory / REVIEW_FILE_NAME}")
     actual = fingerprint_file(catalogue, "Published catalogue")
-    if actual["size"] == 0 or actual["sha256"] != digest:
-        raise ManagedBatchError(f"Published catalogue changed after completion: {catalogue}")
+    if actual["size"] == 0:
+        raise ManagedBatchError(f"Published catalogue is empty: {catalogue}")
+    if actual["sha256"] != digest:
+        details["catalogue_modified"] = True
+        print(f"Catalogue changed after completion; preserved your file: {catalogue}", file=sys.stderr)
 
 
 def file_digest(path: Path, purpose: str) -> str:
@@ -1441,6 +1507,16 @@ def stage_catalogue(
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
             trusted_crop_links=True,
         )
+    review_pending = batch_directory / PENDING_REVIEW_NAME
+    review_options = {"catalogue_path": batch_directory / CATALOGUE_FILE_NAME,
+                      "minimum_confidence": arguments.min_transcription_confidence,
+                      "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True)}
+    expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
+    if not path_entry_exists(review_pending):
+        export_review(results, review_pending, **review_options)
+    if file_digest(review_pending, "Pending review") != expected_review:
+        raise ManagedBatchError(f"Pending review does not match committed results: {review_pending}")
+    publication["review"] = {"sha256": expected_review}
     digest = file_digest(pending, "Pending catalogue")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
@@ -1474,6 +1550,24 @@ def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) 
         rename_new_file(pending, catalogue, existing_message=f"Catalogue already exists: {catalogue}")
     if file_digest(catalogue, "Published catalogue") != digest:
         raise ManagedBatchError(f"Published catalogue changed during publication: {catalogue}")
+    review = publication.get("review")
+    if review is not None:
+        pending_review = batch_directory / PENDING_REVIEW_NAME
+        destination = batch_directory / REVIEW_FILE_NAME
+        expected = review["sha256"]
+        if path_entry_exists(destination):
+            if file_digest(destination, "Published review") != expected:
+                raise ManagedBatchError(f"Published review does not match its checkpoint: {destination}")
+            if path_entry_exists(pending_review):
+                if file_digest(pending_review, "Pending review") != expected:
+                    raise ManagedBatchError(f"Pending review changed: {pending_review}")
+                pending_review.unlink()
+        else:
+            if file_digest(pending_review, "Pending review") != expected:
+                raise ManagedBatchError(f"Pending review changed: {pending_review}")
+            rename_new_file(pending_review, destination, existing_message=f"Review already exists: {destination}")
+        if file_digest(destination, "Published review") != expected:
+            raise ManagedBatchError(f"Published review changed: {destination}")
     return record_count, digest
 
 
@@ -1529,6 +1623,7 @@ def details_payload(
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "batch_directory": str(batch_directory),
         "configuration": progress["configuration"],
+        "verification": progress.get("verification", {"mode": "never", "decision": False}),
         "locations": {
             "input": progress["input_directory"],
             "output": str(catalogue) if record_count else None,
@@ -1546,6 +1641,7 @@ def details_payload(
         "images": [result.to_dict() for result in results],
         "failures": failures,
         "failure_count": len(failures),
+        "review_output": str(batch_directory / REVIEW_FILE_NAME) if progress["publication"].get("review") else None,
         "catalogue_output": str(catalogue) if record_count else None,
         "catalogue_records": record_count,
         "run_manifest": str(batch_directory / DETAILS_FILE_NAME),
@@ -1572,7 +1668,17 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
     # the original inputs plus their review crops still match the checkpoint.
     if any(item["state"] not in TERMINAL_IMAGE_STATES for item in progress["inputs"]):
         raise ManagedBatchError(f"Cannot publish {batch_directory} while photos remain unattempted.")
-    current_snapshot = rediscover_input_snapshot(Path(progress["input_directory"]))
+    input_path = Path(progress["input_directory"])
+    originals = {item["relative_name"] for item in progress["input_snapshot"]}
+    # Only hash original inputs. An added photo may still be copying, and
+    # its bytes are deliberately outside this batch's publication boundary.
+    current_snapshot = rediscover_input_snapshot(input_path, names=originals)
+    known = set(progress.get("observed_input_names", originals))
+    if input_path.is_dir():
+        deferred = sum(path.name not in known and path.suffix.casefold() in IMAGE_EXTENSIONS
+                       for path in input_path.iterdir())
+        if deferred:
+            print(f"{deferred} additional photo(s) left for the next launch.", file=sys.stderr)
     validate_sources_and_crops(progress, batch_directory, current_snapshot)
     results = all_results(progress, batch_directory)
     record_count = sum(len(result.records) for result in results)
@@ -1593,6 +1699,9 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
             raise ManagedBatchError(f"A zero-row batch has an unexpected pending catalogue: {pending}")
         if path_entry_exists(catalogue):
             raise ManagedBatchError(f"A zero-row batch has an unexpected catalogue: {catalogue}")
+        for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
+            if path_entry_exists(batch_directory / name):
+                raise ManagedBatchError(f"A zero-row batch has unexpected review output: {batch_directory / name}")
         progress["publication"] = {"phase": "not_published", "record_count": 0}
         progress["catalogue_output"] = None
         progress["catalogue_records"] = 0
@@ -1611,6 +1720,50 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
         raise ManagedBatchError(f"Managed work directory could not be cleaned: {warning_text(error)}") from error
     promote_details(batch_directory, details)
     return details
+
+
+def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, Any], batch_directory: Path,
+                           pipeline: Any, reporter: TerminalProgress, request_timeout: float | None) -> None:
+    """Keep first-pass photo commits independent of resumable verification."""
+
+    state = progress.setdefault("verification", {"mode": "never", "decision": False})
+    if state.get("complete"):
+        return
+    if state.get("decision") is None:
+        progress["phase"] = "awaiting_verification"
+        write_progress(batch_directory, progress)
+        reporter.close()
+        state["decision"] = choose_verification(arguments, state["mode"], has_records=bool(committed_record_count(progress)))
+        write_progress(batch_directory, progress)
+    if not state["decision"]:
+        state["complete"] = True
+        write_progress(batch_directory, progress)
+        return
+    pending = [item for item in progress["inputs"] if item.get("result") and any(
+        record.get("verification", {}).get("status") not in {"complete", "failed"}
+        for record in item["result"]["records"]
+    )]
+    if pending and pipeline is None:
+        pipeline, metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+        validate_model_resume(progress, metadata, batch_directory)
+        progress["model"] = metadata
+        progress.setdefault("endpoint_history", []).append(metadata["ollama_host"])
+    progress["phase"] = "verifying"
+    write_progress(batch_directory, progress)
+    for item in pending:
+        for evidence in item.get("crop_evidence", []):
+            validate_crop_evidence(batch_directory, evidence)
+
+        def checkpoint(result: ImageResult, item: dict[str, Any] = item) -> None:
+            item["result"] = serialize_result(result, batch_directory)
+            item["state"] = result.status
+            write_progress(batch_directory, progress)
+
+        result = verify_image(deserialize_result(item["result"], batch_directory), pipeline.transcriber,
+                              on_stage=reporter.phase, checkpoint=checkpoint)
+        checkpoint(result)
+    state["complete"] = True
+    write_progress(batch_directory, progress)
 
 
 def append_stage_failure(progress: dict[str, Any], stage: str, error: Exception | str) -> None:
@@ -1648,6 +1801,8 @@ def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | Non
         "images_complete": states.count("complete"),
         "images_partial": states.count("partial"),
         "images_failed": states.count("failed"),
+        "review_output": (str(batch_directory / REVIEW_FILE_NAME) if batch_directory
+                          and value.get("publication", {}).get("review") and trust_catalogue_output else None),
         "catalogue_output": catalogue_output,
         "catalogue_records": record_count,
         "failure_count": counted_failures,
@@ -1655,6 +1810,7 @@ def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | Non
         "run_manifest": manifest,
         "previous_results": value.get("previous_results", []),
         "batch_directory": str(batch_directory) if batch_directory else value.get("batch_directory"),
+        "catalogue_modified": bool(value.get("catalogue_modified")),
         "resumed": resumed,
         "images_reused": images_reused,
         "images_processed_this_start": images_processed_this_start,
@@ -1760,7 +1916,13 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
         request_timeout = arguments.request_timeout
         if request_timeout is None:
             request_timeout = timeout_from_environment()
-        snapshot = input_snapshot(images, arguments.path_to_inputs)
+        unfinished, _completed = managed_batches(results_root)
+        if unfinished:
+            expected_names = {item["relative_name"] for item in unfinished[0][1].get("input_snapshot", [])}
+            selected_images = [image for image in images if image.name in expected_names]
+        else:
+            selected_images = images
+        snapshot = input_snapshot(selected_images, arguments.path_to_inputs)
         batch_directory, progress, resumed, completed = select_batch(
             arguments, results_root, snapshot, request_timeout
         )
@@ -1770,7 +1932,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             reporter.phase("Checking the completed batch")
             completed_batch, completed_details = completed
             batch_directory = completed_batch
-            validate_sources_and_crops(completed_details, completed_batch, snapshot)
+            validate_sources_and_crops(completed_details, completed_batch, completed_details["input_snapshot"])
             validate_completed_catalogue(completed_details, completed_batch)
             if completed_details.get("catalogue_records"):
                 completed_details["catalogue_output"] = str(completed_batch / CATALOGUE_FILE_NAME)
@@ -1783,6 +1945,8 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             exit_code = 0 if completed_details.get("status") == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None
+            images = [Path(item["source_path"]) for item in progress["inputs"]]
+            reporter.set_total(len(images))
             if resumed:
                 reused = prepare_resume(progress, batch_directory)
                 reporter.reused(reused)
@@ -1793,17 +1957,21 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
 
             # A resumed photo set must also use the same model identity and
             # endpoint class before it adds new readings to prior ones.
-            reporter.phase("Checking the local model")
-            pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
-            if isinstance(pipeline, BoxTranscriptionPipeline):
-                pipeline.on_stage = reporter.phase
-            validate_model_resume(progress, model_metadata, batch_directory)
-            progress["model"] = model_metadata
-            progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
-            write_progress(batch_directory, progress)
+            pipeline = None
+            if any(item["state"] not in TERMINAL_IMAGE_STATES for item in progress["inputs"]):
+                reporter.phase("Checking the local model")
+                pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+                if isinstance(pipeline, BoxTranscriptionPipeline):
+                    pipeline.on_stage = reporter.phase
+                validate_model_resume(progress, model_metadata, batch_directory)
+                progress["model"] = model_metadata
+                progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
+                write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
                 processed = process_pending_images(arguments, images, progress, batch_directory, pipeline, reporter)
+            if progress.get("phase") not in {"staging", "publishing", "finalizing", "final"}:
+                verify_managed_results(arguments, progress, batch_directory, pipeline, reporter, request_timeout)
             reporter.phase("Finalizing results")
             details = finalize_batch(arguments, progress, batch_directory)
             summary = managed_public_summary(

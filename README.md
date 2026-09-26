@@ -68,6 +68,7 @@ Archive Box Transcription/
   Results/
     Batch 2026-09-11 14-30-05/
       Catalogue.csv
+      Review.html
       Run Details.json
       Box Images/
         PXL_230150462 - Box 01.png
@@ -75,12 +76,17 @@ Archive Box Transcription/
 ```
 
 An unfinished batch instead contains `Run Progress.json` and has no catalogue
-until every source photo has a terminal outcome. Start the same launcher again
+until every source photo and any requested verification have a terminal outcome. Start the same launcher again
 to resume it. Photos already committed as complete, partial, or failed are
-reused; the photo active at interruption is processed again. Do not add,
-remove, rename, reorder, or edit source photos while a batch is unfinished.
-The launcher reports the affected batch if its input snapshot no longer
-matches.
+reused; the photo active at interruption is processed again. Photos added while a batch runs are left for the next launch. A later launch processes
+only new or changed photos, using the saved run details to identify earlier work.
+Each batch has its own catalogue; older catalogues are not combined or overwritten.
+Do not remove, rename, or edit an original photo while its batch is unfinished;
+if that happens, the CLI preserves progress and explains which inputs to restore.
+
+You may edit a completed `Catalogue.csv` or save corrected copies and notes beside
+it. Later launches preserve those files and report a changed catalogue. Keep the
+run details and crop files intact: they record which photographs were processed.
 
 A partial terminal batch publishes `Catalogue.csv` when it has at least one
 usable row. A batch with no usable rows publishes only failed `Run Details.json`.
@@ -163,15 +169,49 @@ Detection is deliberately conservative:
 Advanced CLI users can disable this behavior with
 `--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
 
-The last column is a controlled relative `HYPERLINK` formula to its file under
-`Box Images`. Keep and move the whole batch folder together. Excel,
-LibreOffice, and Apple's spreadsheet engine document this function, but CSV
-import can vary by application: [Excel](https://support.microsoft.com/en-us/excel/functions/hyperlink-function),
-[LibreOffice Calc](https://help.libreoffice.org/latest/en-US/text/scalc/01/04060109.html), and
-[Apple spreadsheet functions](https://support.apple.com/guide/functions/functions-overview-ffa083bef0c/web).
-Google Sheets cannot open these private local file links and is unsupported.
-Opening a link uses the operating system's registered application; revealing
-and selecting the file in Finder or Explorer is not promised.
+### Review results and open crops
+
+Open `Review.html` in your browser for a compact, read-only catalogue with wrapped
+text and clickable **View crop** links. It works offline and requires no server.
+Keep the HTML file and `Box Images` folder together when moving a batch. Direct
+CLI runs create `<catalogue-name>.review.html` beside their CSV instead.
+
+Use this page with Apple Numbers: Numbers does not support the private local-file
+links used by the CSV. CSV also cannot save column widths or text wrapping. The
+CSV's controlled relative `HYPERLINK` formulas remain available for compatible
+Excel and LibreOffice imports. Google Sheets cannot open private local crop files.
+The HTML shows generated readings, so later spreadsheet edits do not update it.
+
+### Optional transcription verification
+
+After the first pass, interactive runs ask whether to check the crops again:
+choose **y** for this run, **a** to always verify managed batches, or Enter to finish.
+Verification adds a second reading using the same Qwen model. The model receives
+a distinct checking prompt without seeing the first answer. Only crops with
+substantive differences receive a third request. Detection is not repeated.
+
+A correction requires the third reading to corroborate an earlier candidate.
+Unresolved differences, uncertain deletions, and ambiguous matches between boxes
+keep the original text and receive review flags. Printed text, identifiers, and
+unit number are reconciled together. Every row still needs human review:
+agreement between model readings does not prove correctness or raise confidence.
+
+The review page's **Compare readings** sections and run details preserve the
+alternatives. Managed runs checkpoint completed readings; restart the launcher to
+resume an interrupted check. A failed verification request preserves the first
+reading and produces a partial result with a review flag.
+
+Advanced users can select `--verification always`, `--verification never`, or
+`--verification ask`. Precedence is the CLI option, `UMA_BCT_VERIFICATION`, the
+managed Results folder's `.uma-bct-settings.json`, then `ask`. Edit that small JSON
+file to set the saved preference back to `ask` or `never`. An unfinished batch
+keeps its recorded mode; finish it before changing the mode. Older unfinished
+batches continue without verification. Already completed batches are reused;
+use `--reprocess` to intentionally start another complete run.
+
+`--json`, redirected stdin/stderr, and unattended runs never prompt. They verify
+only when the effective setting is `always`. Verification improves the opportunity
+to find discrepancies; measured accuracy gains require human-reviewed references.
 
 Before importing the catalogue, review each row against its crop and source
 photo. The CSV is sorted by `Unit Type` and `Unit Number`:
@@ -210,7 +250,8 @@ uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/r
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
 
-Direct CLI runs show the same readable final report as the launcher. Add
+Direct CLI runs show the same readable final report as the launcher. Interrupted
+direct runs exit cleanly (130 for Ctrl+C); use managed batches for resumable work. Add
 `--json` when a script needs one JSON summary on stdout; progress and warnings
 still go to stderr. The `--human` flag remains accepted for older commands.
 

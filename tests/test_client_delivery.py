@@ -486,6 +486,18 @@ class ClientDeliveryTest(unittest.TestCase):
         self.assertEqual(workflow.count("name: Docker smoke (${{ matrix.name }})"), 1)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_posix_launcher_preserves_stdin_for_verification_prompt(self):
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, _events):
+            output = root / "answer.txt"
+            environment["UMA_BCT_TEST_ANSWER"] = str(output)
+            write_executable(root / ".uma-bct-runtime/app/bin/uma-bct",
+                             '#!/bin/sh\nread -r answer\nprintf \'%s\' "$answer" >"$UMA_BCT_TEST_ANSWER"\n')
+            result = subprocess.run(launcher_command(launcher), env=environment, input="y\n",
+                                    capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), "y")
+
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(["sh", "-n", str(ROOT / "run-uma-bct.sh")], check=True, capture_output=True, text=True)
         self.assertIn('"$APP_CLI" --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
@@ -776,6 +788,18 @@ class ClientDeliveryTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(events.is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
+    def test_saved_verification_settings_do_not_create_a_false_mixed_layout(self):
+        for contents, expected in (('{"verification": "always"}\n', 0),
+                                   ('{"verification": "always", "other": "data"}\n', 2)):
+            with self.subTest(contents=contents), launcher_fixture(prepare_posix_launcher) as fixture:
+                root, launcher, environment, _events = fixture
+                results = root / "Results"
+                results.mkdir()
+                (results / ".uma-bct-settings.json").write_text(contents)
+                result = run_launcher(launcher, environment)
+                self.assertEqual(result.returncode, expected, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_supports_bundle_paths_with_spaces_and_unicode(self):

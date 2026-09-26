@@ -65,7 +65,7 @@ uv run uma-bct
 ```
 
 The defaults are `inputs/`, `outputs/catalogue.csv`, and
-`outputs/crops/`. CSV is the only v0.1 catalogue format. Existing input,
+`outputs/crops/`. CSV remains the import catalogue format; each new run also exports an offline HTML review page. Existing input,
 output, crop, detector, model, confidence, timeout, and force options remain
 available through `--help`. The legacy `--min-confidence` option and its
 explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
@@ -158,8 +158,8 @@ process; malformed, linked, non-regular, or racing locks remain blocked. Direct
 mode retains its existing catalogue-lock semantics.
 
 Managed batches do not publish a catalogue while photos are unattempted. After
-all photos become terminal, sources and crop hashes are revalidated, a hidden
-CSV is staged, and its digest is checkpointed before no-clobber publication.
+all photos become terminal, original sources and crop hashes are revalidated, hidden CSV and HTML files
+are staged, and their digests are checkpointed before no-clobber publication.
 `Run Progress.json` is then promoted to `Run Details.json`. Forced direct runs
 retain timestamped prior files. If the manifest commit fails after CSV
 replacement, the prior CSV is restored atomically or a newly created CSV is
@@ -232,10 +232,51 @@ exit-code propagation, and owned-process cleanup without using a real model.
 Managed-batch changes require interruption/resume, input and crop integrity,
 publication recovery, formula-safety, naming-collision, and zero-row tests.
 
-Before release, manually import dummy managed catalogues in Excel on Windows
-and macOS, Numbers, and LibreOffice and confirm each relative crop link opens
-after moving the whole batch folder. Google Sheets is not supported for local
-private-file links. The private real-model gate remains local and covers all 21
-`add_repository_photos/` images plus the 11 named JPEGs listed in `AGENTS.md`;
-its photos, expectations, notes, and output must remain in ignored private
-directories.
+Before release, open synthetic HTML reviews in browsers on macOS, Windows, and
+Linux. Confirm crop links with Unicode, spaces, `#`, and `%`, including after
+moving the batch folder. Test CSV imports in Excel and LibreOffice separately;
+Numbers users should use HTML for local crop links. Never upload private photos
+for browser tests or run model inference on hosted CI.
+
+## Verification and local accuracy references
+
+`verification.py` owns mode selection, bounded second/third readings, and conservative
+reconciliation. Optional `BoxResult.verification` evidence is serialized with each
+result. First-pass photo commits remain independent of verification checkpoints.
+A checkpoint write failure stops the run; a model request failure retains the
+first reading and flags partial processing. Application version/model identity
+checks still protect resumed inference. Publication-only recovery does not load
+Ollama. Existing records without verification or HTML fields remain readable.
+
+Managed history uses source directory, filename, and content fingerprint; it does
+not deduplicate separate filenames by pixel content. The active snapshot excludes
+later additions. Completed CSV edits and reviewer files are preserved, while
+application-owned manifests, crops, and in-progress publications remain validated.
+Saved verification settings contain no photographs or transcriptions.
+
+Prepare reference drafts locally from a run manifest:
+
+```bash
+uv run python scripts/verification_benchmark.py prepare \
+  --manifest "/private/results/Run Details.json" \
+  --output "add_repository_photos/verification-release-gate/reference-draft.json"
+```
+
+Check every source photo, correct expected fields, add missing boxes, remove false
+detections, and set each photo's `review_status` to `reviewed`. The helper refuses
+to score unreviewed drafts. Compare a verification run with approved references:
+
+```bash
+uv run python scripts/verification_benchmark.py compare \
+  --reference "add_repository_photos/verification-release-gate/reference-draft.json" \
+  --manifest "/private/results/Run Details.json" \
+  --output "add_repository_photos/verification-release-gate/comparison.json"
+```
+
+The comparison reports physical-box counts, field exact matches before and after
+verification, and newly incorrect fields. It compares stable box IDs; review any
+changed detection layout before interpreting those comparisons. Record wall time
+from the CLI report alongside the local comparison. Do not present model agreement
+or draft labels as accuracy evidence. The release set is all 21 added photos plus
+the 11 Archive JPEGs named in AGENTS.md. All photos, drafts, human corrections,
+review notes, and benchmark output stay in ignored private directories.

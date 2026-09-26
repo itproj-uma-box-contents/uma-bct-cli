@@ -337,6 +337,19 @@ class CliTest(unittest.TestCase):
             self.assertEqual(status, 0)
             batch.assert_called_once_with(batch.call_args.args[0], [inputs / "shelf.jpg"], results)
 
+    def test_direct_cli_interrupt_emits_clean_json_without_a_traceback(self):
+        with temporary_root() as root:
+            image = root / "shelf.jpg"
+            image.write_bytes(b"synthetic input")
+            for interruption, expected in ((KeyboardInterrupt(), 130), (SystemExit(143), 143)):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch("uma_bct.cli.run_batch", side_effect=interruption), \
+                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    status = main(["-i", str(image), "-o", str(root / "catalogue.csv"), "--json"])
+                self.assertEqual(status, expected)
+                self.assertEqual(json.loads(stdout.getvalue())["status"], "interrupted")
+                self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_cli_rejects_xlsx_before_processing(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             main(["--path-to-outputs", "catalogue.xlsx"])
@@ -651,6 +664,33 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertIn("PID 1234", stderr.getvalue())
             self.assertTrue(lock_path.exists())
             pipeline_builder.assert_not_called()
+
+    def test_manifest_failure_restores_previous_html_as_well_as_csv(self):
+        with temporary_root() as root:
+            outputs, catalogue, manifest = self.prepare_outputs(root)
+            review = outputs / "catalogue.review.html"
+            review.write_text("previous review", encoding="utf-8")
+            with patch("uma_bct.batch_runner.write_json_atomic", side_effect=manifest_disk_failure(manifest)):
+                status, summary, _ = self.run_batch_and_capture_output(root, FakeBatchPipeline(), [root / "shelf.jpg"],
+                                                                      force=True)
+            self.assertEqual(status, 1)
+            self.assertEqual(catalogue.read_text(), "old catalogue")
+            self.assertEqual(review.read_text(), "previous review")
+            self.assertNotIn("review_output", summary)
+
+    def test_html_staging_failure_leaves_all_previous_outputs_intact(self):
+        with temporary_root() as root:
+            outputs, catalogue, manifest = self.prepare_outputs(root)
+            review = outputs / "catalogue.review.html"
+            review.write_text("previous review", encoding="utf-8")
+            with patch("uma_bct.batch_runner.export_review", side_effect=OSError("disk full")):
+                status, summary, _ = self.run_batch_and_capture_output(root, FakeBatchPipeline(), [root / "shelf.jpg"],
+                                                                      force=True, preserve=True)
+            self.assertEqual(status, 1)
+            self.assertEqual(catalogue.read_text(), "old catalogue")
+            self.assertEqual(manifest.read_text(), "old manifest")
+            self.assertEqual(review.read_text(), "previous review")
+            self.assertIsNone(summary["catalogue_output"])
 
     def test_manifest_failure_restores_old_csv_and_writes_a_failed_run_manifest(self):
         with temporary_root() as root:

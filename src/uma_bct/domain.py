@@ -131,6 +131,7 @@ class BoxResult:
 
     box: Box
     transcription: BoxTranscription
+    verification: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.box.box_id != self.transcription.box_id:
@@ -144,4 +145,6 @@ class BoxResult:
             "detector_confidence": self.box.detector_confidence,
         }
         value.update(self.transcription.to_dict())
+        if self.verification is not None:
+            value["verification"] = self.verification
         return value

@@ -16,7 +16,7 @@ from itertools import pairwise
 from pathlib import Path
 
 from .atomic import rename_new_file
-from .catalogue import CatalogueRow, append_flag, map_catalogue_record
+from .catalogue import CatalogueRow, append_flag, map_catalogue_record, verification_flags
 from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS
 from .path_safety import check_path
 from .pipeline import ImageResult
@@ -113,6 +113,7 @@ def catalogue_records(
     catalogue_path: str | Path | None = None,
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
+    spreadsheet_safe: bool = True,
 ) -> list[dict[str, str | int]]:
     """Build catalogue rows sorted by box prefix and unit number."""
 
@@ -130,8 +131,11 @@ def catalogue_records(
                     box_result.transcription,
                     box_result.box.image_file_path,
                     catalogue_path=catalogue_path,
-                    additional_flags=(FALLBACK_USED_FLAG,) if used_fallback else (),
+                    additional_flags=((FALLBACK_USED_FLAG,) if used_fallback else ()) + verification_flags(
+                        box_result.verification
+                    ),
                     trusted_crop_link=trusted_crop_links,
+                    spreadsheet_safe=spreadsheet_safe,
                 )
             )
 

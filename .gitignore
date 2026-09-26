@@ -77,3 +77,10 @@ dist/
 *.[Pp][Tt]
 *.[Pp][Tt][Hh]
 *.[Ss][Aa][Ff][Ee][Tt][Ee][Nn][Ss][Oo][Rr][Ss]
+
+# Local review pages and preferences can contain client transcriptions.
+**/*.review.html
+**/Review.html
+**/.uma-bct-settings.json
+.uma-bct-review-*
+**/*.review.previous-*.html

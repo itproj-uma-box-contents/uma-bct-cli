@@ -24,6 +24,7 @@ from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import check_path
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
+from .review_export import export_review
 from .run_artifacts import (
     CatalogueLock,
     backup_existing_results,
@@ -35,6 +36,7 @@ from .run_artifacts import (
     write_json_atomic,
 )
 from .terminal import TerminalProgress, print_run_summary
+from .verification import choose_verification, configured_mode, verify_image
 
 
 @dataclass
@@ -49,6 +51,10 @@ class ExportState:
     catalogue_digest: str | None = None
     replace_manifest: bool = False
     wrote_catalogue: bool = False
+    review_output: Path | None = None
+    review_digest: str | None = None
+    previous_review: Path | None = None
+    wrote_review: bool = False
 
 
 @contextmanager
@@ -138,6 +144,8 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
         "run_manifest": summary["run_manifest"],
         "previous_results": summary["previous_results"],
     }
+    if summary.get("review_output"):
+        result["review_output"] = summary["review_output"]
     if recovery_path := summary.get("recovery_path"):
         result["recovery_path"] = recovery_path
     return result
@@ -187,10 +195,12 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
     previous_catalogue: Path | None = None
     staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}.csv")
     publication_started = False
+    review_path = output_path.with_suffix(".review.html")
+    review_staging = output_path.with_name(f".uma-bct-review-{uuid.uuid4().hex}.tmp")
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
-            for path in (output_path, manifest_path):
+            for path in (output_path, manifest_path, review_path):
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
@@ -203,7 +213,11 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
-        previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
+        export_review(results, review_staging, catalogue_path=output_path,
+                      minimum_confidence=arguments.min_transcription_confidence,
+                      detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True))
+        previous = backup_existing_results((output_path, manifest_path, review_path)) if arguments.force else ()
+        state.previous_review = next((path for path in previous if path.suffix == ".html"), None)
         previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
         previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
         replace_manifest = previous_manifest is not None
@@ -221,6 +235,13 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         else:
             rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
         staging = None
+        state.review_digest = regular_file_sha256(review_staging, "Staged review output")
+        state.review_output = review_path
+        state.wrote_review = True
+        if state.previous_review is not None:
+            replace_backed_file(review_staging, review_path, state.previous_review, "Review output")
+        else:
+            rename_new_file(review_staging, review_path, existing_message=f"Review output already exists: {review_path}")
         return state
 
     except BaseException as error:
@@ -243,12 +264,14 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
         print(f"Export failed: {message}", file=sys.stderr)
+        state.review_output = None
         state.record_count = 0
         state.catalogue_output = None
         state.wrote_catalogue = False
         return state
 
     finally:
+        review_staging.unlink(missing_ok=True)
         if staging is not None:
             staging.unlink(missing_ok=True)
 
@@ -267,9 +290,21 @@ def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[
 
 
 def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
-    if not state.wrote_catalogue or state.catalogue_digest is None:
-        return
-    rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
+    errors = []
+    artifacts = (
+        (state.wrote_review, state.review_output, state.review_digest, state.previous_review, "review"),
+        (state.wrote_catalogue, output_path, state.catalogue_digest, state.previous_catalogue, "catalogue"),
+    )
+    for written, path, digest, previous, purpose in artifacts:
+        if written and path is not None and digest is not None:
+            try:
+                rollback_owned_file(path, digest, previous, purpose)
+            except Exception as error:
+                errors.append(error)
+    if errors:
+        raise errors[0]
+    state.review_output = None
+    state.wrote_review = False
 
 
 def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
@@ -352,6 +387,7 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
     else:
         summary["status"] = "failed"
         summary["catalogue_output"] = None
+        summary["review_output"] = None
         summary["catalogue_records"] = 0
 
     recovery_manifest = failed_manifest_path(output_path)
@@ -371,6 +407,10 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     if isinstance(pipeline, BoxTranscriptionPipeline):
         pipeline.on_stage = progress.phase
     results = process_images(pipeline, images, failures, progress) if pipeline else []
+    if pipeline:
+        progress.close()
+        if choose_verification(arguments, configured_mode(arguments), has_records=any(r.records for r in results)):
+            results = [verify_image(result, pipeline.transcriber, on_stage=progress.phase) for result in results]
     progress.phase("Finalizing results" if pipeline else "Saving run details")
     export_state = ExportState()
     manifest: Path | None = None
@@ -396,6 +436,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
             "model": model_metadata,
             "images": [result.to_dict() for result in results],
             "failures": failures,
+            "review_output": str(export_state.review_output) if export_state.review_output else None,
             "catalogue_output": export_state.catalogue_output,
             "catalogue_records": export_state.record_count,
             "run_manifest": str(manifest),

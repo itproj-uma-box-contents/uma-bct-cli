@@ -115,6 +115,12 @@ class TerminalProgress:
         self.current = terminal_text(message)
         self._show()
 
+    def set_total(self, count: int) -> None:
+        if self.total != count:
+            self.total = count
+            if not self._update_live(total=count):
+                self._write(f"This batch contains {count} photo{'s' if count != 1 else ''}.")
+
     def reused(self, count: int) -> None:
         self.completed = count
         if not self._update_live(completed=count) and count:
@@ -181,6 +187,8 @@ def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted:
         lines.append(f"Results: {terminal_text(batch)}")
     elif catalogue:
         lines.append(f"Results: {terminal_text(catalogue)}")
+    if review := summary.get("review_output"):
+        lines.append(f"Review page: {terminal_text(review)}")
     if details := summary.get("run_manifest"):
         kind = "Progress" if Path(details).name == "Run Progress.json" else "Run details"
         lines.append(f"{kind}: {terminal_text(details)}")

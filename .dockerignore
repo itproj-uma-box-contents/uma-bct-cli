@@ -94,3 +94,10 @@ models
 .DS_Store
 .idea
 .vscode
+
+# Local transcription review output and preferences.
+**/*.review.html
+**/Review.html
+**/.uma-bct-settings.json
+**/.uma-bct-review-*
+**/*.review.previous-*.html

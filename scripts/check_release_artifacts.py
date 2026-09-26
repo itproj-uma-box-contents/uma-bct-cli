@@ -128,6 +128,8 @@ def unsafe_reason(
     if private := parts.intersection(PRIVATE_DIRECTORIES):
         return f"private directory {sorted(private)[0]!r}"
     folded = path.name.casefold()
+    if folded == "review.html" or (folded.endswith(".review.html") or ".review.previous-" in folded) or folded == ".uma-bct-settings.json":
+        return "generated review output or settings"
     if folded.endswith(".uma-bct.lock") or folded == ".uma-bct-launcher.lock":
         return "generated run lock"
     if folded.startswith(".uma-bct-launcher-lock-"):
@@ -137,7 +139,7 @@ def unsafe_reason(
     if folded in {"run progress.json", "run details.json"}:
         return "generated managed run manifest"
     if folded.startswith(
-        (".uma-bct-json-", ".uma-bct-catalogue-", ".uma-bct-lock-release-", ".uma-bct-rollback-", ".uma-bct-backup-")
+        (".uma-bct-json-", ".uma-bct-review-", ".uma-bct-catalogue-", ".uma-bct-lock-release-", ".uma-bct-rollback-", ".uma-bct-backup-")
     ):
         return "generated temporary output"
     for suffix in PRIVATE_SUFFIXES:
