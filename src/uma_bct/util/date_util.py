@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+
 class InvalidDate(Exception):
     """Provided parameters do not form a valid date."""
 
 def component_to_string(component: int | None, width: int) -> str:
-    return f"{component:0{width}}" if component != None else ""
+    return f"{component:0{width}}" if component is not None else ""
 
 @dataclass(frozen=True)
 class Date:
@@ -58,9 +59,9 @@ def get_earliest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates: 
-        return min(all_dates, key = lambda date: (date.year if date.year != None else 5000, 
-                                                  date.month if date.month != None else 13, 
-                                                  date.day if date.day != None else 31))
+        return min(all_dates, key = lambda date: (date.year if date.year is not None else 5000, 
+                                                  date.month if date.month is not None else 13, 
+                                                  date.day if date.day is not None else 31))
     else: 
         return Date()
 
@@ -74,8 +75,8 @@ def get_latest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates: 
-        return max(all_dates, key = lambda date: (date.year if date.year != None else 0,
-                                                  date.month if date.month != None else 0, 
-                                                  date.day if date.day != None else 0))
+        return max(all_dates, key = lambda date: (date.year if date.year is not None else 0,
+                                                  date.month if date.month is not None else 0, 
+                                                  date.day if date.day is not None else 0))
     else: 
         return Date()
