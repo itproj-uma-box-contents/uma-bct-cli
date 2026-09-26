@@ -2,9 +2,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
-class InvalidDate(Exception):
-    """Provided parameters do not form a valid date."""
-
 def component_to_string(component: int | None, width: int) -> str:
     return f"{component:0{width}}" if component is not None else ""
 
