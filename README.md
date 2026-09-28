@@ -17,6 +17,23 @@ local; it does not upload them.
 3. Put the photos directly in `Add Photos Here`, then return to the launcher
    and press Enter if prompted.
 
+The launcher prints the photo folder's full path. If it does not open
+automatically, open that path yourself before pressing Enter.
+
+The terminal updates one live progress display with the current photo and box,
+completed photo count, and elapsed time. Captured logs show short milestones
+instead. When the run ends, a short report shows photo outcomes, catalogue
+rows, elapsed time, and the Results location. Keep the terminal open until that
+report appears.
+
+During model setup and photo processing, the CLI requests protection against
+automatic idle sleep and releases it when the CLI exits. macOS confirms the
+request before work starts. If the computer rejects it, the terminal warns you
+and the run continues. Keep the laptop lid open: manual sleep or low battery
+can still interrupt work. Some screen saver or lock policies may still turn
+off the display while processing continues. If a warning appears, adjust the
+computer's power settings before a long batch.
+
 The first run needs an internet connection because it installs the verified
 private runtime and downloads the large model. The launcher finishes all online
 preparation before asking for photographs. Later runs reuse that runtime and
@@ -143,7 +160,7 @@ Detection is deliberately conservative:
 - Inserted rows are review suggestions, not proof that a physical box is
   missing.
 
-Advanced direct-CLI users can disable this behavior with
+Advanced CLI users can disable this behavior with
 `--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
 
 The last column is a controlled relative `HYPERLINK` formula to its file under
@@ -156,13 +173,14 @@ Google Sheets cannot open these private local file links and is unsupported.
 Opening a link uses the operating system's registered application; revealing
 and selecting the file in Finder or Explorer is not promised.
 
-Before importing the catalogue, review rows in their original photo and
-left-to-right/top-to-bottom box order:
+Before importing the catalogue, review each row against its crop and source
+photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 - Compare every row with its `Cropped Box Image Link` evidence.
 - Check every non-empty `Review Flags` value and the
   `Transcription Confidence (%)`. Every transcription still needs human review.
-- Keep separate rows for separate physical boxes, even when titles match.
+- Keep separate rows for separate physical boxes, even when their unit type and
+  number match.
 
 ## Compatibility and privacy
 
@@ -171,6 +189,10 @@ supported in place. New legacy runs create `outputs/Batch ...`; existing
 top-level catalogues, manifests, and crops are not changed. If both the friendly
 and legacy directory pairs contain data, the launcher stops and names both; it
 never merges, moves, or deletes private files.
+
+An older offline runtime without the live display dependency still processes
+photos and shows short milestone lines. A fresh extracted bundle installs the
+live display before photographs are added.
 
 Only numeric loopback Ollama endpoints are accepted by default. Direct CLI use
 still defaults to `127.0.0.1:11434`. A developer may use an approved managed
@@ -187,6 +209,10 @@ Advanced users can prepare custom locations with:
 uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
+
+Direct CLI runs show the same readable final report as the launcher. Add
+`--json` when a script needs one JSON summary on stdout; progress and warnings
+still go to stderr. The `--human` flag remains accepted for older commands.
 
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
 Without it, every existing direct-CLI default, alias, and Docker workflow stays

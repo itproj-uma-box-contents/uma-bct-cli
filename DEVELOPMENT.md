@@ -71,6 +71,10 @@ available through `--help`. The legacy `--min-confidence` option and its
 explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
 1. The transcription review threshold uses `-c` or
 `--min-transcription-confidence` and accepts an integer from 0 to 100.
+Interactive progress is refreshed in place on stderr; captured stderr gets
+short milestones. Transcription runs end with a readable report by default;
+`--json` selects one JSON object for scripts. Setup keeps its existing JSON
+result. The CLI requests an idle-sleep inhibitor while setup or a run is active.
 
 The additive managed workflow is selected with `--results-directory`. It owns
 readable `Batch YYYY-MM-DD HH-MM-SS` folders, checkpoints each source photo,

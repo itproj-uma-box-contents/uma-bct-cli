@@ -33,7 +33,6 @@ def regular_file_sha256(path: Path, purpose: str) -> str:
     return digest.hexdigest()
 
 
-# Handle the same regular file content step.
 def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
     try:
         return regular_file_sha256(first, purpose) == regular_file_sha256(second, purpose)
@@ -41,8 +40,9 @@ def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
         return False
 
 
-# Check whether the path entry exists.
 def path_entry_exists(path: Path) -> bool:
+    """Treat an inspection error as occupied so a writer fails closed."""
+
     try:
         path.lstat()
     except FileNotFoundError:
@@ -61,6 +61,8 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
     new_digest = regular_file_sha256(staging, f"Staged {purpose}")
     quarantine = destination.with_name(f".uma-bct-rollback-{uuid.uuid4().hex}.tmp")
     check_path(quarantine, f"{purpose} publication quarantine")
+    # Quarantine the current destination and compare it with the dated backup
+    # before putting our staged bytes in its place. A late human edit wins.
     try:
         os.replace(destination, quarantine)
         if not same_regular_file_content(quarantine, backup, f"{purpose} publication source"):
@@ -75,6 +77,8 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
         quarantine.unlink()
         quarantine = None
     except BaseException as original_error:
+        # Keep a displaced file recoverable if publication stops between
+        # renames, including interruption that does not derive from Exception.
         if quarantine is not None and path_entry_exists(quarantine):
             try:
                 if not path_entry_exists(destination):
@@ -99,7 +103,6 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
         raise
 
 
-# Restore the backup no clobber.
 def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> None:
     temporary_path: Path | None = None
     try:
@@ -128,6 +131,8 @@ def rollback_owned_file(destination: Path, expected_digest: str, backup: Path | 
     quarantine: Path | None = destination.with_name(f".uma-bct-rollback-{uuid.uuid4().hex}.tmp")
     try:
         os.replace(destination, quarantine)
+        # Roll back only bytes this run published. If someone edited the file
+        # afterward, return that edit instead of replacing it with old data.
         if regular_file_sha256(quarantine, f"Published {purpose}") != expected_digest:
             rename_new_file(
                 quarantine,
@@ -163,13 +168,11 @@ def rollback_owned_file(destination: Path, expected_digest: str, backup: Path | 
         raise
 
 
-# Create a new run ID.
 def new_run_id() -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
-# Run the directory.
 def run_directory(root: Path) -> Path:
     check_path(root, "Review-crop root")
     destination = root / f"run-{new_run_id()}"
@@ -178,17 +181,14 @@ def run_directory(root: Path) -> Path:
     return destination
 
 
-# Build the manifest path.
 def manifest_path(output_path: Path) -> Path:
     return output_path.with_suffix(".run.json")
 
 
-# Build the failed manifest path.
 def failed_manifest_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}.failed-{new_run_id()}.run.json")
 
 
-# Build the catalogue lock path.
 def catalogue_lock_path(output_path: Path) -> Path:
     return output_path.with_name(LOCK_FILE_NAME)
 
@@ -196,13 +196,11 @@ def catalogue_lock_path(output_path: Path) -> Path:
 class CatalogueLock:
     """Reserve one catalogue and remove only this instance's lock file."""
 
-    # Store the state this object needs.
     def __init__(self, output_path: Path) -> None:
         self.path = catalogue_lock_path(output_path)
         self._descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
 
-    # Build the owner text.
     def _owner_text(self) -> str:
         descriptor: int | None = None
         try:
@@ -221,7 +219,6 @@ class CatalogueLock:
         pid = value.get("pid") if isinstance(value, dict) else None
         return f"PID {pid}" if isinstance(pid, int) and pid > 0 else "PID unavailable"
 
-    # Handle the acquire step.
     def acquire(self) -> None:
         check_path(self.path, "Catalogue lock")
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -255,7 +252,6 @@ class CatalogueLock:
             os.close(descriptor)
             self._descriptor = None
 
-    # Handle the release step.
     def release(self) -> None:
         descriptor = self._descriptor
         identity = self._identity
@@ -279,6 +275,8 @@ class CatalogueLock:
                 os.close(descriptor)
             return
 
+        # Moving the lock aside before deletion lets us inspect its identity
+        # again and retain a replacement that raced with cleanup.
         quarantine = self.path.with_name(f".uma-bct-lock-release-{uuid.uuid4().hex}.tmp")
         try:
             os.replace(self.path, quarantine)
@@ -301,7 +299,6 @@ class CatalogueLock:
                 os.close(descriptor)
 
 
-# Build the previous result path.
 def previous_result_path(path: Path, run_id: str) -> Path:
     if path.name.endswith(".run.json"):
         stem = path.name[: -len(".run.json")]
@@ -324,6 +321,8 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
         backup = previous_result_path(path, run_id)
         check_path(backup, "Previous result")
         temporary_path: Path | None = None
+        # Copy through a stable descriptor before publishing the dated backup.
+        # Restored timestamps alone do not make a shortened copy acceptable.
         try:
             with open_stable_file(path, "Existing result") as (source, before):
                 with tempfile.NamedTemporaryFile(
@@ -371,7 +370,6 @@ def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> No
         raise
 
 
-# Write JSON without exposing a partial file.
 def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_existing: bool = True) -> None:
     check_path(destination, "Run manifest")
     if destination.exists() and not replace_existing:
@@ -379,7 +377,8 @@ def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     check_path(destination, "Run manifest")
     temporary_path: Path | None = None
-    # Write beside the manifest, then swap it in only when complete.
+    # The JSON is flushed beside the destination. Readers see either the old
+    # complete manifest or the new one, including its final newline.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", newline="\n", dir=destination.parent,

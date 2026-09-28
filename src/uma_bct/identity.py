@@ -54,7 +54,6 @@ AMBIGUOUS_UNIT = re.compile(
 IDENTITY_SEPARATORS = re.compile(r"^[\s,;:./|&+()\[\]{}\"'“”‘’\-–—]*$")
 
 
-# Collect the visual lines.
 def visual_lines(lines: Iterable[str]) -> Iterable[str]:
     """Yield each supplied line, including embedded line breaks."""
 
@@ -62,7 +61,6 @@ def visual_lines(lines: Iterable[str]) -> Iterable[str]:
         yield from value.splitlines()
 
 
-# Normalize the identifier.
 def normalise_identifier(identifier: str) -> str:
     """Trim an identifier while preserving its spelling."""
 
@@ -70,7 +68,6 @@ def normalise_identifier(identifier: str) -> str:
     return value.upper() if value.casefold().startswith("uma-") else value
 
 
-# Normalize the unit claim.
 def normalise_unit_claim(value: str) -> str | None:
     """Return a four-digit unit number when the value is valid."""
 
@@ -103,7 +100,6 @@ def standalone_identifier(line: str) -> str | None:
     return value
 
 
-# Handle the identifier only line step.
 def identifier_only_line(line: str) -> bool:
     """Check whether a line contains only identifier-like text."""
 
@@ -130,6 +126,8 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
         malformed_dotted = any(
             KNOWN_IDENTIFIER_TOKEN.fullmatch(match.group(1)) is None for match in DOTTED_IDENTIFIER_LOOKALIKE.finditer(line)
         )
+        # A dotted ID with the wrong digit count stays visible in Unit Type,
+        # but it cannot corroborate a structured identifier without review.
         malformed = malformed or malformed_dotted
         legacy_allowed = identifier_only_line(line)
         for match in matches:
@@ -158,7 +156,6 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(identifiers), malformed
 
 
-# Collect the identifier evidence.
 def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     """Return identifiers found in visible transcription lines."""
 
@@ -169,6 +166,8 @@ def unit_type_text(lines: Iterable[str]) -> str:
     """Return all printed label text except complete unit-number phrases."""
 
     parts: list[str] = []
+    # Preserve headings and imperfect IDs exactly as printed. Only an explicit
+    # Unit or Box phrase is removed before visual lines become one CSV cell.
     for line in visual_lines(lines):
         without_unit = PRINTED_UNIT_TEXT.sub(" ", line)
         value = " ".join(without_unit.split())
@@ -177,7 +176,6 @@ def unit_type_text(lines: Iterable[str]) -> str:
     return " ".join(parts)
 
 
-# Keep the unit evidence behavior together.
 @dataclass(frozen=True)
 class UnitEvidence:
     """Collected unit candidates and whether they conflict."""
@@ -257,17 +255,17 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
         if RECORD_IDENTIFIER.fullmatch(value.strip())
     }
 
-    # Remove the identifier.
     def remove_identifier(match: re.Match[str]) -> str:
         value = normalise_identifier(match.group(1)).casefold()
         return " " if value in identifier_keys else match.group(0)
 
     normalized_unit = normalise_unit_claim(structured_unit)
 
-    # Remove the unit.
     def remove_unit(match: re.Match[str]) -> str:
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
 
+    # Remove known identity text while leaving any additional annotation for
+    # Description. A whole prefix-plus-unit line is identity-only as well.
     body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
     body = " " if body.strip().casefold() in identifier_keys else KNOWN_IDENTIFIER_TOKEN.sub(remove_identifier, body)
     if prefixed := prefixed_unit(line):

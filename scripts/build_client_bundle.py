@@ -27,7 +27,6 @@ CLIENT_FILES = (
 )
 
 
-# Find the wheel.
 def find_wheel(directory: Path) -> Path:
     wheels = tuple(directory.glob("uma_bct_cli-*.whl"))
     if len(wheels) != 1:
@@ -35,7 +34,6 @@ def find_wheel(directory: Path) -> Path:
     return wheels[0]
 
 
-# Bundle the sources.
 def bundle_sources(directory: Path, root: Path) -> tuple[Path, ...]:
     sources = tuple(root / name for name in CLIENT_FILES) + (find_wheel(directory),)
     for source in sources:
@@ -44,7 +42,6 @@ def bundle_sources(directory: Path, root: Path) -> tuple[Path, ...]:
     return sources
 
 
-# Validate the source path.
 def validate_source_path(path: Path, boundary: Path) -> os.stat_result:
     try:
         metadata = path.lstat()
@@ -52,6 +49,8 @@ def validate_source_path(path: Path, boundary: Path) -> os.stat_result:
         raise ValueError(f"Missing or unreadable client file: {path}: {error}") from error
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise ValueError(f"Client file must be one unlinked regular file: {path}")
+    # Checking only the file would miss a linked parent that redirects the
+    # bundle reader into private folders outside the expected source tree.
     current = path.parent
     while True:
         try:
@@ -68,9 +67,7 @@ def validate_source_path(path: Path, boundary: Path) -> os.stat_result:
     return metadata
 
 
-# Read the source.
 def read_source(path: Path, boundary: Path) -> tuple[bytes, os.stat_result]:
-    # Handle the validator step.
     def validator(candidate: Path) -> os.stat_result:
         return validate_source_path(candidate, boundary)
 
@@ -78,12 +75,10 @@ def read_source(path: Path, boundary: Path) -> tuple[bytes, os.stat_result]:
         return source.read(), metadata
 
 
-# Handle the source boundary step.
 def source_boundary(source: Path, directory: Path, root: Path) -> Path:
     return directory if source.parent == directory else root
 
 
-# Handle the source entry step.
 def source_entry(name: str, metadata: os.stat_result) -> zipfile.ZipInfo:
     information = zipfile.ZipInfo(name)
     information.create_system = 3
@@ -92,7 +87,6 @@ def source_entry(name: str, metadata: os.stat_result) -> zipfile.ZipInfo:
     return information
 
 
-# Validate the bundle path.
 def validate_bundle_path(destination: Path, directory: Path, *, must_exist: bool) -> None:
     try:
         directory_metadata = directory.lstat()
@@ -112,11 +106,12 @@ def validate_bundle_path(destination: Path, directory: Path, *, must_exist: bool
         raise ValueError(f"Client bundle must be one unlinked regular file: {destination}")
 
 
-# Build the client bundle.
 def build_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -> Path:
     destination = directory / BUNDLE_NAME
     validate_bundle_path(destination, directory, must_exist=False)
     temporary_path: Path | None = None
+    # Build beside the destination and publish once the archive is flushed.
+    # The two empty folders are intentional client workspace placeholders.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w+b", dir=directory, prefix=".archive-box-transcription-", suffix=".tmp", delete=False
@@ -145,7 +140,6 @@ def build_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) ->
     return destination
 
 
-# Verify the client bundle.
 def verify_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -> None:
     validate_bundle_path(directory / BUNDLE_NAME, directory, must_exist=True)
     sources = bundle_sources(directory, source_root)
@@ -157,6 +151,8 @@ def verify_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -
     }
     expected[f"{BUNDLE_ROOT}/{FRIENDLY_INPUT_DIRECTORY}/"] = b""
     expected[f"{BUNDLE_ROOT}/{FRIENDLY_RESULTS_DIRECTORY}/"] = b""
+    # Compare the final ZIP against fresh reads of its exact allowed sources;
+    # duplicate or extra entries must not ride along in a deliverable.
     try:
         with zipfile.ZipFile(directory / BUNDLE_NAME) as archive:
             names = archive.namelist()
@@ -182,7 +178,6 @@ def verify_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -
         raise ValueError(f"Could not verify client bundle: {error}") from error
 
 
-# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)

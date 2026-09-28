@@ -8,6 +8,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -36,8 +37,7 @@ from uma_bct.managed_batch import (
 from uma_bct.pipeline import ImageResult
 
 
-# Handle the managed arguments step.
-def managed_arguments(root: Path, *, reprocess: bool = False) -> argparse.Namespace:
+def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True) -> argparse.Namespace:
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -51,12 +51,14 @@ def managed_arguments(root: Path, *, reprocess: bool = False) -> argparse.Namesp
         force=False,
         results_directory=root / "Results",
         reprocess=reprocess,
+        detect_missing_boxes=detect_missing_boxes,
+        json=True,
     )
 
 
-# Keep the managed pipeline behavior together.
 class ManagedPipeline:
-    # Store the state this object needs.
+    """Write small crop files while scripting failures, restarts, and model identity."""
+
     def __init__(
         self, *, interrupt_name: str | None = None, failed_names: tuple[str, ...] = (), port: int = 12000,
         full_image: bool = False, digest: str = "sha256:test"
@@ -72,7 +74,6 @@ class ManagedPipeline:
             "ollama_host": f"http://127.0.0.1:{port}",
         }
 
-    # Process the current input.
     def process(self, path: Path) -> ImageResult:
         self.calls.append(path.name)
         if path.name == self.interrupt_name:
@@ -100,17 +101,17 @@ class ManagedPipeline:
         )
 
 
-# Group the managed batch checks.
 class ManagedBatchTest(unittest.TestCase):
-    # Check that managed interruption preserves its exit code.
     def test_managed_interruption_preserves_its_exit_code(self):
         self.assertEqual(ManagedInterruption(143).exit_code, 143)
 
-    # Run the with.
-    def run_with(
-        self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False, patches=()
+    def run_managed_batch_and_capture_output(
+        self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False,
+        detect_missing_boxes: bool = True, patches=()
     ):
-        arguments = managed_arguments(root, reprocess=reprocess)
+        """Run the real checkpoint flow with a scripted local pipeline."""
+
+        arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes)
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.ExitStack() as stack:
@@ -122,14 +123,12 @@ class ManagedBatchTest(unittest.TestCase):
             status = run_managed_batch(arguments, images, arguments.results_directory)
         return status, json.loads(stdout.getvalue()), stderr.getvalue()
 
-    # Prepare the inputs.
     def prepare_inputs(self, root: Path, *names: str) -> None:
         inputs = root / "Add Photos Here"
         inputs.mkdir()
         for name in names:
             (inputs / name).write_bytes(f"photo {name}".encode())
 
-    # Handle the prepared root step.
     @contextlib.contextmanager
     def prepared_root(self, *names: str):
         with tempfile.TemporaryDirectory() as directory:
@@ -137,7 +136,40 @@ class ManagedBatchTest(unittest.TestCase):
             self.prepare_inputs(root, *names)
             yield root
 
-    # Check that stable read rejects a short read hidden by restored metadata.
+    def test_managed_catalogue_honours_missing_box_option(self):
+        class GapPipeline(ManagedPipeline):
+            def process(self, path: Path) -> ImageResult:
+                result = super().process(path)
+                record = result.records[0]
+                unit = "1" if path.name == "01.jpg" else "3"
+                transcription = make_transcription(record.box, unit=unit)
+                return replace(result, records=(BoxResult(record.box, transcription),))
+
+        for detect_missing_boxes, expected_numbers in (
+            (True, ["0001", "0002", "0003"]),
+            (False, ["0001", "0003"]),
+        ):
+            with self.subTest(detect_missing_boxes=detect_missing_boxes), self.prepared_root("01.jpg", "03.jpg") as root:
+                status, summary, _stderr = self.run_managed_batch_and_capture_output(
+                    root, GapPipeline(), detect_missing_boxes=detect_missing_boxes
+                )
+                with (Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME).open(newline="", encoding="utf-8") as source:
+                    rows = list(csv.DictReader(source))
+                self.assertEqual(status, 0)
+                self.assertEqual(summary["catalogue_records"], len(expected_numbers))
+                self.assertEqual([row["Unit Number"] for row in rows], expected_numbers)
+                if detect_missing_boxes:
+                    self.assertEqual(rows[1]["Review Flags"], "Missing Box")
+
+    def test_missing_box_option_change_blocks_resume(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="02.jpg"))
+            status, _summary, stderr = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(), detect_missing_boxes=False
+            )
+            self.assertEqual(status, 2)
+            self.assertIn("processing configuration changed", stderr)
+
     def test_stable_read_rejects_a_short_read_hidden_by_restored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source.bin"
@@ -149,11 +181,9 @@ class ManagedBatchTest(unittest.TestCase):
                     path.write_bytes(b"b" * metadata.st_size)
                     os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
 
-    # Check that JSON read stays bounded if a small file grows.
     def test_json_read_stays_bounded_if_a_small_file_grows(self):
         metadata = Mock(st_size=1)
 
-        # Handle the growing file step.
         @contextlib.contextmanager
         def growing_file(*_args, **_kwargs):
             yield io.BytesIO(b"x" * (32 * 1024 * 1024 + 1)), metadata
@@ -164,7 +194,6 @@ class ManagedBatchTest(unittest.TestCase):
         ):
             read_json_file(Path("progress.json"), "Run progress")
 
-    # Check that retained crop recovery is private.
     @unittest.skipIf(os.name == "nt", "POSIX private-file mode")
     def test_retained_crop_recovery_is_private(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -180,11 +209,10 @@ class ManagedBatchTest(unittest.TestCase):
                 os.umask(previous_umask)
             self.assertEqual(stat.S_IMODE(quarantine.stat().st_mode), 0o600)
 
-    # Check that the code publishes readable batch with formula links and exact columns.
     def test_publishes_readable_batch_with_formula_links_and_exact_columns(self):
         with self.prepared_root("PXL_230150462.jpg") as root:
 
-            status, summary, _stderr = self.run_with(root, ManagedPipeline())
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
 
             self.assertEqual(status, 0)
             batch = Path(summary["batch_directory"])
@@ -203,20 +231,18 @@ class ManagedBatchTest(unittest.TestCase):
             details = json.loads((batch / DETAILS_FILE_NAME).read_text(encoding="utf-8"))
             self.assertEqual(details["inputs"][0]["original_filename"], "PXL_230150462.jpg")
 
-    # Check that full image fallback uses the readable full photo name.
     def test_full_image_fallback_uses_the_readable_full_photo_name(self):
         with self.prepared_root("Shelf.jpg") as root:
-            status, summary, _stderr = self.run_with(root, ManagedPipeline(full_image=True))
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(full_image=True))
             self.assertEqual(status, 0)
             evidence = Path(summary["batch_directory"]) / BOX_IMAGES_DIRECTORY_NAME / "Shelf - Full Photo.png"
             self.assertTrue(evidence.is_file())
 
-    # Check that interrupt resumes committed photos and reprocesses only the active photo.
     def test_interrupt_resumes_committed_photos_and_reprocesses_only_the_active_photo(self):
         with self.prepared_root("01.jpg", "02.jpg", "03.jpg") as root:
             interrupted = ManagedPipeline(interrupt_name="02.jpg", port=12000)
 
-            status, summary, _stderr = self.run_with(root, interrupted)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, interrupted)
 
             self.assertEqual(status, 130)
             self.assertEqual(interrupted.calls, ["01.jpg", "02.jpg"])
@@ -226,7 +252,7 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertFalse((batch / CATALOGUE_FILE_NAME).exists())
 
             resumed = ManagedPipeline(port=13000)
-            status, summary, _stderr = self.run_with(root, resumed)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, resumed)
 
             self.assertEqual(status, 0)
             self.assertEqual(resumed.calls, ["02.jpg", "03.jpg"])
@@ -238,10 +264,30 @@ class ManagedBatchTest(unittest.TestCase):
                 ["http://127.0.0.1:12000", "http://127.0.0.1:13000"],
             )
 
-    # Check that changed input blocks resume before pipeline preflight.
+    def test_resumed_human_report_uses_final_counts(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="02.jpg"))
+            arguments = managed_arguments(root)
+            arguments.json = False
+            images = sorted(arguments.path_to_inputs.glob("*.jpg"))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                patch("uma_bct.managed_batch.build_pipeline", return_value=ManagedPipeline()),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = run_managed_batch(arguments, images, arguments.results_directory)
+
+            self.assertEqual(status, 0)
+            self.assertIn("Resuming: 1 photo already finished", stderr.getvalue())
+            self.assertIn("Processing Photo 2 of 2", stderr.getvalue())
+            self.assertIn("Finished\nPhotos finished: 2 of 2", stdout.getvalue())
+            self.assertIn("Catalogue: 2 rows", stdout.getvalue())
+            self.assertNotIn('"schema_version"', stdout.getvalue())
+
     def test_changed_input_blocks_resume_before_pipeline_preflight(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
-            self.run_with(root, ManagedPipeline(interrupt_name="01.jpg"))
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="01.jpg"))
             (root / "Add Photos Here/02.jpg").write_bytes(b"changed")
             builder = Mock()
             arguments = managed_arguments(root)
@@ -259,11 +305,8 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertIn("byte-changed", stderr.getvalue())
             builder.assert_not_called()
 
-    # Check that source changed after its turn blocks final publication.
     def test_source_changed_after_its_turn_blocks_final_publication(self):
-        # Keep the late changing pipeline behavior together.
         class LateChangingPipeline(ManagedPipeline):
-            # Process the current input.
             def process(self, path: Path) -> ImageResult:
                 result = super().process(path)
                 if path.name == "02.jpg":
@@ -272,25 +315,23 @@ class ManagedBatchTest(unittest.TestCase):
 
         with self.prepared_root("01.jpg", "02.jpg") as root:
 
-            status, summary, stderr = self.run_with(root, LateChangingPipeline())
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, LateChangingPipeline())
 
             self.assertEqual(status, 2)
             self.assertIn("Input photos changed before publication", stderr)
             self.assertFalse((Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME).exists())
 
-    # Check that changed model digest blocks resume but a new loopback port does not.
     def test_changed_model_digest_blocks_resume_but_a_new_loopback_port_does_not(self):
         with self.prepared_root("01.jpg") as root:
-            self.run_with(root, ManagedPipeline(interrupt_name="01.jpg", port=12000))
+            self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="01.jpg", port=12000))
 
-            status, _summary, stderr = self.run_with(
+            status, _summary, stderr = self.run_managed_batch_and_capture_output(
                 root, ManagedPipeline(port=13000, digest="sha256:different")
             )
 
             self.assertEqual(status, 2)
             self.assertIn("model digest changed", stderr)
 
-    # Check that relative batch path resumes through the equivalent absolute path.
     def test_relative_batch_path_resumes_through_the_equivalent_absolute_path(self):
         with self.prepared_root("01.jpg") as root:
             arguments = managed_arguments(root)
@@ -311,37 +352,35 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(first_status, 130)
 
             resumed = ManagedPipeline(port=13000)
-            status, summary, _stderr = self.run_with(root, resumed)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, resumed)
 
             self.assertEqual(status, 0)
             self.assertTrue(summary["resumed"])
             self.assertEqual(resumed.calls, ["01.jpg"])
 
-    # Check that completed snapshot is not repeated without reprocess.
     def test_completed_snapshot_is_not_repeated_without_reprocess(self):
         with self.prepared_root("01.jpg") as root:
             first = ManagedPipeline()
-            self.run_with(root, first)
+            self.run_managed_batch_and_capture_output(root, first)
             second = ManagedPipeline()
 
-            status, summary, _stderr = self.run_with(root, second)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, second)
 
             self.assertEqual(status, 0)
             self.assertTrue(summary["already_complete"])
             self.assertEqual(second.calls, [])
             self.assertEqual(len(list((root / "Results").glob("Batch *"))), 1)
 
-            status, summary, _stderr = self.run_with(root, ManagedPipeline(), reprocess=True)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(), reprocess=True)
             self.assertEqual(status, 0)
             self.assertEqual(len(list((root / "Results").glob("Batch *"))), 2)
 
-    # Check that completed reuse blocks a missing changed or linked catalogue.
     def test_completed_reuse_blocks_a_missing_changed_or_linked_catalogue(self):
         for damage in ("missing", "changed", "linked"):
             with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 self.prepare_inputs(root, "01.jpg")
-                _status, summary, _stderr = self.run_with(root, ManagedPipeline())
+                _status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
                 catalogue = Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME
                 if damage == "missing":
                     catalogue.unlink()
@@ -357,13 +396,12 @@ class ManagedBatchTest(unittest.TestCase):
                         self.skipTest(str(error))
                 pipeline = ManagedPipeline(port=13000)
 
-                status, _summary, stderr = self.run_with(root, pipeline)
+                status, _summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline)
 
                 self.assertEqual(status, 2)
                 self.assertEqual(pipeline.calls, [])
                 self.assertTrue("Published catalogue" in stderr or "symbolic link" in stderr)
 
-    # Check that legacy top level results are left byte for byte unchanged.
     def test_legacy_top_level_results_are_left_byte_for_byte_unchanged(self):
         with self.prepared_root("01.jpg") as root:
             results = root / "Results"
@@ -375,29 +413,27 @@ class ManagedBatchTest(unittest.TestCase):
             legacy_manifest = results / "catalogue.run.json"
             legacy_manifest.write_bytes(b'{"legacy": true}\n')
 
-            status, _summary, _stderr = self.run_with(root, ManagedPipeline())
+            status, _summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
 
             self.assertEqual(status, 0)
             self.assertEqual(legacy_crop.read_bytes(), b"legacy crop")
             self.assertEqual(legacy_catalogue.read_bytes(), b"legacy catalogue\r\n")
             self.assertEqual(legacy_manifest.read_bytes(), b'{"legacy": true}\n')
 
-    # Check that failed photo counts once and zero rows publish no catalogue.
     def test_failed_photo_counts_once_and_zero_rows_publish_no_catalogue(self):
         with self.prepared_root("failed.jpg") as root:
 
-            status, summary, _stderr = self.run_with(root, ManagedPipeline(failed_names=("failed.jpg",)))
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(failed_names=("failed.jpg",)))
 
             self.assertEqual(status, 1)
             self.assertEqual(summary["failure_count"], 1)
             self.assertEqual(summary["catalogue_records"], 0)
             self.assertFalse((Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME).exists())
 
-    # Check that terminal partial batch publishes usable rows and counts only failed sources.
     def test_terminal_partial_batch_publishes_usable_rows_and_counts_only_failed_sources(self):
         with self.prepared_root("good.jpg", "failed.jpg") as root:
 
-            status, summary, _stderr = self.run_with(root, ManagedPipeline(failed_names=("failed.jpg",)))
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(failed_names=("failed.jpg",)))
 
             self.assertEqual(status, 1)
             self.assertEqual(summary["status"], "partial")
@@ -405,31 +441,28 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(summary["failure_count"], 1)
             self.assertTrue((Path(summary["batch_directory"]) / CATALOGUE_FILE_NAME).is_file())
 
-    # Check that changed crop blocks reuse.
     def test_changed_crop_blocks_reuse(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
-            status, summary, _stderr = self.run_with(root, ManagedPipeline(interrupt_name="02.jpg"))
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(interrupt_name="02.jpg"))
             self.assertEqual(status, 130)
             crop = next((Path(summary["batch_directory"]) / BOX_IMAGES_DIRECTORY_NAME).iterdir())
             crop.write_bytes(b"tampered")
 
-            status, summary, stderr = self.run_with(root, ManagedPipeline())
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
 
             self.assertEqual(status, 2)
             self.assertIn("changed after it was committed", stderr)
 
-    # Check that restart finishes a checkpointed catalogue publication without model reuse.
     def test_restart_finishes_a_checkpointed_catalogue_publication_without_model_reuse(self):
         with self.prepared_root("01.jpg") as root:
             pipeline = ManagedPipeline()
 
-            # Handle the stop details promotion step.
             def stop_details_promotion(source: Path, destination: Path, *, existing_message: str):
                 if destination.name == DETAILS_FILE_NAME:
                     raise OSError("details promotion stopped")
                 return rename_new_file(source, destination, existing_message=existing_message)
 
-            first_status, first_summary, _stderr = self.run_with(
+            first_status, first_summary, _stderr = self.run_managed_batch_and_capture_output(
                 root, pipeline,
                 patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details_promotion),),
             )
@@ -440,7 +473,7 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertTrue((batch / PROGRESS_FILE_NAME).is_file())
 
             resumed = ManagedPipeline(port=13000)
-            status, summary, _stderr = self.run_with(root, resumed)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, resumed)
 
             self.assertEqual(status, 1)
             self.assertEqual(resumed.calls, [])
@@ -448,17 +481,15 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertTrue((batch / DETAILS_FILE_NAME).is_file())
             self.assertFalse((batch / PROGRESS_FILE_NAME).exists())
 
-    # Check that interrupt after details rename does not recreate progress.
     def test_interrupt_after_details_rename_does_not_recreate_progress(self):
         with self.prepared_root("01.jpg") as root:
 
-            # Handle the interrupt after rename step.
             def interrupt_after_rename(source: Path, destination: Path, *, existing_message: str):
                 rename_new_file(source, destination, existing_message=existing_message)
                 if destination.name == DETAILS_FILE_NAME:
                     raise KeyboardInterrupt
 
-            status, first_summary, _stderr = self.run_with(
+            status, first_summary, _stderr = self.run_managed_batch_and_capture_output(
                 root, ManagedPipeline(),
                 patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=interrupt_after_rename),),
             )
@@ -469,18 +500,16 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertFalse((batch / PROGRESS_FILE_NAME).exists())
 
             resumed = ManagedPipeline(port=13000)
-            status, summary, _stderr = self.run_with(root, resumed)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, resumed)
             self.assertEqual(status, 0)
             self.assertTrue(summary["already_complete"])
             self.assertEqual(resumed.calls, [])
 
-    # Check that crop publication stop removes only the checkpointed orphan and reprocesses photo.
     def test_crop_publication_stop_removes_only_the_checkpointed_orphan_and_reprocesses_photo(self):
         with self.prepared_root("01.jpg") as root:
             pipeline = ManagedPipeline()
             stopped = False
 
-            # Handle the stop after crop move step.
             def stop_after_crop_move(source: Path, destination: Path, evidence: dict[str, object]):
                 nonlocal stopped
                 publish_reserved_crop(source, destination, evidence)
@@ -488,7 +517,7 @@ class ManagedBatchTest(unittest.TestCase):
                     stopped = True
                     raise OSError("crop publication stopped")
 
-            status, first_summary, _stderr = self.run_with(
+            status, first_summary, _stderr = self.run_managed_batch_and_capture_output(
                 root, pipeline,
                 patches=(
                     patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop_move),
@@ -499,23 +528,21 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(len(list((batch / BOX_IMAGES_DIRECTORY_NAME).iterdir())), 1)
 
             resumed = ManagedPipeline(port=13000)
-            status, summary, _stderr = self.run_with(root, resumed)
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, resumed)
 
             self.assertEqual(status, 1)
             self.assertEqual(resumed.calls, ["01.jpg"])
             self.assertEqual(len(list((batch / BOX_IMAGES_DIRECTORY_NAME).iterdir())), 1)
             self.assertTrue((batch / DETAILS_FILE_NAME).is_file())
 
-    # Check that crop changed at resume cleanup syscall is restored and blocked.
     def test_crop_changed_at_resume_cleanup_syscall_is_restored_and_blocked(self):
         with self.prepared_root("01.jpg") as root:
 
-            # Handle the stop after crop step.
             def stop_after_crop(source: Path, destination: Path, evidence: dict[str, object]):
                 publish_reserved_crop(source, destination, evidence)
                 raise OSError("stop after crop")
 
-            first_status, _summary, _stderr = self.run_with(
+            first_status, _summary, _stderr = self.run_managed_batch_and_capture_output(
                 root, ManagedPipeline(),
                 patches=(patch("uma_bct.managed_batch.publish_reserved_crop", side_effect=stop_after_crop),),
             )
@@ -523,7 +550,6 @@ class ManagedBatchTest(unittest.TestCase):
 
             changed = False
 
-            # Handle the edit after cleanup check step.
             def edit_after_cleanup_check(path: Path, purpose: str):
                 nonlocal changed
                 result = fingerprint_file(path, purpose)
@@ -533,7 +559,7 @@ class ManagedBatchTest(unittest.TestCase):
                 return result
 
             with patch("uma_bct.managed_batch.fingerprint_file", side_effect=edit_after_cleanup_check):
-                status, summary, stderr = self.run_with(root, ManagedPipeline(port=13000))
+                status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(port=13000))
             target = Path(summary["batch_directory"]) / BOX_IMAGES_DIRECTORY_NAME / "01 - Box 01.png"
 
             self.assertTrue(changed)
@@ -541,11 +567,8 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertIn("Unknown interrupted crop publication content", stderr)
             self.assertEqual(target.read_bytes(), b"late unknown cleanup edit")
 
-    # Check that same byte preexisting crop collision is never deleted as an orphan.
     def test_same_byte_preexisting_crop_collision_is_never_deleted_as_an_orphan(self):
-        # Keep the colliding pipeline behavior together.
         class CollidingPipeline(ManagedPipeline):
-            # Process the current input.
             def process(self, path: Path) -> ImageResult:
                 result = super().process(path)
                 batch = self.work_directory.parent.parent
@@ -554,7 +577,7 @@ class ManagedBatchTest(unittest.TestCase):
                 return result
 
         with self.prepared_root("01.jpg") as root:
-            status, summary, stderr = self.run_with(root, CollidingPipeline())
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, CollidingPipeline())
             batch = Path(summary["batch_directory"])
             collision = batch / BOX_IMAGES_DIRECTORY_NAME / "01 - Box 01.png"
 
@@ -564,18 +587,16 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertIsNone(summary["catalogue_output"])
             self.assertEqual(collision.read_bytes(), b"crop for 01.jpg")
 
-            status, failed_summary, stderr = self.run_with(root, ManagedPipeline(port=13000))
+            status, failed_summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(port=13000))
             self.assertEqual(status, 2)
             self.assertIn("Unexpected file", stderr)
             self.assertIsNone(failed_summary["catalogue_output"])
             self.assertEqual(collision.read_bytes(), b"crop for 01.jpg")
 
-    # Check that crop changed at publication syscall is not overwritten.
     def test_crop_changed_at_publication_syscall_is_not_overwritten(self):
         with self.prepared_root("01.jpg") as root:
             reservation_checks = 0
 
-            # Handle the edit after reservation displacement step.
             def edit_after_reservation_displacement(path: Path, purpose: str):
                 nonlocal reservation_checks
                 result = fingerprint_file(path, purpose)
@@ -590,29 +611,27 @@ class ManagedBatchTest(unittest.TestCase):
             with patch(
                 "uma_bct.managed_batch.fingerprint_file", side_effect=edit_after_reservation_displacement
             ):
-                status, summary, stderr = self.run_with(root, ManagedPipeline())
+                status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
             target = Path(summary["batch_directory"]) / BOX_IMAGES_DIRECTORY_NAME / "01 - Box 01.png"
 
             self.assertEqual(status, 2)
             self.assertIn("appeared during publication", stderr)
             self.assertEqual(target.read_bytes(), b"late unknown crop edit")
 
-            status, _summary, stderr = self.run_with(root, ManagedPipeline(port=13000))
+            status, _summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(port=13000))
             self.assertEqual(status, 2)
             self.assertIn("Unknown interrupted crop publication content", stderr)
             self.assertEqual(target.read_bytes(), b"late unknown crop edit")
 
-    # Check that mismatched published catalogue is blocked without overwrite.
     def test_mismatched_published_catalogue_is_blocked_without_overwrite(self):
         with self.prepared_root("01.jpg") as root:
 
-            # Handle the stop details step.
             def stop_details(source: Path, destination: Path, *, existing_message: str):
                 if destination.name == DETAILS_FILE_NAME:
                     raise OSError("stop before details")
                 return rename_new_file(source, destination, existing_message=existing_message)
 
-            _status, first_summary, _stderr = self.run_with(
+            _status, first_summary, _stderr = self.run_managed_batch_and_capture_output(
                 root, ManagedPipeline(),
                 patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_details),),
             )
@@ -620,14 +639,13 @@ class ManagedBatchTest(unittest.TestCase):
             catalogue = batch / CATALOGUE_FILE_NAME
             catalogue.write_bytes(b"unknown replacement")
 
-            status, failed_summary, stderr = self.run_with(root, ManagedPipeline(port=13000))
+            status, failed_summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(port=13000))
 
             self.assertEqual(status, 2)
             self.assertIn("does not match its checkpoint", stderr)
             self.assertIsNone(failed_summary["catalogue_output"])
             self.assertEqual(catalogue.read_bytes(), b"unknown replacement")
 
-    # Check that lock is os backed and malformed stale lock is blocked.
     def test_lock_is_os_backed_and_malformed_stale_lock_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             results = Path(directory).resolve() / "Results"
@@ -648,7 +666,6 @@ class ManagedBatchTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "malformed"):
                 ResultsRootLock(results).acquire()
 
-    # Check that distinct sibling results roots can be locked concurrently.
     def test_distinct_sibling_results_roots_can_be_locked_concurrently(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
@@ -661,7 +678,6 @@ class ManagedBatchTest(unittest.TestCase):
             finally:
                 first.release()
 
-    # Check that case aliases of one macOS results root share the same guard.
     @unittest.skipUnless(sys.platform == "darwin", "macOS filesystem alias fixture")
     def test_case_aliases_of_one_macos_results_root_share_the_same_guard(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -678,7 +694,6 @@ class ManagedBatchTest(unittest.TestCase):
             finally:
                 first.release()
 
-    # Check that replacing a held lock or results root cannot create a second holder.
     @unittest.skipIf(os.name == "nt", "POSIX lock replacement fixture")
     def test_replacing_a_held_lock_or_results_root_cannot_create_a_second_holder(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -720,7 +735,6 @@ class ManagedBatchTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "changed"):
                 first.release()
 
-    # Check that linked results lock is blocked.
     def test_linked_results_lock_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             results = Path(directory).resolve() / "Results"
@@ -735,7 +749,6 @@ class ManagedBatchTest(unittest.TestCase):
             with self.assertRaisesRegex((RuntimeError, ValueError), "symbolic link"):
                 ResultsRootLock(results).acquire()
 
-    # Check that dangling progress link blocks batch selection before model work.
     def test_dangling_progress_link_blocks_batch_selection_before_model_work(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -748,18 +761,15 @@ class ManagedBatchTest(unittest.TestCase):
                 self.skipTest(str(error))
             pipeline = ManagedPipeline()
 
-            status, _summary, stderr = self.run_with(root, pipeline)
+            status, _summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline)
 
             self.assertEqual(status, 2)
             self.assertIn("symbolic link", stderr)
             self.assertEqual(pipeline.calls, [])
             self.assertEqual(len(list((root / "Results").glob("Batch *"))), 1)
 
-    # Check that zero row batch does not finalize over a dangling catalogue link.
     def test_zero_row_batch_does_not_finalize_over_a_dangling_catalogue_link(self):
-        # Keep the dangling catalogue pipeline behavior together.
         class DanglingCataloguePipeline(ManagedPipeline):
-            # Process the current input.
             def process(self, path: Path) -> ImageResult:
                 batch = self.work_directory.parent.parent
                 (batch / CATALOGUE_FILE_NAME).symlink_to(batch / "missing-catalogue.csv")
@@ -768,7 +778,7 @@ class ManagedBatchTest(unittest.TestCase):
         with self.prepared_root("failed.jpg") as root:
             pipeline = DanglingCataloguePipeline(failed_names=("failed.jpg",))
 
-            status, summary, stderr = self.run_with(root, pipeline)
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline)
 
             batch = Path(summary["batch_directory"])
             self.assertEqual(status, 2)
@@ -777,18 +787,15 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertTrue((batch / PROGRESS_FILE_NAME).is_file())
             self.assertFalse((batch / DETAILS_FILE_NAME).exists())
 
-    # Check that zero row batch preserves and blocks an unknown pending catalogue.
     def test_zero_row_batch_preserves_and_blocks_an_unknown_pending_catalogue(self):
-        # Keep the pending catalogue pipeline behavior together.
         class PendingCataloguePipeline(ManagedPipeline):
-            # Process the current input.
             def process(self, path: Path) -> ImageResult:
                 batch = self.work_directory.parent.parent
                 (batch / ".uma-bct-catalogue-pending.csv").write_bytes(b"unknown pending output")
                 return super().process(path)
 
         with self.prepared_root("failed.jpg") as root:
-            status, summary, stderr = self.run_with(
+            status, summary, stderr = self.run_managed_batch_and_capture_output(
                 root, PendingCataloguePipeline(failed_names=("failed.jpg",))
             )
             batch = Path(summary["batch_directory"])
@@ -800,7 +807,6 @@ class ManagedBatchTest(unittest.TestCase):
             )
             self.assertFalse((batch / DETAILS_FILE_NAME).exists())
 
-    # Check that naming is portable readable and batch collisions are numbered.
     def test_naming_is_portable_readable_and_batch_collisions_are_numbered(self):
         self.assertEqual(sanitize_source_name("CON.jpg"), "Photo CON")
         self.assertEqual(sanitize_source_name('  a<>:"/\\|?* b.jpg'), "a- b")
@@ -821,10 +827,9 @@ class ManagedBatchTest(unittest.TestCase):
             second = create_batch_directory(root, moment)
             self.assertEqual(second.name, f"{first.name} (2)")
 
-    # Check that completed batch links survive moving the whole folder.
     def test_completed_batch_links_survive_moving_the_whole_folder(self):
         with self.prepared_root("Shelf Photo.jpg") as root:
-            status, summary, _stderr = self.run_with(root, ManagedPipeline())
+            status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
             self.assertEqual(status, 0)
             original = Path(summary["batch_directory"])
             moved = root / "Moved Completed Batch"

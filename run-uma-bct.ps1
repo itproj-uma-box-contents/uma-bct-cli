@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Keep runtime, input, and result paths anchored to this extracted bundle.
+# The launcher reserves it before any repair or model setup begins.
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FriendlyInputs = Join-Path $Root "Add Photos Here"
 $FriendlyOutputs = Join-Path $Root "Results"
@@ -72,6 +74,8 @@ function Test-DirectoryData([string] $Path) {
 }
 
 function Select-DataDirectories {
+    # Respect an existing legacy layout in place. Mixed data layouts need an
+    # explicit human choice so a resume never points at the wrong photos.
     $FriendlyData = (Test-DirectoryData $FriendlyInputs) -or
         (Test-DirectoryData $FriendlyOutputs)
     $LegacyData = (Test-DirectoryData $LegacyInputs) -or
@@ -90,6 +94,8 @@ function Select-DataDirectories {
 }
 
 function Reserve-Bundle {
+    # The open file handle serializes launches. An existing lock file is
+    # reused only when its saved owner text has the expected shape.
     $Created = $false
     try {
         $script:LaunchLockStream = [IO.File]::Open(
@@ -398,6 +404,8 @@ function Start-OwnedOllama([string] $Executable) {
             }
         }
     }
+    # Use a fresh numeric loopback port and confirm the owned process remains
+    # healthy twice before the CLI sends it any private image.
     foreach ($Attempt in 1..3) {
         try {
             $Port = Get-FreeLoopbackPort
@@ -455,6 +463,8 @@ function Install-Ollama {
         if (-not (Test-OllamaVersion $StagedOllama)) {
             throw "The verified Ollama archive has an unsupported executable version."
         }
+        # Verify both executables before promotion, retaining the prior
+        # runtime until the new directory is in place.
         Remove-Item -LiteralPath $OllamaPrevious -Recurse -Force -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $OllamaDirectory) {
             Move-Item -LiteralPath $OllamaDirectory -Destination $OllamaPrevious
@@ -513,6 +523,8 @@ function Assert-NoReparseAncestor([string] $Path) {
 
 $RunStatus = 2
 try {
+    # Reject redirected workspace paths before creating folders or repairing
+    # the local runtime beside any client photographs.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
         [Runtime.InteropServices.Architecture]::X64) {
@@ -550,6 +562,8 @@ try {
         throw "The supplied dependency lock is missing or redirected."
     }
 
+    # Inherited package and endpoint settings must not redirect the pinned
+    # installer or the launcher-owned Ollama service.
     Get-ChildItem Env: | Where-Object { $_.Name -like "UV_*" } |
         ForEach-Object { Remove-Item "Env:$($_.Name)" }
     foreach ($Variable in @(
@@ -625,6 +639,8 @@ try {
     }
 
     if (-not $PrivateDataPresent) {
+        # Finish verified downloads and dependency installation before the
+        # client is prompted to place private photos in the input folder.
         Assert-NoPrivateData
         Write-Host "Installing the verified application dependencies..."
         & $Uv venv --no-config --clear --managed-python --python 3.12 $AppEnvironment
@@ -683,7 +699,8 @@ try {
             throw "No supported photos were found in $Inputs"
         }
 
-        Write-Host "Transcribing the photos..."
+        # Keep the CLI's progress and final report in this terminal. The
+        # launcher opens Results only after that foreground run returns.
         $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
         $RunStatus = Invoke-OwnedApp $Arguments
@@ -691,17 +708,8 @@ try {
         Pop-Location
     }
 
-    if ($RunStatus -eq 0) {
+    if ($RunStatus -eq 0 -or $RunStatus -eq 1) {
         Open-LocalFolder $Outputs
-        Write-Host "`nFinished. Review the newest Batch folder in $Outputs"
-    } elseif ($RunStatus -eq 1) {
-        Open-LocalFolder $Outputs
-        [Console]::Error.WriteLine(
-            "`nProcessing was incomplete. Review the newest Batch folder in $Outputs."
-        )
-        [Console]::Error.WriteLine(
-            "Its Catalogue may be partial or absent; Run Details records every outcome."
-        )
     }
 } catch [Management.Automation.PipelineStoppedException] {
     [Console]::Error.WriteLine("`nUMA BCT was interrupted.")

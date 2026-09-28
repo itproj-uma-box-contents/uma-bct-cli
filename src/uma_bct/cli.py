@@ -19,6 +19,7 @@ from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECON
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
+from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
@@ -26,14 +27,11 @@ from .run_artifacts import manifest_path
 from .setup_command import run_setup
 
 
-# Keep the safe argument parser behavior together.
 class SafeArgumentParser(argparse.ArgumentParser):
-    # Handle the error step.
     def error(self, message: str) -> None:
         super().error(warning_text(message))
 
 
-# Read the package version.
 def package_version() -> str:
     try:
         return version("uma-bct-cli")
@@ -41,7 +39,6 @@ def package_version() -> str:
         return "0.1.0"
 
 
-# Handle the bounded float step.
 def bounded_float(value: str) -> float:
     try:
         result = float(value)
@@ -52,7 +49,6 @@ def bounded_float(value: str) -> float:
     return result
 
 
-# Handle the bounded percentage step.
 def bounded_percentage(value: str) -> int:
     try:
         result = int(value)
@@ -63,7 +59,6 @@ def bounded_percentage(value: str) -> int:
     return result
 
 
-# Handle the positive float step.
 def positive_float(value: str) -> float:
     try:
         result = float(value)
@@ -74,7 +69,6 @@ def positive_float(value: str) -> float:
     return result
 
 
-# Add the path arguments.
 def add_path_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-i",
@@ -109,7 +103,6 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-# Add the processing arguments.
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
@@ -154,7 +147,6 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(detect_missing_boxes=True)
 
 
-# Build the argument parser.
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = SafeArgumentParser(
         prog="uma-bct",
@@ -168,6 +160,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create another managed batch for a photo set that is already complete",
     )
+    output_format = parser.add_mutually_exclusive_group()
+    output_format.add_argument("--json", action="store_true", help="write the final transcription result as JSON")
+    output_format.add_argument("--human", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
@@ -176,12 +171,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Parse the args.
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_argument_parser().parse_args(argv)
 
 
-# Handle the path metadata step.
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
     try:
         check_path(path, purpose)
@@ -195,7 +188,6 @@ def path_metadata(path: Path, purpose: str) -> os.stat_result:
     return metadata
 
 
-# Check that the path is readable.
 def ensure_readable(path: Path) -> None:
     try:
         with path.open("rb") as image:
@@ -204,7 +196,6 @@ def ensure_readable(path: Path) -> None:
         raise ValueError(f"Input image is not readable: {path}: {error}") from error
 
 
-# Discover the images.
 def discover_images(path: Path) -> list[Path]:
     metadata = path_metadata(path, "Input path")
     if stat.S_ISREG(metadata.st_mode):
@@ -219,6 +210,8 @@ def discover_images(path: Path) -> list[Path]:
     except OSError as error:
         raise ValueError(f"Input directory is not readable: {path}: {error}") from error
 
+    # Sort only after validating each direct child. Stable photo order also
+    # makes managed checkpoints and later human review predictable.
     images: list[Path] = []
     for candidate in candidates:
         if candidate.suffix.casefold() not in IMAGE_EXTENSIONS:
@@ -230,7 +223,6 @@ def discover_images(path: Path) -> list[Path]:
     return sorted(images, key=lambda item: (item.name.casefold(), item.name))
 
 
-# Validate the output target.
 def validate_output_target(path: Path, *, directory: bool, purpose: str) -> None:
     check_path(path, purpose)
 
@@ -274,17 +266,20 @@ def validate_output_layout(catalogue: str | Path, manifest: str | Path, crop_roo
             raise ValueError(f"review-crop root must not be inside the {purpose} path")
 
 
-# Handle the option was supplied step.
 def option_was_supplied(arguments: list[str], names: tuple[str, ...]) -> bool:
-    return any(
-        argument in names
-        or any(argument.startswith(f"{name}=") for name in names if name.startswith("--"))
-        or any(argument.startswith(name) and len(argument) > len(name) for name in names if len(name) == 2)
-        for argument in arguments
-    )
+    """Check raw arguments because argparse cannot tell an explicit default from an omitted option."""
+
+    for argument in arguments:
+        if argument in names:
+            return True
+        for name in names:
+            if name.startswith("--") and argument.startswith(f"{name}="):
+                return True
+            if len(name) == 2 and argument.startswith(name) and len(argument) > len(name):
+                return True
+    return False
 
 
-# Validate the managed layout.
 def validate_managed_layout(input_path: Path, results_directory: Path) -> None:
     input_absolute = os.path.realpath(input_path)
     results_absolute = os.path.realpath(results_directory)
@@ -296,7 +291,6 @@ def validate_managed_layout(input_path: Path, results_directory: Path) -> None:
         raise ValueError("input photos and managed Results must be in separate, non-nested directories")
 
 
-# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
@@ -309,11 +303,15 @@ def main(argv: list[str] | None = None) -> int:
             setup_arguments["input_directory"] = arguments.path_to_inputs
         if arguments.results_directory is not None:
             setup_arguments["results_directory"] = arguments.results_directory
-        return run_setup(**setup_arguments)
+        # Keep the computer active while the local model is checked or downloaded.
+        with keep_awake():
+            return run_setup(**setup_arguments)
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
     if arguments.results_directory is not None:
+        # Managed batches own their catalogue and crop paths. Mixing direct
+        # output flags with that layout would make resume ambiguous.
         conflicting = (
             option_was_supplied(raw_arguments, ("-o", "--path-to-outputs", "--path-to-output"))
             or option_was_supplied(raw_arguments, ("-b", "--path-to-box-images", "--work-dir"))
@@ -329,7 +327,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
         if not images:
             parser.error(f"no supported images found in {arguments.path_to_inputs}")
-        return run_managed_batch(arguments, images, arguments.results_directory)
+        # Resume and publication are part of the same protected CLI job.
+        with keep_awake():
+            return run_managed_batch(arguments, images, arguments.results_directory)
 
     output_path = arguments.path_to_outputs
     if output_path.suffix.casefold() != ".csv":
@@ -352,10 +352,11 @@ def main(argv: list[str] | None = None) -> int:
     existing = next((path for path in (output_path, run_manifest) if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
-    return run_batch(
-        arguments,
-        images,
-        output_path,
-        run_manifest,
-        preserve_existing_manifest_on_failure=bool(arguments.force and existing),
-    )
+    with keep_awake():
+        return run_batch(
+            arguments,
+            images,
+            output_path,
+            run_manifest,
+            preserve_existing_manifest_on_failure=bool(arguments.force and existing),
+        )

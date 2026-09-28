@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   UV_VERSION: "0.12.9"
 
@@ -15,31 +19,59 @@ jobs:
   checks:
     name: Tests and package
     runs-on: ubuntu-24.04
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs_only }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.event.after }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            docs_only="$(bash scripts/classify_ci_changes.sh pull_request "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+          else
+            docs_only="$(bash scripts/classify_ci_changes.sh push "$PUSH_BEFORE_SHA" "$PUSH_AFTER_SHA")"
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --locked --dev --python 3.12
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: uv python install 3.12
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: uv sync --locked --dev --python 3.12
       - name: Check generated client dependencies
+        if: steps.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           uv export --quiet --locked --no-dev --group client-bootstrap --no-emit-project --no-header --format requirements-txt --output-file "$RUNNER_TEMP/client-constraints.txt"
           tail -n +3 client-constraints.txt > "$RUNNER_TEMP/committed-constraints.txt"
           diff -u "$RUNNER_TEMP/committed-constraints.txt" "$RUNNER_TEMP/client-constraints.txt"
-      - run: uv run ruff check .
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: uv run ruff check .
       - name: Run compact model-free suite
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           uv run coverage run -m unittest discover -s tests -v
           uv run coverage report
       - name: Build and inspect deliverables
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           uv build --no-build-isolation
           uv run python scripts/build_client_bundle.py dist
           uv run python scripts/check_release_artifacts.py dist
       - name: Smoke-test wheel and source distribution
+        if: steps.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           root="$PWD"
@@ -57,8 +89,10 @@ jobs:
 
   platform:
     name: Platform tests (${{ matrix.name }})
+    needs: checks
+    if: needs.checks.outputs.docs_only != 'true'
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         include:
           - name: Windows x64
@@ -120,6 +154,8 @@ jobs:
 
   docker:
     name: Docker smoke (${{ matrix.name }})
+    needs: checks
+    if: needs.checks.outputs.docs_only != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -129,7 +165,6 @@ jobs:
           - name: Linux arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    needs: checks
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - run: docker compose config --quiet

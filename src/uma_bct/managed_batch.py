@@ -35,8 +35,9 @@ from .constants import IMAGE_EXTENSIONS
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
-from .pipeline import ImageResult, warning_text
+from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
+from .terminal import TerminalProgress, print_run_summary
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
@@ -59,7 +60,6 @@ class ManagedBatchError(RuntimeError):
 class ManagedBatchSelectionError(ManagedBatchError):
     """An error tied to one unfinished batch selected from the results root."""
 
-    # Store the state this object needs.
     def __init__(self, batch_directory: Path, message: str) -> None:
         super().__init__(message)
         self.batch_directory = batch_directory
@@ -68,13 +68,11 @@ class ManagedBatchSelectionError(ManagedBatchError):
 class ManagedInterruption(KeyboardInterrupt):
     """An operating-system interruption with the intended process exit code."""
 
-    # Store the state this object needs.
     def __init__(self, exit_code: int) -> None:
         super().__init__(exit_code)
         self.exit_code = exit_code
 
 
-# Lock the descriptor.
 def lock_descriptor(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
@@ -93,7 +91,6 @@ def lock_descriptor(descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-# Unlock the descriptor.
 def unlock_descriptor(descriptor: int) -> None:
     if os.name == "nt":
         import msvcrt
@@ -106,7 +103,6 @@ def unlock_descriptor(descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
-# Read the application version.
 def application_version() -> str:
     try:
         return version("uma-bct-cli")
@@ -114,7 +110,6 @@ def application_version() -> str:
         return "0.1.0"
 
 
-# Build the canonical lock name.
 def canonical_lock_name(path: Path) -> str:
     physical = os.path.realpath(path)
     if sys.platform == "darwin":
@@ -139,8 +134,9 @@ def fingerprint_file(path: Path, purpose: str) -> dict[str, int | str]:
     return {"size": byte_count, "sha256": digest.hexdigest()}
 
 
-# Capture the input snapshot.
 def input_snapshot(images: list[Path], input_path: Path) -> list[dict[str, Any]]:
+    """Remember photo order and bytes so a resumed run uses the same evidence."""
+
     root_is_directory = input_path.is_dir()
     snapshot: list[dict[str, Any]] = []
     for image in images:
@@ -186,7 +182,6 @@ def rediscover_input_snapshot(input_path: Path) -> list[dict[str, Any]]:
     return input_snapshot(images, input_path)
 
 
-# Build the snapshot signature.
 def snapshot_signature(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {"relative_name": item["relative_name"], "size": item["size"], "sha256": item["sha256"]}
@@ -194,7 +189,6 @@ def snapshot_signature(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-# Describe the snapshot change.
 def describe_snapshot_change(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> str:
     expected_by_name = {item["relative_name"]: item for item in expected}
     actual_by_name = {item["relative_name"]: item for item in actual}
@@ -220,7 +214,6 @@ def describe_snapshot_change(expected: list[dict[str, Any]], actual: list[dict[s
     return "; ".join(details) or "the input snapshot changed"
 
 
-# Build the semantic configuration.
 def semantic_configuration(arguments: argparse.Namespace, request_timeout: float | None) -> dict[str, Any]:
     return {
         "detector": arguments.detector,
@@ -228,11 +221,11 @@ def semantic_configuration(arguments: argparse.Namespace, request_timeout: float
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
+        "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout,
     }
 
 
-# Trim text without splitting a UTF-8 character.
 def truncate_utf8(value: str, maximum_bytes: int) -> str:
     encoded = value.encode("utf-8")
     if len(encoded) <= maximum_bytes:
@@ -264,9 +257,10 @@ def sanitize_source_name(filename: str) -> str:
     return truncate_utf8(cleaned, 150) or "Photo"
 
 
-# Allocate the source names.
 def allocate_source_names(snapshot: list[dict[str, Any]]) -> None:
     used: set[str] = set()
+    # Names can collide after Windows-safe cleanup or case folding. Number
+    # them before processing so published crop links remain stable on resume.
     for item in snapshot:
         base = sanitize_source_name(item["original_filename"])
         candidate = base
@@ -279,12 +273,10 @@ def allocate_source_names(snapshot: list[dict[str, Any]]) -> None:
         item["readable_source_name"] = candidate
 
 
-# Build the batch name.
 def batch_name(moment: datetime | None = None) -> str:
     return (moment or datetime.now().astimezone()).strftime("Batch %Y-%m-%d %H-%M-%S")
 
 
-# Create the batch directory.
 def create_batch_directory(results_root: Path, moment: datetime | None = None) -> Path:
     base = batch_name(moment)
     suffix = 1
@@ -305,7 +297,6 @@ def create_batch_directory(results_root: Path, moment: datetime | None = None) -
         return destination
 
 
-# Read the JSON file.
 def read_json_file(path: Path, purpose: str) -> dict[str, Any]:
     try:
         with open_stable_file(path, purpose, error_type=ManagedBatchError) as (source, metadata):
@@ -332,7 +323,6 @@ class ResultsRootLock:
     a later process may recover it.
     """
 
-    # Store the state this object needs.
     def __init__(self, results_root: Path) -> None:
         self.results_root = results_root
         self.path = results_root / LOCK_FILE_NAME
@@ -342,7 +332,6 @@ class ResultsRootLock:
         self._guard_identity: tuple[Path, int, int] | None = None
         self._guard_name: str | None = None
 
-    # Verify the lock.
     def verify_lock(self) -> None:
         identity = self._identity
         if identity is None:
@@ -359,8 +348,9 @@ class ResultsRootLock:
         ):
             raise ManagedBatchError(f"Results lock changed while it was held: {self.path}")
 
-    # Handle the acquire guard step.
     def acquire_guard(self) -> None:
+        # The sibling guard serializes recovery even if someone replaces the
+        # results directory or its visible lock while a run is active.
         self.results_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         check_path(self.results_root.parent, "Results parent directory")
         normalized = canonical_lock_name(self.results_root)
@@ -392,7 +382,6 @@ class ResultsRootLock:
         self._guard_name = normalized
         self.results_root.mkdir(mode=0o700, exist_ok=True)
 
-    # Handle the release guard step.
     def release_guard(self) -> None:
         descriptor = self._guard_descriptor
         identity = self._guard_identity
@@ -422,7 +411,6 @@ class ResultsRootLock:
         if error is not None:
             raise ManagedBatchError(str(error)) from error
 
-    # Handle the acquire step.
     def acquire(self) -> None:
         try:
             self.acquire_guard()
@@ -436,7 +424,6 @@ class ResultsRootLock:
             self.release_guard()
             raise
 
-    # Write the lock.
     def write_lock(self) -> None:
         check_path(self.results_root, "Results directory")
         self.results_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -445,6 +432,8 @@ class ResultsRootLock:
         if not stat.S_ISDIR(root_metadata.st_mode):
             raise ManagedBatchError(f"Results directory must be a directory: {self.results_root}")
 
+        # An old lock file is kept as an audit record. Reuse it only after the
+        # OS lock is held and its inode and contents prove it is still ours.
         check_path(self.path, "Results lock")
         flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor: int | None = None
@@ -499,7 +488,6 @@ class ResultsRootLock:
                     pass
                 os.close(descriptor)
 
-    # Handle the release step.
     def release(self) -> None:
         descriptor = self._descriptor
         self._descriptor = None
@@ -522,7 +510,6 @@ class ResultsRootLock:
                 self.release_guard()
 
 
-# Handle the managed batches step.
 def managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, dict[str, Any]]]]:
     unfinished: list[tuple[Path, dict[str, Any]]] = []
     completed: list[tuple[Path, dict[str, Any]]] = []
@@ -552,7 +539,6 @@ def managed_batches(results_root: Path) -> tuple[list[tuple[Path, dict[str, Any]
     return unfinished, completed
 
 
-# Handle the initial progress step.
 def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
     snapshot: list[dict[str, Any]], request_timeout: float | None) -> dict[str, Any]:
     inputs = []
@@ -576,7 +562,6 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
     }
 
 
-# Validate the progress shape.
 def validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> None:
     if progress.get("schema_version") != MANAGED_SCHEMA_VERSION:
         raise ManagedBatchError(f"Unsupported Run Progress schema in {batch_directory}")
@@ -594,32 +579,30 @@ def validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> 
         raise ManagedBatchError(f"Run Progress contains an invalid publication phase: {batch_directory}")
 
 
-# Capture the same snapshot.
 def same_snapshot(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> bool:
     return expected == snapshot_signature(actual)
 
 
-# Handle the latest completed step.
 def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
     if not completed:
         return None
 
-    # Build the ordering key.
-    def order(item: tuple[Path, dict[str, Any]]) -> tuple[str, str, int]:
+    def completed_batch_order_key(item: tuple[Path, dict[str, Any]]) -> tuple[str, str, int]:
         match = re.fullmatch(r"(Batch \d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: \((\d+)\))?", item[0].name)
         base = match.group(1) if match else item[0].name
         collision = int(match.group(2) or 1) if match else 1
         return str(item[1].get("created_at", "")), base, collision
 
-    return max(completed, key=order)
+    return max(completed, key=completed_batch_order_key)
 
 
-# Select the batch.
 def select_batch(arguments: argparse.Namespace, results_root: Path,
     snapshot: list[dict[str, Any]], request_timeout: float | None,
     ) -> tuple[Path | None, dict[str, Any] | None, bool, tuple[Path, dict[str, Any]] | None]:
 
     unfinished, completed = managed_batches(results_root)
+    # An unfinished batch has priority. Its inputs, options, and application
+    # version must still match before any saved photo can be reused.
     if unfinished:
         batch_directory, progress = unfinished[0]
         validate_progress_shape(progress, batch_directory)
@@ -649,6 +632,8 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         progress["input_directory"] = str(arguments.path_to_inputs)
         return batch_directory, progress, True, None
 
+    # An identical completed set is reported as already done unless the
+    # operator explicitly asked for a separate new batch.
     latest = latest_completed(completed)
     if latest is not None and same_snapshot(latest[1].get("input_snapshot", []), snapshot) and not arguments.reprocess:
         return None, None, False, latest
@@ -668,7 +653,6 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
     return batch_directory, progress, False, None
 
 
-# Build the safe relative batch path.
 def safe_relative_batch_path(batch_directory: Path, value: str, purpose: str) -> Path:
     relative = PurePosixPath(value)
     if relative.is_absolute() or ".." in relative.parts or not relative.parts or "\\" in value or ":" in value:
@@ -676,7 +660,6 @@ def safe_relative_batch_path(batch_directory: Path, value: str, purpose: str) ->
     return batch_directory.joinpath(*relative.parts)
 
 
-# Build the crop evidence path.
 def crop_evidence_path(batch_directory: Path, evidence: dict[str, Any]) -> Path:
     relative = evidence.get("relative_path")
     if not isinstance(relative, str):
@@ -687,7 +670,6 @@ def crop_evidence_path(batch_directory: Path, evidence: dict[str, Any]) -> Path:
     return safe_relative_batch_path(batch_directory, relative, "Crop evidence")
 
 
-# Validate the crop evidence.
 def validate_crop_evidence(batch_directory: Path, evidence: dict[str, Any]) -> None:
     path = crop_evidence_path(batch_directory, evidence)
     actual = fingerprint_file(path, "Crop evidence")
@@ -697,7 +679,6 @@ def validate_crop_evidence(batch_directory: Path, evidence: dict[str, Any]) -> N
         raise ManagedBatchError(f"Crop evidence changed after it was committed: {path}")
 
 
-# Handle the active crop digests step.
 def active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     crop = {"size": evidence.get("size"), "sha256": evidence.get("sha256")}
     reservation = {
@@ -707,12 +688,13 @@ def active_crop_digests(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict[
     return crop, reservation
 
 
-# Open the cleanup descriptor.
 def open_cleanup_descriptor(path: Path) -> int:
     if os.name != "nt":
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         return os.open(path, flags)
 
+    # Windows needs a handle that permits a concurrent rename or deletion so
+    # cleanup can still compare the opened file after its path is removed.
     import ctypes
     import msvcrt
 
@@ -745,10 +727,11 @@ def open_cleanup_descriptor(path: Path) -> int:
         raise
 
 
-# Dispose of or restore the quarantined entry safely.
 def dispose_or_restore_quarantine(
     quarantine: Path, target: Path, allowed: tuple[dict[str, Any], ...], purpose: str
 ) -> None:
+    """Remove only recorded bytes, restoring a file changed during cleanup."""
+
     fingerprint_file(quarantine, purpose)
     descriptor: int | None = None
     try:
@@ -768,6 +751,8 @@ def dispose_or_restore_quarantine(
         current = quarantine.lstat()
         if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
             raise ManagedBatchError(f"{purpose} changed before cleanup: {quarantine}")
+        # The open descriptor survives unlink. Read it again to catch a write
+        # racing the deletion and restore those new bytes for human recovery.
         quarantine.unlink()
         os.lseek(descriptor, 0, os.SEEK_SET)
         after_content = b"".join(iter(lambda: os.read(descriptor, 1024 * 1024), b""))
@@ -787,7 +772,6 @@ def dispose_or_restore_quarantine(
             os.close(descriptor)
 
 
-# Restore the unlinked crop content.
 def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes, purpose: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(quarantine, flags, 0o600)
@@ -808,7 +792,6 @@ def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes
     raise ManagedBatchError(f"Changed {purpose.lower()} content was retained for recovery: {quarantine}")
 
 
-# Quarantine the active file.
 def quarantine_active_file(
     path: Path,
     quarantine: Path,
@@ -846,7 +829,6 @@ def remove_interrupted_crop(batch_directory: Path, path: Path, evidence: dict[st
     quarantine_active_file(path, cleanup, path, allowed, "Interrupted crop publication")
 
 
-# Recover the displaced crop target.
 def recover_displaced_crop_target(batch_directory: Path, target: Path, evidence: dict[str, Any]) -> None:
     relative = evidence.get("displaced_path")
     if not isinstance(relative, str):
@@ -865,7 +847,6 @@ def recover_displaced_crop_target(batch_directory: Path, target: Path, evidence:
     quarantine_active_file(displaced, cleanup, target, (reservation,), "Displaced crop reservation")
 
 
-# Remove the working directory.
 def remove_working_directory(batch_directory: Path, relative_value: str | None) -> None:
     if not relative_value:
         return
@@ -882,7 +863,6 @@ def remove_working_directory(batch_directory: Path, relative_value: str | None) 
     shutil.rmtree(working)
 
 
-# Validate the batch entries.
 def validate_batch_entries(batch_directory: Path) -> None:
     allowed = {
         PROGRESS_FILE_NAME,
@@ -897,8 +877,9 @@ def validate_batch_entries(batch_directory: Path) -> None:
         raise ManagedBatchError(f"Unexpected file in managed batch directory: {unexpected[0]}")
 
 
-# Prepare an interrupted batch to resume safely.
 def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
+    """Keep proven photo commits and reset only the photo active at interruption."""
+
     effective_phase = (
         progress.get("interrupted_phase") if progress.get("phase") == "interrupted" else progress.get("phase")
     )
@@ -917,6 +898,8 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
 
     validate_batch_entries(batch_directory)
 
+    # A terminal photo is trusted only with matching crop hashes and result
+    # paths. Its work directory can then be removed without touching evidence.
     reused = 0
     committed_paths: set[Path] = set()
     for item in progress["inputs"]:
@@ -941,6 +924,8 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
             item.pop("working_directory", None)
             reused += 1
             continue
+        # A crop move may have stopped halfway through. Restore or remove only
+        # files named by this attempt's recorded evidence, then retry the photo.
         if state == "active":
             for evidence in item.get("crop_evidence", []):
                 path = crop_evidence_path(batch_directory, evidence)
@@ -962,7 +947,6 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     return reused
 
 
-# Capture the endpoint identity.
 def endpoint_identity(host: str) -> dict[str, str]:
     endpoint = urlsplit(host)
     hostname = endpoint.hostname or ""
@@ -974,7 +958,6 @@ def endpoint_identity(host: str) -> dict[str, str]:
     return {"class": "numeric_loopback" if loopback else "remote", "origin": origin}
 
 
-# Validate the model resume.
 def validate_model_resume(progress: dict[str, Any], current: dict[str, str], batch_directory: Path) -> None:
     previous = progress.get("model", {})
     if current.get("model") != previous.get("model"):
@@ -987,6 +970,8 @@ def validate_model_resume(progress: dict[str, Any], current: dict[str, str], bat
     current_host = current.get("ollama_host")
     if previous_host and not current_host:
         raise ManagedBatchError(f"Cannot resume {batch_directory}: the Ollama endpoint identity is missing.")
+    # A launcher gets a fresh loopback port each start, but switching between
+    # local and remote inference or changing remote origin changes privacy.
     if previous_host and current_host:
         previous_endpoint = endpoint_identity(previous_host)
         current_endpoint = endpoint_identity(current_host)
@@ -996,7 +981,6 @@ def validate_model_resume(progress: dict[str, Any], current: dict[str, str], bat
             raise ManagedBatchError(f"Cannot resume {batch_directory}: the remote Ollama origin changed.")
 
 
-# Build the managed pipeline.
 def build_managed_pipeline(
     arguments: argparse.Namespace, batch_directory: Path, request_timeout: float | None
 ) -> tuple[Any, dict[str, str]]:
@@ -1018,7 +1002,6 @@ def build_managed_pipeline(
     return pipeline, metadata
 
 
-# Serialize the result.
 def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for record in result.records:
@@ -1055,7 +1038,6 @@ def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, An
     }
 
 
-# Rebuild the result from saved data.
 def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageResult:
     image_value = value["input_image"]
     image = InputImage(Path(image_value["file_path"]), int(image_value["width"]), int(image_value["height"]))
@@ -1098,12 +1080,10 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
     )
 
 
-# Check whether full photo.
 def is_full_photo(record: BoxResult) -> bool:
     return record.box.image_file_path.name == "full_image.png" or record.box.box_id.endswith(":full-image")
 
 
-# Check whether a path stays inside its directory.
 def within_directory(path: Path, directory: Path) -> bool:
     try:
         return os.path.commonpath((str(path.absolute()), str(directory.absolute()))) == str(directory.absolute())
@@ -1111,7 +1091,6 @@ def within_directory(path: Path, directory: Path) -> bool:
         return False
 
 
-# Prepare the crop publication.
 def prepare_crop_publication(
     result: ImageResult, item: dict[str, Any], batch_directory: Path, working_directory: Path
 ) -> tuple[ImageResult, list[dict[str, Any]], list[tuple[Path, Path, dict[str, Any]]]]:
@@ -1124,6 +1103,8 @@ def prepare_crop_publication(
     source_label = item["readable_source_name"]
     box_images = batch_directory / BOX_IMAGES_DIRECTORY_NAME
 
+    # Several records can share one full-photo crop. Publish that source once
+    # and point each record at the same verified review image.
     for record in result.records:
         source = record.box.image_file_path
         if source not in published_by_source:
@@ -1193,7 +1174,6 @@ def reserve_crop_target(source: Path, target: Path, evidence: dict[str, Any]) ->
         raise ManagedBatchError(f"Crop-name reservation changed before publication: {target}")
 
 
-# Publish the reserved crop.
 def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) -> None:
     displaced = safe_relative_batch_path(target.parent.parent, evidence["displaced_path"], "Displaced reservation")
     check_path(displaced, "Displaced crop-name reservation")
@@ -1219,12 +1199,10 @@ def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) 
     displaced.unlink()
 
 
-# Write the progress.
 def write_progress(batch_directory: Path, progress: dict[str, Any]) -> None:
     write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress)
 
 
-# Check whether the path entry exists.
 def path_entry_exists(path: Path) -> bool:
     try:
         path.lstat()
@@ -1241,30 +1219,25 @@ def can_write_progress(batch_directory: Path) -> bool:
     return not path_entry_exists(batch_directory / DETAILS_FILE_NAME)
 
 
-# Handle the current snapshot entry step.
 def current_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
     fingerprint = fingerprint_file(Path(item["source_path"]), "Input image")
     return {"relative_name": item["relative_name"], **fingerprint}
 
 
-# Handle the expected snapshot entry step.
 def expected_snapshot_entry(item: dict[str, Any]) -> dict[str, Any]:
     return {"relative_name": item["relative_name"], "size": item["size"], "sha256": item["sha256"]}
 
 
-# Verify the source unchanged.
 def verify_source_unchanged(item: dict[str, Any]) -> None:
     if current_snapshot_entry(item) != expected_snapshot_entry(item):
         raise ManagedBatchError(f"Input image changed during processing: {item['source_path']}")
 
 
-# Handle the attempt working directory step.
 def attempt_working_directory(batch_directory: Path, image_index: int, attempt: int) -> tuple[str, Path]:
     relative = f"{WORKING_DIRECTORY_NAME}/image-{image_index + 1:04d}-attempt-{attempt:03d}-{uuid.uuid4().hex[:8]}"
     return relative, batch_directory.joinpath(*PurePosixPath(relative).parts)
 
 
-# Cleanup the committed work.
 def cleanup_committed_work(progress: dict[str, Any], batch_directory: Path, item: dict[str, Any]) -> None:
     remove_working_directory(batch_directory, item.get("working_directory"))
     if "working_directory" in item:
@@ -1272,14 +1245,16 @@ def cleanup_committed_work(progress: dict[str, Any], batch_directory: Path, item
         write_progress(batch_directory, progress)
 
 
-# Process the pending images.
 def process_pending_images(
     arguments: argparse.Namespace,
     images: list[Path],
     progress: dict[str, Any],
     batch_directory: Path,
     pipeline: Any,
+    reporter: TerminalProgress,
 ) -> int:
+    """Checkpoint each photo before and after publishing its review crops."""
+
     processed = 0
     for index, (image_path, item) in enumerate(zip(images, progress["inputs"], strict=True)):
         if item["state"] in TERMINAL_IMAGE_STATES:
@@ -1296,7 +1271,7 @@ def process_pending_images(
         working_directory.mkdir(mode=0o700, parents=True)
         pipeline.work_directory = working_directory
         verify_source_unchanged(item)
-        print(f"Processing {ascii(str(image_path))}", file=sys.stderr)
+        reporter.photo_started(index + 1, image_path)
         try:
             result = pipeline.process(image_path)
         except Exception as error:
@@ -1306,10 +1281,13 @@ def process_pending_images(
             write_progress(batch_directory, progress)
             cleanup_committed_work(progress, batch_directory, item)
             print(f"Failed {ascii(str(image_path))}: {message}", file=sys.stderr)
+            reporter.photo_finished(index + 1, "failed", 0)
             processed += 1
             continue
 
         verify_source_unchanged(item)
+        # Record intended crop names and hashes before moving any file. On
+        # restart, that evidence decides which interrupted moves are ours.
         updated, evidence, moves = prepare_crop_publication(result, item, batch_directory, working_directory)
         item["result"] = serialize_result(updated, batch_directory)
         item["crop_evidence"] = evidence
@@ -1325,6 +1303,8 @@ def process_pending_images(
             write_progress(batch_directory, progress)
         for crop in evidence:
             validate_crop_evidence(batch_directory, crop)
+        # The photo becomes terminal only after every published crop matches
+        # its recorded digest; earlier checkpoints remain recoverable work.
         item["state"] = updated.status
         write_progress(batch_directory, progress)
         item["crop_evidence"] = [
@@ -1334,11 +1314,11 @@ def process_pending_images(
         cleanup_committed_work(progress, batch_directory, item)
         for warning in updated.warnings:
             print(f"Warning for {ascii(str(image_path))}: {warning_text(warning)}", file=sys.stderr)
+        reporter.photo_finished(index + 1, updated.status, len(updated.records))
         processed += 1
     return processed
 
 
-# Handle the all results step.
 def all_results(progress: dict[str, Any], batch_directory: Path) -> list[ImageResult]:
     results: list[ImageResult] = []
     for item in progress["inputs"]:
@@ -1348,8 +1328,9 @@ def all_results(progress: dict[str, Any], batch_directory: Path) -> list[ImageRe
     return results
 
 
-# Validate the sources and crops.
 def validate_sources_and_crops(progress: dict[str, Any], batch_directory: Path, snapshot: list[dict[str, Any]]) -> None:
+    """Recheck every source and committed crop before exposing a catalogue."""
+
     validate_batch_entries(batch_directory)
     if progress.get("input_snapshot") != snapshot_signature(snapshot):
         raise ManagedBatchError(f"Input photos changed before publication for {batch_directory}")
@@ -1412,24 +1393,26 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         raise ManagedBatchError(f"Published catalogue changed after completion: {catalogue}")
 
 
-# Calculate the file digest.
 def file_digest(path: Path, purpose: str) -> str:
     return str(fingerprint_file(path, purpose)["sha256"])
 
 
-# Stage the catalogue.
 def stage_catalogue(
     arguments: argparse.Namespace,
     progress: dict[str, Any],
     batch_directory: Path,
     results: list[ImageResult],
 ) -> tuple[Path, int, str]:
+    """Save the CSV and its digest in progress before its public name appears."""
+
     pending = batch_directory / PENDING_CATALOGUE_NAME
     publication = progress.setdefault("publication", {})
     publication.update(phase="staging", pending_csv=PENDING_CATALOGUE_NAME)
     progress["phase"] = "staging"
     write_progress(batch_directory, progress)
 
+    # A restart may find a staged CSV. Rebuild from committed records and
+    # compare bytes rather than assuming the leftover file is trustworthy.
     if path_entry_exists(pending):
         check_path(pending, "Pending catalogue")
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}.csv"
@@ -1439,6 +1422,7 @@ def stage_catalogue(
                 verification,
                 minimum_confidence=arguments.min_transcription_confidence,
                 replace_existing=False,
+                detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
                 trusted_crop_links=True,
             )
             if file_digest(verification, "Expected pending catalogue") != file_digest(pending, "Pending catalogue"):
@@ -1454,6 +1438,7 @@ def stage_catalogue(
             pending,
             minimum_confidence=arguments.min_transcription_confidence,
             replace_existing=False,
+            detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
             trusted_crop_links=True,
         )
     digest = file_digest(pending, "Pending catalogue")
@@ -1463,8 +1448,9 @@ def stage_catalogue(
     return pending, len(records), digest
 
 
-# Publish the recorded catalogue.
 def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) -> tuple[int, str]:
+    """Complete or verify the exact CSV publication saved in the checkpoint."""
+
     publication = progress.get("publication", {})
     pending_name = publication.get("pending_csv")
     digest = publication.get("sha256")
@@ -1491,14 +1477,12 @@ def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) 
     return record_count, digest
 
 
-# Count the failure.
 def failure_count(progress: dict[str, Any]) -> int:
     failed_photos = sum(item.get("state") == "failed" for item in progress.get("inputs", []))
     stage_failures = progress.get("run_failures", [])
     return failed_photos + (len(stage_failures) if isinstance(stage_failures, list) else 0)
 
 
-# Count the committed record.
 def committed_record_count(value: dict[str, Any]) -> int:
     return sum(
         len(item.get("result", {}).get("records", []))
@@ -1509,7 +1493,6 @@ def committed_record_count(value: dict[str, Any]) -> int:
     )
 
 
-# Choose the final status.
 def final_status(progress: dict[str, Any], record_count: int) -> str:
     states = [item["state"] for item in progress["inputs"]]
     imperfect = any(state != "complete" for state in states) or bool(progress.get("run_failures"))
@@ -1518,7 +1501,6 @@ def final_status(progress: dict[str, Any], record_count: int) -> str:
     return "partial" if imperfect else "complete"
 
 
-# Handle the details payload step.
 def details_payload(
     arguments: argparse.Namespace,
     progress: dict[str, Any],
@@ -1574,7 +1556,6 @@ def details_payload(
     }
 
 
-# Promote the details.
 def promote_details(batch_directory: Path, details: dict[str, Any]) -> None:
     progress_path = batch_directory / PROGRESS_FILE_NAME
     details_path = batch_directory / DETAILS_FILE_NAME
@@ -1584,10 +1565,11 @@ def promote_details(batch_directory: Path, details: dict[str, Any]) -> None:
     rename_new_file(progress_path, details_path, existing_message=f"Run Details already exists: {details_path}")
 
 
-# Finalize the batch.
 def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
     batch_directory: Path) -> dict[str, Any]:
 
+    # Publication begins only after every photo has a terminal outcome and
+    # the original inputs plus their review crops still match the checkpoint.
     if any(item["state"] not in TERMINAL_IMAGE_STATES for item in progress["inputs"]):
         raise ManagedBatchError(f"Cannot publish {batch_directory} while photos remain unattempted.")
     current_snapshot = rediscover_input_snapshot(Path(progress["input_directory"]))
@@ -1615,6 +1597,8 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
         progress["catalogue_output"] = None
         progress["catalogue_records"] = 0
 
+    # Renaming progress to details is the final authority change. Until then
+    # the run remains resumable with its publication phase recorded on disk.
     progress["phase"] = "finalizing"
     write_progress(batch_directory, progress)
     details = details_payload(arguments, progress, batch_directory, record_count)
@@ -1629,7 +1613,6 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
     return details
 
 
-# Append the stage failure.
 def append_stage_failure(progress: dict[str, Any], stage: str, error: Exception | str) -> None:
     failure = {"stage": stage, "error": warning_text(error)}
     failures = progress.setdefault("run_failures", [])
@@ -1637,7 +1620,6 @@ def append_stage_failure(progress: dict[str, Any], stage: str, error: Exception 
         failures.append(failure)
 
 
-# Build the managed public summary.
 def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | None, resumed: bool,
     images_reused: int, images_processed_this_start: int, status: str | None = None,
     trust_catalogue_output: bool = True) -> dict[str, Any]:
@@ -1655,6 +1637,8 @@ def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | Non
     manifest = value.get("run_manifest")
     if batch_directory:
         manifest = str(details_path if details_path and path_entry_exists(details_path) else progress_path)
+    # A failure before publication can leave a checkpoint mentioning a target
+    # path. Report it as published only when the caller has verified it.
     catalogue_output = value.get("catalogue_output") if trust_catalogue_output else None
     return {
         "schema_version": MANAGED_SCHEMA_VERSION,
@@ -1677,12 +1661,10 @@ def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | Non
     }
 
 
-# Handle the managed interruption handlers step.
 @contextmanager
 def managed_interruption_handlers() -> Iterator[None]:
     watched: list[tuple[signal.Signals, Any]] = []
 
-    # Handle the interrupted step.
     def interrupted(signum: int, frame: Any) -> None:
         if signum == getattr(signal, "SIGTERM", object()):
             raise ManagedInterruption(143)
@@ -1706,7 +1688,6 @@ def managed_interruption_handlers() -> Iterator[None]:
             signal.signal(signum, previous)
 
 
-# Build the already complete summary.
 def already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str, Any]:
     summary = managed_public_summary(
         details,
@@ -1719,7 +1700,6 @@ def already_complete_summary(details: dict[str, Any], batch: Path) -> dict[str, 
     return summary
 
 
-# Handle the processed since start step.
 def processed_since_start(progress: dict[str, Any] | None, processed: int, reused: int) -> int:
     if progress is None:
         return processed
@@ -1727,7 +1707,6 @@ def processed_since_start(progress: dict[str, Any] | None, processed: int, reuse
     return max(processed, terminal - reused)
 
 
-# Build the interrupted summary.
 def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progress: dict[str, Any] | None,
     batch_directory: Path | None, resumed: bool, reused: int, processed: int) -> dict[str, Any]:
 
@@ -1755,7 +1734,15 @@ def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progr
 
 
 def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results_root: Path) -> int:
-    """Run or resume one managed batch and emit exactly one JSON summary."""
+    """Run or resume one managed batch and show its final outcome."""
+
+    with TerminalProgress(len(images)) as reporter:
+        return _run_managed_batch(arguments, images, results_root, reporter)
+
+
+def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], results_root: Path,
+    reporter: TerminalProgress) -> int:
+    """Keep checkpoint, publication, and interruption handling together."""
 
     lock = ResultsRootLock(results_root)
     batch_directory: Path | None = None
@@ -1768,6 +1755,7 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
     interruption_context = managed_interruption_handlers()
     interruption_context.__enter__()
     try:
+        reporter.phase("Checking input photos and saved progress")
         lock.acquire()
         request_timeout = arguments.request_timeout
         if request_timeout is None:
@@ -1776,7 +1764,10 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
         batch_directory, progress, resumed, completed = select_batch(
             arguments, results_root, snapshot, request_timeout
         )
+        # A completed set can be reused only after its source, crop, and CSV
+        # evidence are checked again; a stale path is not enough to trust it.
         if completed is not None:
+            reporter.phase("Checking the completed batch")
             completed_batch, completed_details = completed
             batch_directory = completed_batch
             validate_sources_and_crops(completed_details, completed_batch, snapshot)
@@ -1794,19 +1785,26 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
             assert batch_directory is not None and progress is not None
             if resumed:
                 reused = prepare_resume(progress, batch_directory)
+                reporter.reused(reused)
                 progress["resume_count"] = int(progress.get("resume_count", 0)) + 1
                 if progress.get("phase") == "interrupted":
                     progress["phase"] = progress.pop("interrupted_phase", "processing")
                 write_progress(batch_directory, progress)
 
+            # A resumed photo set must also use the same model identity and
+            # endpoint class before it adds new readings to prior ones.
+            reporter.phase("Checking the local model")
             pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
+            if isinstance(pipeline, BoxTranscriptionPipeline):
+                pipeline.on_stage = reporter.phase
             validate_model_resume(progress, model_metadata, batch_directory)
             progress["model"] = model_metadata
             progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
             write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
-                processed = process_pending_images(arguments, images, progress, batch_directory, pipeline)
+                processed = process_pending_images(arguments, images, progress, batch_directory, pipeline, reporter)
+            reporter.phase("Finalizing results")
             details = finalize_batch(arguments, progress, batch_directory)
             summary = managed_public_summary(
                 details,
@@ -1863,5 +1861,6 @@ def run_managed_batch(arguments: argparse.Namespace, images: list[Path], results
                 summary["lock_cleanup_error"] = message
             exit_code = 2
 
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    reporter.close()
+    print_run_summary(summary, human=not getattr(arguments, "json", False), elapsed_seconds=reporter.elapsed_seconds())
     return exit_code
