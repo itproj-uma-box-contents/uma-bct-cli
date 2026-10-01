@@ -1,7 +1,7 @@
-"""Build and safely write the catalogue CSV.
+"""Sort catalogue rows, flag duplicates, and stage a complete CSV for publication.
 
-Rows are built first so duplicate and confidence flags can be added. The file
-is written beside the final path and replaced only when it is complete.
+Missing-box rows are review suggestions between observed boxes with the same
+Unit Type. The final CSV is written beside its destination before replacement.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
+from itertools import pairwise
 from pathlib import Path
 
 from .atomic import rename_new_file
@@ -36,26 +37,32 @@ def _missing_box_row(prefix: str, unit: int) -> CatalogueRow:
 
 
 def missing_box_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str]]:
-    """Return blank review rows for gaps within each identifier prefix."""
+    """Return bounded internal gap suggestions for each case-insensitive Unit Type."""
 
-    units_by_prefix: dict[str, set[int]] = {}
+    units_by_type: dict[str, tuple[str, set[int]]] = {}
 
-    for record in records:
-        prefix = str(record["Unit Type"]).strip()
+    for record in _sorted_records(records):
+        unit_type = str(record["Unit Type"]).strip()
         unit = str(record["Unit Number"]).strip()
-        if prefix and UNIT_NUMBER.fullmatch(unit):
-            units_by_prefix.setdefault(prefix, set()).add(int(unit))
+        if unit_type and UNIT_NUMBER.fullmatch(unit):
+            key = unit_type.casefold()
+            if key not in units_by_type:
+                units_by_type[key] = (unit_type, set())
+            units_by_type[key][1].add(int(unit))
 
-    return [
-        _missing_box_row(prefix, unit)
-        for prefix in sorted(units_by_prefix, key=str.casefold)
-        for unit in range(min(units_by_prefix[prefix]), max(units_by_prefix[prefix]) + 1)
-        if unit not in units_by_prefix[prefix]
-    ]
+    missing: list[dict[str, str]] = []
+    for key in sorted(units_by_type):
+        unit_type, observed = units_by_type[key]
+        ordered = sorted(observed)
+        for lower, upper in pairwise(ordered):
+            gap_size = upper - lower - 1
+            if 0 < gap_size <= MAX_GAP_SIZE:
+                missing.extend(_missing_box_row(unit_type, unit) for unit in range(lower + 1, upper))
+    return missing
 
 
 def _sorted_records(records: Iterable[dict[str, str | int]]) -> list[dict[str, str | int]]:
-    """Sort valid box titles by prefix and unit, leaving unparseable rows last."""
+    """Sort rows with a Unit Type and number, leaving incomplete rows stable at the end."""
 
     indexed_records = list(enumerate(records))
 
@@ -128,9 +135,13 @@ def catalogue_records(
                 )
             )
 
+    # Sorting by the complete printed Unit Type makes internal numeric gaps
+    # visible without joining boxes whose headings or identifiers differ.
     records = _sorted_records(records)
     if detect_missing_boxes:
         records = _insert_missing_box_records(records)
+    # Identical Unit Type and number can still describe two physical boxes.
+    # Keep both rows and mark the matching identities for human review.
     title_counts = Counter(
         (str(record["Unit Type"]).strip().casefold(), str(record["Unit Number"]).strip())
         for record in records
@@ -165,7 +176,8 @@ def export_catalogue(
         raise ValueError("Catalogue output must end in .csv.")
 
     records = catalogue_records(
-        results, minimum_confidence=minimum_confidence, catalogue_path=destination, detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links,
+        results, minimum_confidence=minimum_confidence, catalogue_path=destination,
+        detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links,
     )
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
@@ -173,7 +185,9 @@ def export_catalogue(
     destination.parent.mkdir(parents=True, exist_ok=True)
     check_path(destination, "Catalogue output")
     temporary_path: Path | None = None
-    # Write beside the final file, then swap it in only when complete.
+    # A sibling temporary file keeps readers from seeing a half-written CSV.
+    # Recheck the destination after writing because another process may have
+    # changed the output path while rows were being built.
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",

@@ -16,9 +16,9 @@ from .adapters.ollama_client import DEFAULT_MODEL, OllamaVisionModel
 from .managed_batch import ResultsRootLock
 from .path_safety import check_path, redirected_path_kind
 from .run_artifacts import CatalogueLock
+from .terminal import TerminalProgress
 
 
-# Ensure the directory.
 def ensure_directory(path: Path) -> int:
     try:
         check_path(path, "Setup directory")
@@ -36,7 +36,6 @@ def ensure_directory(path: Path) -> int:
     return metadata.st_mode
 
 
-# Warn when directory permissions are too broad.
 def warn_about_permissions(path: Path, mode: int) -> None:
     if sys.platform != "win32" and mode & (stat.S_IRWXG | stat.S_IRWXO):
         print(
@@ -46,13 +45,11 @@ def warn_about_permissions(path: Path, mode: int) -> None:
         )
 
 
-# Handle the safe error step.
 def safe_error(error: Exception) -> str:
     printable = "".join(character if character.isprintable() else " " for character in str(error))
     return (" ".join(printable.split()) or error.__class__.__name__)[:1000]
 
 
-# Validate the setup layout.
 def validate_setup_layout(inputs: Path, outputs: Path) -> None:
     input_path = os.path.realpath(inputs)
     output_path = os.path.realpath(outputs)
@@ -64,9 +61,20 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
         raise RuntimeError("Setup input and results directories must be separate and non-nested.")
 
 
-# Run the setup.
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
     results_directory: Path | None = None) -> int:
+    """Prepare folders and model while showing that a long download is active."""
+
+    with TerminalProgress(None) as reporter:
+        return _run_setup(
+            root=root, model_name=model_name, input_directory=input_directory,
+            results_directory=results_directory, reporter=reporter,
+        )
+
+
+def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | None,
+    results_directory: Path | None, reporter: TerminalProgress) -> int:
+    """Keep the existing setup result and cleanup in one place."""
 
     working_directory = (root or Path.cwd()).absolute()
     inputs = input_directory or working_directory / "inputs"
@@ -85,12 +93,16 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, inpu
     }
     lock: CatalogueLock | ResultsRootLock | None = None
     status = 0
+    # Verify private folders and reserve the selected output layout before a
+    # model pull can spend time or write state for the wrong client folder.
     try:
+        reporter.phase("Checking local folders")
         validate_setup_layout(inputs, outputs)
         warn_about_permissions(inputs, ensure_directory(inputs))
         warn_about_permissions(outputs, ensure_directory(outputs))
         lock = ResultsRootLock(outputs) if results_directory is not None else CatalogueLock(outputs / "catalogue.csv")
         lock.acquire()
+        reporter.phase("Checking or downloading the local model")
         OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
         message = safe_error(error)
@@ -108,5 +120,10 @@ def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, inpu
                 result.update(status="failed", error=combined[:1000])
                 print(f"Lock cleanup failed: {message}", file=sys.stderr)
                 status = 2
+    # Setup returns exactly one JSON object on stdout. Progress, warnings, and
+    # download updates stay on stderr through the reporter and model client.
+    if status == 0:
+        reporter.phase("Setup complete.")
+    reporter.close()
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return status

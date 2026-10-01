@@ -19,7 +19,6 @@ LINUX_RENAME_NOREPLACE = 1
 MACOS_RENAME_EXCL = 0x00000004
 
 
-# Capture the file identity.
 def file_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
     return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -29,13 +28,15 @@ def open_stable_file(path: Path, purpose: str, *, validator: Callable[[Path], os
     error_type: type[Exception] = ValueError) -> Iterator[tuple[BinaryIO, os.stat_result]]:
     """Open one regular file and reject links or changes during the read."""
 
-    # Inspect this value.
     def inspect() -> os.stat_result:
         if validator is not None:
             return validator(path)
         check_path(path, purpose)
         return path.lstat()
 
+    # Compare the path entry with the opened descriptor, then compare both
+    # again after reading. This catches swaps and short reads whose metadata
+    # was put back to its original size and time.
     before = inspect()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise error_type(f"{purpose} must be one unlinked regular file: {path}")
@@ -62,7 +63,6 @@ def open_stable_file(path: Path, purpose: str, *, validator: Callable[[Path], os
         source.close()
 
 
-# Handle the raise rename error step.
 def raise_rename_error(destination: Path) -> None:
     error_number = ctypes.get_errno()
     raise OSError(error_number, os.strerror(error_number), str(destination))
@@ -75,6 +75,8 @@ def rename_exclusive(source: Path, destination: Path) -> None:
         source.rename(destination)
         return
 
+    # A separate exists check would race another writer. Use each supported
+    # operating system's no-replace rename at the publication syscall.
     library = ctypes.CDLL(None, use_errno=True)
     encoded_source = os.fsencode(source)
     encoded_destination = os.fsencode(destination)

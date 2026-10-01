@@ -1,7 +1,7 @@
-"""Turn a checked transcription into one catalogue row.
+"""Map visible label text into the client's Unit Type and Unit Number columns.
 
-IDs and unit numbers are used only when they match the visible text. Anything
-unclear stays blank and gets a review note instead of being guessed.
+Printed text stays available for review even when an identifier is uncertain.
+The unit number is exported only when its structured claim matches the label.
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ class CatalogueRow(dict[str, str | int]):
         "Crop Image": "Cropped Box Image Link",
     }
 
-    # Handle the missing step.
     def __missing__(self, key: str) -> str | int:
         alias = self.LOOKUP_ALIASES.get(key)
         if alias is None:
@@ -66,12 +65,10 @@ def append_flag(current: str, flag: str) -> str:
     return "; ".join(flags)
 
 
-# Collect the non empty lines.
 def non_empty_lines(lines: Iterable[str]) -> tuple[str, ...]:
     return tuple(visual_line.strip() for value in lines for visual_line in value.splitlines() if visual_line.strip())
 
 
-# Handle the structured identifiers step.
 def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], bool]:
     explicit_identifiers: list[str] = []
     explicit_seen: set[str] = set()
@@ -89,26 +86,29 @@ def structured_identifiers(candidates: Iterable[str]) -> tuple[tuple[str, ...], 
     return tuple(explicit_identifiers), invalid
 
 
-# Check for a raw identifier mismatch.
 def raw_identifier_mismatch(transcription: BoxTranscription, explicit_identifiers: tuple[str, ...]) -> bool:
+    """Require the model's identifier list to agree with the visible text and its order."""
+
     typed_identifiers, malformed_typed = identifier_evidence_details(transcription.typed_lines)
     handwritten_identifiers, malformed_handwritten = identifier_evidence_details(transcription.handwritten_lines)
     observed_identifiers = (*typed_identifiers, *handwritten_identifiers)
     observed_keys = {identifier.casefold() for identifier in observed_identifiers}
     explicit_keys = tuple(identifier.casefold() for identifier in explicit_identifiers)
     explicit_key_set = set(explicit_keys)
-    order_mismatch = any(
-        positions != sorted(positions)
-        for source in (typed_identifiers, handwritten_identifiers)
-        if (
-            positions := [
-                explicit_keys.index(identifier.casefold())
-                for identifier in source
-                if identifier.casefold() in explicit_key_set
-            ]
-        )
-    )
-    return observed_keys != explicit_key_set or order_mismatch or malformed_typed or malformed_handwritten
+    if observed_keys != explicit_key_set or malformed_typed or malformed_handwritten:
+        return True
+
+    # Typed and handwritten lines can each list several IDs. Compare their
+    # order separately so the first structured ID still means the first seen.
+    for source in (typed_identifiers, handwritten_identifiers):
+        positions = [
+            explicit_keys.index(identifier.casefold())
+            for identifier in source
+            if identifier.casefold() in explicit_key_set
+        ]
+        if positions != sorted(positions):
+            return True
+    return False
 
 
 def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...], bool, bool]:
@@ -125,7 +125,6 @@ def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...]
     return identifiers, False, False
 
 
-# Normalize the unit.
 def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
     raw_unit = transcription.unit_number.strip()
     if not raw_unit:
@@ -139,7 +138,6 @@ def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bo
     return normalized, None, False
 
 
-# Handle the image reference step.
 def image_reference(image_file_path: str | Path, catalogue_path: str | Path | None) -> str:
     image_path = Path(image_file_path)
     if catalogue_path is None:
@@ -173,7 +171,6 @@ def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Pa
     return f'=HYPERLINK("{target}","{label}")'
 
 
-# Handle the description step.
 def description(transcription: BoxTranscription) -> str:
     values = (*non_empty_lines(transcription.handwritten_lines), *non_empty_lines(transcription.auxiliary_annotations))
     visible = (
@@ -185,7 +182,7 @@ def description(transcription: BoxTranscription) -> str:
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
                          trusted_crop_link: bool = False) -> dict[str, str | int]:
-    """Build one catalogue row from a transcription."""
+    """Keep printed text visible and flag identity claims that need review."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
     unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
@@ -203,6 +200,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
+    # Formula links are reserved for validated managed crops. Other paths are
+    # exported as escaped text because filenames may be untrusted input.
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")

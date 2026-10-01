@@ -56,6 +56,7 @@ services:
       - /tmp:size=256m
     init: true
     command:
+      - --json
       - --path-to-inputs
       - /data/inputs
       - --path-to-outputs

@@ -20,14 +20,12 @@ class BoxDetector(Protocol):
 
     name: str
 
-    # Detect boxes in the current image.
     def detect(self, image: InputImage) -> list[DetectedRegion]: ...
 
 
 class BoxCropper(Protocol):
     """Turn detected boxes into clean crops."""
 
-    # Create the boxes.
     def create_boxes(self, image: InputImage, regions: Sequence[DetectedRegion], output_directory: Path) -> list[Box]: ...
 
 
@@ -36,7 +34,6 @@ class TextTranscriber(Protocol):
 
     name: str
 
-    # Transcribe the current box.
     def transcribe(self, box: Box) -> list[BoxTranscription]: ...
 
 
@@ -52,7 +49,6 @@ class DateDetector(Protocol):
 class FullImageTextTranscriber(Protocol):
     """Read a full image when crop processing fails."""
 
-    # Transcribe the full image when crops are unavailable.
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]: ...
 
 
@@ -71,7 +67,6 @@ class ModelResponse:
 class VisionModelClient(Protocol):
     """Send one image request to the vision model."""
 
-    # Run the model query.
     def query(
         self,
         image_path: Path,

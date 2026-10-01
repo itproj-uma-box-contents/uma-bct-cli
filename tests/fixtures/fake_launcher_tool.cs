@@ -8,6 +8,8 @@ using System.Threading;
 
 public static class FakeLauncherTool
 {
+    // The executable name selects which launcher dependency this one test
+    // binary impersonates. Event files let tests inspect process ownership.
     private static int startCount = 0;
 
     private static string Role()
@@ -50,6 +52,8 @@ public static class FakeLauncherTool
 
     private static int RunApplication()
     {
+        // A long-running fake CLI records the forwarded interrupt, making
+        // launcher shutdown observable without starting a real model.
         if (Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_WAIT") == "1")
         {
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs arguments)

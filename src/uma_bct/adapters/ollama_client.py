@@ -40,24 +40,20 @@ JSON_CONTAINER_CHARACTERS = frozenset("{}[]")
 JSON_LITERAL_NAMES = ("false", "null", "true")
 
 
-# Handle the environment flag step.
 def environment_flag(name: str) -> bool:
     return os.getenv(name, "").casefold() in {"1", "true", "yes"}
 
 
-# Handle the response field step.
 def response_field(value: Any, field: str) -> Any:
     return value.get(field) if isinstance(value, dict) else getattr(value, field, None)
 
 
-# Build the message text.
 def message_text(chunk: Any, field: str) -> str:
     message = response_field(chunk, "message")
     value = response_field(message, field)
     return value if isinstance(value, str) else ""
 
 
-# Build the safe progress text.
 def safe_progress_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -100,14 +96,13 @@ def starts_with_simple_json(value: str) -> bool:
     return not isinstance(decoded, (dict, list))
 
 
-# Handle the invalid JSON message step.
 def invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
     location = f" at line {error.lineno}, column {error.colno}" if isinstance(error, json.JSONDecodeError) else ""
     return f"The model response contained invalid or incomplete JSON{location}."
 
 
 def json_from_text(raw: str) -> Any:
-    """Read one JSON result or a list of complete records."""
+    """Accept a complete model reply without silently skipping broken JSON fragments."""
 
     if len(raw) > MAX_MODEL_RESPONSE_CHARACTERS:
         raise ValueError("The model response exceeded the 4 MiB safety limit.")
@@ -115,7 +110,8 @@ def json_from_text(raw: str) -> Any:
     if not text:
         raise ValueError("The model returned no text.")
 
-    # Start at the first JSON shape so broken fragments cannot be skipped.
+    # Some Ollama replies include prose before JSON. Start at the first JSON
+    # shape, but reject a broken fragment or another JSON value before it.
     starts = tuple(position for character in ("{", "[") if (position := text.find(character)) >= 0)
     if not starts:
         raise ValueError("The model response did not contain a JSON object or array.")
@@ -136,7 +132,8 @@ def json_from_text(raw: str) -> Any:
 
     values = [first]
     cursor = end
-    # Extra values are allowed only when they are complete record objects.
+    # Adjacent complete records can come back despite the requested envelope.
+    # A partial tail is never treated as a successful transcription.
     while True:
         separator_start = cursor
         while cursor < len(text) and text[cursor].isspace():
@@ -184,14 +181,13 @@ def chunk_token_logprobs(chunk: Any) -> list[tuple[str, float]]:
     return pairs
 
 
-# Build the collect stream text.
 def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]]:
     content: list[str] = []
     thinking: list[str] = []
     content_logprobs: list[tuple[str, float]] = []
     thinking_logprobs: list[tuple[str, float]] = []
     characters = 0
-    for number, chunk in enumerate(stream, start=1):
+    for chunk in stream:
         chunk_content = message_text(chunk, "content")
         chunk_thinking = message_text(chunk, "thinking")
         characters += len(chunk_content) + len(chunk_thinking)
@@ -204,8 +200,6 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
             content_logprobs.extend(chunk_token_logprobs(chunk))
         elif chunk_thinking:
             thinking_logprobs.extend(chunk_token_logprobs(chunk))
-        if number % 20 == 0:
-            print(".", end="", file=sys.stderr, flush=True)
     return ("".join(content).strip(), "".join(thinking).strip(), tuple(content_logprobs), tuple(thinking_logprobs))
 
 
@@ -219,7 +213,6 @@ def bounded_response_error(value: str) -> str:
     return f"{message[: MAX_MODEL_RESPONSE_ERROR_CHARACTERS - 3]}..."
 
 
-# Parse the model response.
 def parse_model_response(
     content: str,
     thinking: str,
@@ -252,7 +245,6 @@ def parse_model_response(
     raise ValueError("The model returned neither content nor thinking text.")
 
 
-# Handle the timeout from environment step.
 def timeout_from_environment() -> float:
     raw = os.getenv(TIMEOUT_ENVIRONMENT_VARIABLE)
     if raw is None:
@@ -289,9 +281,10 @@ def normalize_ollama_host(value: str) -> str:
     except ValueError:
         loopback = False
 
+    # Only the exact Compose service name has an internal-network exception.
+    # Other hostnames can receive image pixels only through the HTTPS opt-in.
     container = hostname == "ollama" and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
     remote = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
-    # Remote hosts need an explicit opt-in because image pixels leave this computer.
     if not loopback and not container and not remote:
         raise ValueError(
             "OLLAMA_HOST must use numeric loopback by default. Remote processing "
@@ -303,7 +296,6 @@ def normalize_ollama_host(value: str) -> str:
     return urlunsplit((parsed.scheme, f"{host_text}:{port}", "", "", ""))
 
 
-# Keep the Ollama vision model behavior together.
 @dataclass(frozen=True)
 class OllamaVisionModel:
     model: str = DEFAULT_MODEL
@@ -311,33 +303,30 @@ class OllamaVisionModel:
     timeout_seconds: float | None = None
     host: str | None = None
 
-    # Validate the newly created value.
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and (not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
             raise ValueError("Ollama request timeout must be a positive number.")
 
-    # Handle the effective timeout step.
     @property
     def effective_timeout(self) -> float:
         return self.timeout_seconds or timeout_from_environment()
 
-    # Handle the effective host step.
     @property
     def effective_host(self) -> str:
         configured = self.host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
         return normalize_ollama_host(configured)
 
-    # Handle the client step.
     def client(self) -> Any:
         try:
             import ollama
         except ImportError as error:
             raise RuntimeError("The 'ollama' package is missing; reinstall UMA BCT.") from error
+        # Ignore proxy environment variables and redirects so a local-looking
+        # request cannot be forwarded by this client behind the operator's back.
         return ollama.Client(
             host=self.effective_host, timeout=self.effective_timeout, follow_redirects=False, trust_env=False
         )
 
-    # Handle the inventory step.
     def inventory(self) -> tuple[str, dict[str, str]]:
         try:
             host = self.effective_host
@@ -352,13 +341,11 @@ class OllamaVisionModel:
         available = {str(response_field(item, "model") or ""): str(response_field(item, "digest") or "") for item in models}
         return host, available
 
-    # Handle the metadata step.
     def metadata(self, host: str, available: dict[str, str]) -> dict[str, str]:
         if self.model not in available:
             raise RuntimeError(f"Ollama model '{self.model}' is not installed. Run: ollama pull {self.model}")
         return {"model": self.model, "model_digest": available[self.model], "ollama_host": host}
 
-    # Handle the preflight step.
     def preflight(self) -> dict[str, str]:
         metadata = self.metadata(*self.inventory())
         self.probe()
@@ -379,7 +366,6 @@ class OllamaVisionModel:
         except Exception as error:
             raise RuntimeError(f"Ollama inference preflight failed for model '{self.model}': {error}") from error
 
-    # Pull the model.
     def pull_model(self, output: TextIO) -> None:
         try:
             with closing(self.client()) as client:
@@ -393,7 +379,6 @@ class OllamaVisionModel:
         except Exception as error:
             raise RuntimeError(f"Could not download Ollama model '{self.model}': {error}") from error
 
-    # Ensure the model.
     def ensure_model(self, *, progress_stream: TextIO | None = None) -> dict[str, str]:
         output = progress_stream or sys.stderr
         host, available = self.inventory()
@@ -405,7 +390,6 @@ class OllamaVisionModel:
         self.probe()
         return metadata
 
-    # Run the model query.
     def query(
         self,
         image_path: Path | None,

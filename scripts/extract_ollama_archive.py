@@ -20,6 +20,8 @@ def validate_link_target(member: tarfile.TarInfo) -> None:
     if not target_text or target.is_absolute():
         raise ValueError(f"Unsafe archive link target for {member.name!r}")
 
+    # Symlinks resolve from their containing folder; hard links resolve from
+    # the archive root. Track `..` rather than trusting the link text alone.
     parts = list(PurePosixPath(member.name).parent.parts) if member.issym() else []
     for part in target.parts:
         if part in {"", "."}:
@@ -54,7 +56,6 @@ def extract_archive(source: Path, destination: Path) -> None:
                     archive.extract(member, destination, filter="data")
 
 
-# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)

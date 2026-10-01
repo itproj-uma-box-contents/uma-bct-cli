@@ -8,7 +8,7 @@ from typing import Any
 
 
 def wrap_boxes(value: Any) -> dict[str, Any]:
-    """Put accepted reply shapes into one boxes list without changing values."""
+    """Normalize canonical, bare-array, and single-record replies without merging records."""
 
     if isinstance(value, dict):
         if "boxes" in value:

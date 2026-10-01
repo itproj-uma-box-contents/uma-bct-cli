@@ -58,7 +58,6 @@ PRIVATE_SUFFIXES = {
 }
 
 
-# Collect the artifact paths.
 def artifact_paths(arguments: Iterable[str]) -> list[Path]:
     paths: list[Path] = []
     for argument in arguments:
@@ -72,8 +71,9 @@ def artifact_paths(arguments: Iterable[str]) -> list[Path]:
     return paths
 
 
-# Handle the archive members step.
 def archive_members(path: Path) -> Iterable[tuple[str, bool, bool, int, bool]]:
+    """Inspect names and entry types without extracting archive contents."""
+
     if path.name.endswith((".whl", ".zip")):
         with zipfile.ZipFile(path) as archive:
             seen: set[str] = set()
@@ -97,10 +97,11 @@ def archive_members(path: Path) -> Iterable[tuple[str, bool, bool, int, bool]]:
     raise ValueError(f"Unsupported release artifact: {path}")
 
 
-# Handle the unsafe reason step.
 def unsafe_reason(
     name: str, regular: bool = True, is_directory: bool = False, size: int = 0, duplicate: bool = False
 ) -> str | None:
+    # Normalize both separator styles before checking traversal or private
+    # paths; a hostile archive may not use the host OS's separator.
     normalized = name.replace("\\", "/")
     path = PurePosixPath(normalized)
     if path.is_absolute() or ".." in path.parts:
@@ -109,6 +110,8 @@ def unsafe_reason(
         return "duplicate archive entry"
     if not regular:
         return "archive link or special entry"
+    # The client ZIP needs empty input and results folders. Data inside either
+    # folder remains forbidden in wheels, sdists, and bundles alike.
     if is_directory and tuple(part.casefold() for part in path.parts) in {
         ("archive box transcription", "add photos here"),
         ("archive box transcription", "results"),
@@ -143,7 +146,6 @@ def unsafe_reason(
     return None
 
 
-# Inspect the artifact.
 def inspect_artifact(path: Path) -> list[str]:
     if not path.is_file():
         return [f"{path}: artifact does not exist"]
@@ -157,7 +159,6 @@ def inspect_artifact(path: Path) -> list[str]:
         return [f"{path}: cannot inspect artifact: {error}"]
 
 
-# Run this command.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+")
