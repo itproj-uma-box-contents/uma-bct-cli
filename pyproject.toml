@@ -30,6 +30,11 @@ dev = [
 [project.scripts]
 uma-bct = "uma_bct.cli:main"
 
+[project.optional-dependencies]
+hosted = [
+    "litellm>=1.103.2,<1.104",
+]
+
 [build-system]
 requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
