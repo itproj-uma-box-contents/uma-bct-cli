@@ -9,8 +9,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from .adapters import OllamaVisionModel, OpenCVBoxDetector, QwenBoxDetector, QwenTextTranscriber
+from .adapters import HostedVisionModel, OllamaVisionModel, OpenCVBoxDetector, QwenBoxDetector, QwenTextTranscriber
+from .adapters.ollama_client import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from .imaging import OpenCVBoxCropper
+from .model_config import HostedModelConfig
 from .pipeline import BoxTranscriptionPipeline
 from .ports import BoxDetector, TextTranscriber, VisionModelClient
 
@@ -23,7 +25,8 @@ TRANSCRIBERS: dict[str, TranscriberFactory] = {"qwen": QwenTextTranscriber}
 
 
 def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str, work_directory: Path,
-                   minimum_detector_confidence: float, request_timeout_seconds: float | None = None) -> BoxTranscriptionPipeline:
+                   minimum_detector_confidence: float, request_timeout_seconds: float | None = None,
+                   hosted_model: HostedModelConfig | None = None) -> BoxTranscriptionPipeline:
     """Build the requested detector and transcriber."""
 
     try:
@@ -35,7 +38,11 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
     except KeyError as error:
         raise ValueError(f"Unknown text transcriber: {transcriber_name}") from error
 
-    model_client = OllamaVisionModel(model=model_name, timeout_seconds=request_timeout_seconds)
+    model_client = (
+        HostedVisionModel(hosted_model, timeout_seconds=request_timeout_seconds or DEFAULT_REQUEST_TIMEOUT_SECONDS)
+        if hosted_model is not None
+        else OllamaVisionModel(model=model_name, timeout_seconds=request_timeout_seconds)
+    )
     model_metadata = model_client.preflight()
     detector = detector_factory(model_client)
     fallback_detector = OpenCVBoxDetector() if detector_name == "qwen" else None

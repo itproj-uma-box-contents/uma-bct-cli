@@ -1,8 +1,8 @@
 """Send sanitized PNGs to selected HTTPS vision APIs through LiteLLM.
 
-This adapter is not selected by the CLI yet. It accepts only the three direct
-providers supported by this first hosted implementation: OpenAI, Anthropic,
-and Gemini. The existing detector and cropper produce metadata-free PNGs.
+It accepts only the three direct providers supported by this first hosted
+implementation: OpenAI, Anthropic, and Gemini. The existing detector and
+cropper produce metadata-free PNGs.
 """
 
 from __future__ import annotations
@@ -44,6 +44,27 @@ def _supported_parameters(litellm: Any, model: str) -> set[str]:
         return set()
 
 
+def _supports_schema(litellm: Any, model: str) -> bool:
+    try:
+        return litellm.supports_response_schema(model=model) is True
+    except Exception:
+        return False
+
+
+def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Use portable structure hints; local validators retain all limits."""
+
+    def convert(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        converted = {key: convert(item) for key, item in value.items() if key not in {"minItems", "maxItems", "maxLength"}}
+        if converted.get("type") == "object":
+            converted["additionalProperties"] = False
+        return converted
+
+    return convert(schema)
+
+
 def _token_logprobs(choice: Any, content: str) -> tuple[tuple[str, float], ...]:
     """Use probabilities only when they exactly cover the returned text."""
 
@@ -77,6 +98,17 @@ class HostedVisionModel:
             raise ValueError("Hosted models currently support openai/, anthropic/, and gemini/.")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("Hosted request timeout must be a positive number.")
+
+    def preflight(self) -> dict[str, str]:
+        """Check the optional client without sending a paid request."""
+
+        _load_litellm()
+        return {
+            "model": self.config.model,
+            "backend": "hosted",
+            "provider": self.config.provider,
+            "api_base": PROVIDER_API_BASES[self.config.provider],
+        }
 
     def query(
         self,
@@ -115,7 +147,13 @@ class HostedVisionModel:
             "num_retries": 0,
         }
         if "response_format" in supported:
-            arguments["response_format"] = {"type": "json_object"}
+            if _supports_schema(litellm, self.config.model):
+                arguments["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "archive_boxes", "strict": True, "schema": _strict_schema(schema)},
+                }
+            else:
+                arguments["response_format"] = {"type": "json_object"}
         if logprobs and "logprobs" in supported:
             arguments["logprobs"] = True
         try:

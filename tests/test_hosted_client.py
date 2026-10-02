@@ -8,9 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from helpers import make_box, make_image
 from PIL import Image
 
 from uma_bct.adapters.hosted_client import PROVIDER_API_BASES, HostedVisionModel
+from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 from uma_bct.model_config import HostedModelConfig
 
 
@@ -34,6 +36,7 @@ class HostedVisionModelTest(unittest.TestCase):
         return SimpleNamespace(
             completion=Mock(return_value=response),
             get_supported_openai_params=Mock(return_value=params),
+            supports_response_schema=Mock(return_value=False),
         )
 
     def test_three_providers_use_their_fixed_https_origins_and_inline_png(self):
@@ -58,6 +61,50 @@ class HostedVisionModelTest(unittest.TestCase):
                 self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), self.image_path.read_bytes())
                 self.assertNotIn(str(self.image_path), repr(arguments["messages"]))
                 self.assertNotIn("secret-test-key", repr(client))
+
+    def test_schema_capability_uses_portable_strict_structure(self):
+        sdk = self.sdk()
+        sdk.supports_response_schema.return_value = True
+        schema = {
+            "type": "object", "properties": {"boxes": {
+                "type": "array", "maxItems": 100, "items": {"type": "object", "properties": {
+                    "name": {"type": "string", "maxLength": 10},
+                    "coords": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+                }, "required": ["name", "coords"]},
+            }}, "required": ["boxes"],
+        }
+        client = HostedVisionModel(HostedModelConfig(model="openai/gpt-test", api_key="secret"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            client.query(self.image_path, "Find boxes.", schema)
+        reply_format = sdk.completion.call_args.kwargs["response_format"]
+        self.assertEqual(reply_format["type"], "json_schema")
+        self.assertTrue(reply_format["json_schema"]["strict"])
+        portable = reply_format["json_schema"]["schema"]
+        self.assertFalse(portable["additionalProperties"])
+        self.assertNotIn("maxItems", portable["properties"]["boxes"])
+        item = portable["properties"]["boxes"]["items"]
+        self.assertFalse(item["additionalProperties"])
+        self.assertNotIn("maxLength", item["properties"]["name"])
+        self.assertNotIn("minItems", item["properties"]["coords"])
+        self.assertIn("maxItems", schema["properties"]["boxes"])
+
+    def test_schema_lookup_failure_falls_back_to_json_object(self):
+        sdk = self.sdk()
+        sdk.supports_response_schema.side_effect = ValueError("unsupported")
+        client = HostedVisionModel(HostedModelConfig(model="anthropic/new-model", api_key="secret"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            client.query(self.image_path, "Read box.", self.schema)
+        self.assertEqual(sdk.completion.call_args.kwargs["response_format"], {"type": "json_object"})
+
+    def test_preflight_checks_dependency_without_request(self):
+        sdk = self.sdk()
+        client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            metadata = client.preflight()
+        self.assertEqual(metadata["model"], "gemini/example")
+        self.assertEqual(metadata["backend"], "hosted")
+        self.assertEqual(metadata["api_base"], PROVIDER_API_BASES["gemini"])
+        sdk.completion.assert_not_called()
 
     def test_unknown_provider_and_invalid_timeout_fail_before_request(self):
         with self.assertRaisesRegex(ValueError, "openai/"):
@@ -87,6 +134,21 @@ class HostedVisionModelTest(unittest.TestCase):
         with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
             result = client.query(self.image_path, "Read box.", self.schema, logprobs=True)
         self.assertEqual(result.token_logprobs, ())
+
+    def test_missing_provider_logprobs_force_human_review(self):
+        content = json.dumps({"boxes": [{
+            "position": "left", "record_identifiers": ["1960.0009"], "unit": "4",
+            "typed": ["1960.0009", "Unit 4"], "handwritten": [], "auxiliary_annotations": [],
+        }]})
+        sdk = self.sdk(content, params=("response_format",))
+        client = HostedVisionModel(HostedModelConfig(model="anthropic/claude-test", api_key="secret"))
+        box = make_box(image=make_image(self.image_path), crop_path=self.image_path)
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            record = QwenTextTranscriber(client).transcribe(box)[0]
+        self.assertEqual(record.confidence, 0)
+        self.assertTrue(record.needs_review)
+        self.assertEqual(record.unit_number, "4")
+        self.assertNotIn("logprobs", sdk.completion.call_args.kwargs)
 
     def test_provider_errors_and_invalid_replies_do_not_expose_secrets(self):
         sdk = self.sdk()

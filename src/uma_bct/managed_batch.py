@@ -28,12 +28,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from .adapters.hosted_client import PROVIDER_API_BASES
 from .adapters.ollama_client import timeout_from_environment
 from .atomic import open_stable_file, rename_new_file
 from .bootstrap import build_pipeline
 from .constants import IMAGE_EXTENSIONS
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
+from .model_config import selected_model_metadata, selected_model_name
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
@@ -215,15 +217,18 @@ def describe_snapshot_change(expected: list[dict[str, Any]], actual: list[dict[s
 
 
 def semantic_configuration(arguments: argparse.Namespace, request_timeout: float | None) -> dict[str, Any]:
-    return {
+    configuration = {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
-        "model": arguments.model,
+        "model": selected_model_name(arguments),
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout,
     }
+    if getattr(arguments, "hosted_model", None) is not None:
+        configuration["backend"] = "hosted"
+    return configuration
 
 
 def truncate_utf8(value: str, maximum_bytes: int) -> str:
@@ -544,6 +549,9 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
     inputs = []
     for item in snapshot:
         inputs.append({**item, "state": "pending", "attempts": 0})
+    model = selected_model_metadata(arguments)
+    if hosted := getattr(arguments, "hosted_model", None):
+        model.update(backend="hosted", provider=hosted.provider, api_base=PROVIDER_API_BASES[hosted.provider])
     return {
         "schema_version": MANAGED_SCHEMA_VERSION,
         "application": {"name": "uma-bct-cli", "version": application_version()},
@@ -554,7 +562,7 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "input_directory": str(arguments.path_to_inputs),
         "input_snapshot": snapshot_signature(snapshot),
         "inputs": inputs,
-        "model": {"model": arguments.model},
+        "model": model,
         "endpoint_history": [],
         "resume_count": 0,
         "run_failures": [],
@@ -635,7 +643,14 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
     # An identical completed set is reported as already done unless the
     # operator explicitly asked for a separate new batch.
     latest = latest_completed(completed)
-    if latest is not None and same_snapshot(latest[1].get("input_snapshot", []), snapshot) and not arguments.reprocess:
+    if (
+        latest is not None
+        and same_snapshot(latest[1].get("input_snapshot", []), snapshot)
+        and latest[1].get("configuration", {}).get("model") == selected_model_name(arguments)
+        and latest[1].get("configuration", {}).get("backend", "ollama")
+        == ("hosted" if getattr(arguments, "hosted_model", None) is not None else "ollama")
+        and not arguments.reprocess
+    ):
         return None, None, False, latest
 
     batch_directory = create_batch_directory(results_root).absolute()
@@ -960,8 +975,17 @@ def endpoint_identity(host: str) -> dict[str, str]:
 
 def validate_model_resume(progress: dict[str, Any], current: dict[str, str], batch_directory: Path) -> None:
     previous = progress.get("model", {})
+    if current.get("backend", "ollama") != previous.get("backend", "ollama"):
+        raise ManagedBatchError(f"Cannot resume {batch_directory}: the model backend changed.")
     if current.get("model") != previous.get("model"):
         raise ManagedBatchError(f"Cannot resume {batch_directory}: the preflight model identity changed.")
+    if current.get("backend") == "hosted":
+        if (
+            previous.get("provider") != current.get("provider")
+            or previous.get("api_base") != current.get("api_base")
+        ):
+            raise ManagedBatchError(f"Cannot resume {batch_directory}: the hosted model endpoint changed.")
+        return
     previous_digest = previous.get("model_digest")
     current_digest = current.get("model_digest")
     if previous_digest and previous_digest != current_digest:
@@ -990,13 +1014,17 @@ def build_managed_pipeline(
     pipeline = build_pipeline(
         detector_name=arguments.detector,
         transcriber_name=arguments.transcriber,
-        model_name=arguments.model,
+        model_name=selected_model_name(arguments),
         work_directory=working_root,
         minimum_detector_confidence=arguments.min_detector_confidence,
         request_timeout_seconds=request_timeout,
+        hosted_model=getattr(arguments, "hosted_model", None),
     )
     metadata = dict(pipeline.model_metadata)
-    for field in ("model", "model_digest", "ollama_host"):
+    required = ("model", "backend", "provider", "api_base") if getattr(arguments, "hosted_model", None) else (
+        "model", "model_digest", "ollama_host"
+    )
+    for field in required:
         if not isinstance(metadata.get(field), str) or not metadata[field]:
             raise ManagedBatchError(f"Model preflight did not return {field}.")
     return pipeline, metadata
@@ -1719,7 +1747,7 @@ def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progr
             except Exception as error:
                 print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
     value = progress or {
-        "model": {"model": arguments.model},
+        "model": selected_model_metadata(arguments),
         "inputs": [{"state": "pending"} for image in images],
     }
     return managed_public_summary(
@@ -1793,13 +1821,14 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
 
             # A resumed photo set must also use the same model identity and
             # endpoint class before it adds new readings to prior ones.
-            reporter.phase("Checking the local model")
+            reporter.phase("Checking the selected model")
             pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
             if isinstance(pipeline, BoxTranscriptionPipeline):
                 pipeline.on_stage = reporter.phase
             validate_model_resume(progress, model_metadata, batch_directory)
             progress["model"] = model_metadata
-            progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
+            endpoint = model_metadata.get("api_base") or model_metadata["ollama_host"]
+            progress.setdefault("endpoint_history", []).append(endpoint)
             write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
@@ -1833,7 +1862,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             except Exception as checkpoint_error:
                 print(f"Checkpoint write failed: {warning_text(checkpoint_error)}", file=sys.stderr)
         summary_value = progress or {
-            "model": {"model": arguments.model},
+            "model": selected_model_metadata(arguments),
             "inputs": [{"state": "pending"} for image in images],
             "run_failures": [{"stage": "managed_batch", "error": message}],
         }

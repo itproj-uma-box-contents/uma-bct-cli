@@ -22,6 +22,7 @@ from .adapters.ollama_client import timeout_from_environment
 from .atomic import rename_new_file
 from .bootstrap import build_pipeline
 from .export import export_catalogue
+from .model_config import selected_model_metadata, selected_model_name
 from .path_safety import check_path
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import (
@@ -82,10 +83,10 @@ def direct_termination_handlers() -> Iterator[None]:
 
 def configuration(arguments: argparse.Namespace, work_directory: Path | None, request_timeout_seconds: float | None
 ) -> dict[str, Any]:
-    return {
+    value = {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
-        "model": arguments.model,
+        "model": selected_model_name(arguments),
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
@@ -94,6 +95,9 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
         "output": str(arguments.path_to_outputs),
         "box_images": str(work_directory) if work_directory else None,
     }
+    if getattr(arguments, "hosted_model", None) is not None:
+        value["backend"] = "hosted"
+    return value
 
 
 def process_images(pipeline: Any, images: list[Path], failures: list[dict[str, str]],
@@ -147,17 +151,18 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
 ) -> tuple[Any | None, Path | None, float | None, dict[str, str]]:
 
     request_timeout = arguments.request_timeout
-    metadata = {"model": arguments.model}
+    metadata = selected_model_metadata(arguments)
     try:
         if request_timeout is None:
             request_timeout = timeout_from_environment()
         pipeline = build_pipeline(
             detector_name=arguments.detector,
             transcriber_name=arguments.transcriber,
-            model_name=arguments.model,
+            model_name=selected_model_name(arguments),
             work_directory=arguments.path_to_box_images,
             minimum_detector_confidence=arguments.min_detector_confidence,
             request_timeout_seconds=request_timeout,
+            hosted_model=getattr(arguments, "hosted_model", None),
         )
         metadata.update(pipeline.model_metadata)
         work_directory = run_directory(arguments.path_to_box_images)
@@ -326,7 +331,7 @@ def lock_failure_summary(arguments: argparse.Namespace, error: Exception) -> dic
         "schema_version": 1,
         "status": "failed",
         "configuration": configuration(arguments, None, arguments.request_timeout),
-        "model": {"model": arguments.model},
+        "model": selected_model_metadata(arguments),
         "images": [],
         "failures": [{"stage": "lock", "error": message}],
         "catalogue_output": None,
@@ -366,7 +371,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     # Model work, CSV publication, and manifest publication share one lock;
     # the manifest records the outcome only after the catalogue transaction.
     failures: list[dict[str, str]] = []
-    progress.phase("Checking the local model")
+    progress.phase("Checking the selected model")
     pipeline, work_directory, request_timeout, model_metadata = prepare_pipeline(arguments, failures)
     if isinstance(pipeline, BoxTranscriptionPipeline):
         pipeline.on_stage = progress.phase
@@ -453,7 +458,7 @@ def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: P
         lock.acquire()
     except Exception as error:
         summary = lock_failure_summary(arguments, error)
-        emit_summary(summary, len(images), arguments.model, progress, human=not getattr(arguments, "json", False))
+        emit_summary(summary, len(images), selected_model_name(arguments), progress, human=not getattr(arguments, "json", False))
         return 2
 
     release_error: str | None = None
@@ -490,7 +495,7 @@ def _run_batch(arguments: argparse.Namespace, images: list[Path], output_path: P
                 summary["run_manifest"] = None
                 print(f"Manifest was not updated after lock cleanup failed: {message}", file=sys.stderr)
 
-    emit_summary(summary, len(images), arguments.model, progress, human=not getattr(arguments, "json", False))
+    emit_summary(summary, len(images), selected_model_name(arguments), progress, human=not getattr(arguments, "json", False))
     if release_error is not None:
         return 2
     if not pipeline_ready:

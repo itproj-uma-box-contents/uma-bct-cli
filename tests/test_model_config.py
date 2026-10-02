@@ -2,7 +2,9 @@
 
 import contextlib
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from uma_bct.cli import main
@@ -29,18 +31,38 @@ class HostedModelConfigTest(unittest.TestCase):
         self.assertEqual(config.api_key, key)
         self.assertNotIn(key, repr(config))
 
-    def test_cli_rejects_key_before_processing_until_adapter_exists(self):
+    def test_key_routes_direct_and_setup_entry_points(self):
+        environment = {"UMA_BCT_API_KEY": "secret-test-key", "UMA_BCT_API_MODEL": "gemini/vision-test"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "shelf.jpg"
+            image.write_bytes(b"unused test image")
+            with patch.dict("os.environ", environment), patch("uma_bct.cli.run_batch", return_value=0) as run_batch:
+                self.assertEqual(main(["--json", "--path-to-inputs", str(image), "--path-to-outputs", str(root / "out.csv")]), 0)
+            selected = run_batch.call_args.args[0].hosted_model
+            self.assertEqual(selected.model, "gemini/vision-test")
+            self.assertEqual(selected.api_key, "secret-test-key")
+            with patch.dict("os.environ", environment), patch("uma_bct.cli.run_setup", return_value=0) as setup:
+                self.assertEqual(main(["setup"]), 0)
+            self.assertEqual(setup.call_args.kwargs["hosted_model"], selected)
+
+    def test_cli_requires_model_and_rejects_local_model_flag_in_hosted_mode(self):
         key = "secret-test-key"
-        for model, expected in (("", "UMA_BCT_API_MODEL"), ("gemini/example", "not available yet")):
+        for model, argv, expected in (
+            ("", [], "UMA_BCT_API_MODEL"),
+            ("gemini/example", ["--model", "local"], "--model selects local Ollama"),
+            ("openrouter/example", [], "currently support"),
+        ):
             with self.subTest(model=model), patch.dict(
                 "os.environ", {"UMA_BCT_API_KEY": key, "UMA_BCT_API_MODEL": model}
             ), patch("uma_bct.cli.run_batch") as run_batch, contextlib.redirect_stderr(io.StringIO()) as errors:
                 with self.assertRaises(SystemExit) as raised:
-                    main([])
+                    main(argv)
                 self.assertEqual(raised.exception.code, 2)
                 self.assertIn(expected, errors.getvalue())
                 self.assertNotIn(key, errors.getvalue())
                 run_batch.assert_not_called()
+
 
 
 if __name__ == "__main__":

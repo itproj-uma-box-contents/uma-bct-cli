@@ -135,7 +135,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         type=positive_float,
         default=None,
         metavar="SECONDS",
-        help=(f"Ollama timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
+        help=(f"model request timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
     )
     parser.add_argument("-f", "--force", action="store_true", help="replace an existing catalogue")
     parser.add_argument(
@@ -301,17 +301,27 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
     if hosted_model is not None:
-        parser.error("Hosted API processing is not available yet.")
+        from .adapters.hosted_client import HostedVisionModel
+
+        try:
+            HostedVisionModel(hosted_model)
+        except ValueError as error:
+            parser.error(str(error))
+        if option_was_supplied(raw_arguments, ("-m", "--model")):
+            parser.error("--model selects local Ollama; use UMA_BCT_API_MODEL for hosted processing.")
+    arguments.hosted_model = hosted_model
     if arguments.command == "setup":
         if raw_arguments[0] != "setup":
             parser.error("setup must be the first argument")
-        setup_arguments: dict[str, Path] = {}
+        setup_arguments: dict[str, object] = {}
         if arguments.path_to_inputs is not None:
             setup_arguments["input_directory"] = arguments.path_to_inputs
         if arguments.results_directory is not None:
             setup_arguments["results_directory"] = arguments.results_directory
         # Keep the computer active while the local model is checked or downloaded.
         with keep_awake():
+            if hosted_model is not None:
+                setup_arguments["hosted_model"] = hosted_model
             return run_setup(**setup_arguments)
 
     if arguments.reprocess and arguments.results_directory is None:

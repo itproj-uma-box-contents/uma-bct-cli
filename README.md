@@ -1,8 +1,8 @@
 # UMA Box Contents Transcription
 
 This tool turns archive-box photos into a reviewable catalogue on your
-computer. The supplied launcher keeps photos, crops, model weights, and results
-local; it does not upload them.
+computer. By default, the supplied launcher keeps photos, crops, model weights,
+and results local. Hosted mode sends sanitized image pixels to the selected API.
 
 ## Run the tool
 
@@ -35,9 +35,9 @@ off the display while processing continues. If a warning appears, adjust the
 computer's power settings before a long batch.
 
 The first run needs an internet connection because it installs the verified
-private runtime and downloads the large model. The launcher finishes all online
-preparation before asking for photographs. Later runs reuse that runtime and
-can work offline.
+private runtime and, in local mode, downloads the large model. The launcher
+finishes online preparation before asking for photographs. Later local runs
+reuse that runtime and can work offline; hosted runs need internet access.
 
 Supported computers are Windows 10 22H2 or newer on x86-64, macOS 14 or newer
 on Intel or Apple silicon, and Linux with glibc 2.28 or newer on x86-64 or
@@ -45,9 +45,9 @@ arm64. Windows ARM, musl-based Linux, and older operating systems are not
 supported. Allow at least 16 GB of memory and use a trusted, single-user
 workstation with enough free disk space.
 
-Each launcher starts a new, launcher-owned Ollama service on a temporary
-numeric loopback port. It never reuses or terminates another folder's service
-or an unrelated service on port 11434. The foreground CLI is interrupted first
+In local mode, each launcher starts a new, launcher-owned Ollama service on a
+temporary numeric loopback port. It never reuses or terminates another
+folder's service or an unrelated service on port 11434. The foreground CLI is interrupted first
 when the launcher is stopped; cleanup is bounded and targets only processes
 that launcher started.
 
@@ -184,14 +184,46 @@ photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 ## Compatibility and privacy
 
-The future hosted-model configuration uses `UMA_BCT_API_KEY` and
-`UMA_BCT_API_MODEL` (in `provider/model` form). An empty key keeps the local
-Qwen workflow, even if a model name is set. A nonempty key without a model is
-rejected. The optional `hosted` package extra now includes an adapter for
-vision-capable OpenAI (`openai/`), Claude (`anthropic/`), and Gemini (`gemini/`)
-models. The CLI does not select that adapter yet and currently rejects all
-nonempty keys before reading photographs or contacting a model. Never put API
-keys in command arguments or committed files.
+### Hosted model opt-in
+
+Set `UMA_BCT_API_KEY` and `UMA_BCT_API_MODEL` in the process environment to
+send sanitized detection and crop PNGs to a hosted vision model. A nonempty key
+is the explicit privacy opt-in: image pixels leave the workstation over HTTPS.
+Original photo files and EXIF metadata are not sent. Only direct OpenAI
+(`openai/`), Claude (`anthropic/`), and Gemini (`gemini/`) API origins are
+accepted. Confirm your organisation permits this disclosure and review the
+chosen provider's data handling and charges before adding private photos.
+Never put a key in command arguments, a committed file, or a shell history line.
+
+For a direct CLI install, use `uv sync --locked --extra hosted` (or install
+`uma-bct-cli[hosted]`), then set the environment variables. For the supplied
+launcher, its verified dependencies already include the hosted client; set
+these variables in the launcher's environment before starting it. For example,
+in Bash:
+
+```bash
+export UMA_BCT_API_MODEL=anthropic/your-vision-model
+printf "API key: "
+read -r -s UMA_BCT_API_KEY
+printf "\n"
+export UMA_BCT_API_KEY
+sh run-uma-bct.sh
+```
+
+On Windows PowerShell, set `$env:UMA_BCT_API_MODEL` and
+`$env:UMA_BCT_API_KEY` in the same terminal before running
+`./run-uma-bct.ps1`. An empty key keeps the local Qwen workflow even when a
+hosted model name is set. A nonempty key requires a provider-qualified model;
+`--model` remains a local Ollama option. Hosted setup checks the installed
+client without making a paid API call, and the launcher does not start Ollama.
+The first image request verifies the key and model with the provider.
+
+The same variables work with the opt-in Compose service:
+`docker compose --profile hosted run --rm hosted`. That service has no Ollama
+dependency. Hosted APIs may omit token probabilities; the corresponding
+transcription confidence is treated as unavailable and sent for review. A
+managed batch resumes only with the same backend, provider, model, and HTTPS
+origin. Changing models after completion creates a separate batch.
 
 Older extracted bundles with private data only in `inputs` and `outputs` remain
 supported in place. New legacy runs create `outputs/Batch ...`; existing

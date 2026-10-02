@@ -663,6 +663,12 @@ export UV_DEFAULT_INDEX="https://pypi.org/simple"
 export UV_NO_CONFIG=1
 export OLLAMA_NO_CLOUD=1
 unset UMA_BCT_ALLOW_REMOTE_OLLAMA UMA_BCT_ALLOW_CONTAINER_OLLAMA 2>/dev/null || true
+HOSTED_MODE=0
+if [ -n "$(printf '%s' "${UMA_BCT_API_KEY:-}" | tr -d '[:space:]')" ]; then
+    HOSTED_MODE=1
+    [ -n "$(printf '%s' "${UMA_BCT_API_MODEL:-}" | tr -d '[:space:]')" ] || \
+        fail "UMA_BCT_API_MODEL is required when UMA_BCT_API_KEY is set."
+fi
 
 if [ "$private_data_present" -eq 0 ]; then
     # Finish all online dependencies before inviting the client to add photos.
@@ -681,28 +687,34 @@ else
 fi
 [ -x "$APP_CLI" ] || fail "The application could not be installed."
 
-recover_ollama_promotion
-OLLAMA=$(find_ollama || true)
-LLAMA_SERVER=""
-[ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
-if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA" || [ -z "$LLAMA_SERVER" ]; then
-    [ "$private_data_present" -eq 0 ] || fail \
-        "The local Ollama runtime is incomplete or unsupported; both ollama and llama-server are required. Move private files out of '$INPUTS' and '$OUTPUTS', then run this launcher again to repair it. Runtime log: $OLLAMA_LOG"
-    install_ollama
+if [ "$HOSTED_MODE" -eq 0 ]; then
+    recover_ollama_promotion
     OLLAMA=$(find_ollama || true)
     LLAMA_SERVER=""
     [ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
-fi
-[ -n "$OLLAMA" ] || fail "Ollama could not be installed. Runtime log: $OLLAMA_LOG"
-ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated. Runtime log: $OLLAMA_LOG"
-[ -n "$LLAMA_SERVER" ] || fail "Ollama's llama-server companion is missing. Runtime log: $OLLAMA_LOG"
+    if [ -z "$OLLAMA" ] || ! ollama_version_is_supported "$OLLAMA" || [ -z "$LLAMA_SERVER" ]; then
+        [ "$private_data_present" -eq 0 ] || fail \
+            "The local Ollama runtime is incomplete or unsupported; both ollama and llama-server are required. Move private files out of '$INPUTS' and '$OUTPUTS', then run this launcher again to repair it. Runtime log: $OLLAMA_LOG"
+        install_ollama
+        OLLAMA=$(find_ollama || true)
+        LLAMA_SERVER=""
+        [ -z "$OLLAMA" ] || LLAMA_SERVER=$(find_llama_server "$OLLAMA")
+    fi
+    [ -n "$OLLAMA" ] || fail "Ollama could not be installed. Runtime log: $OLLAMA_LOG"
+    ollama_version_is_supported "$OLLAMA" || fail "Ollama is too old and could not be updated. Runtime log: $OLLAMA_LOG"
+    [ -n "$LLAMA_SERVER" ] || fail "Ollama's llama-server companion is missing. Runtime log: $OLLAMA_LOG"
 
-start_owned_ollama
+    start_owned_ollama
+fi
 
 cd "$ROOT"
 if [ "$private_data_present" -eq 0 ]; then
     has_private_data && fail "Private files appeared before online preparation finished."
-    printf 'Checking the application and model. The first model download is large...\n'
+    if [ "$HOSTED_MODE" -eq 1 ]; then
+        printf 'Checking the hosted client and private folders...\n'
+    else
+        printf 'Checking the application and model. The first model download is large...\n'
+    fi
     "$APP_CLI" setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" >"$RUNTIME/setup.json" &
     APP_PID=$!
     if ! wait "$APP_PID"; then

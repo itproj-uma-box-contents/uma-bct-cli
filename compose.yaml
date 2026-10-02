@@ -66,5 +66,34 @@ services:
       - --model
       - ${UMA_BCT_MODEL:-qwen3-vl:8b-instruct-q4_K_M}
 
+  hosted:
+    profiles: [hosted]
+    build:
+      context: .
+    image: ${UMA_BCT_IMAGE:-uma-bct-cli:local}
+    user: "${UMA_BCT_UID:-1000}:${UMA_BCT_GID:-1000}"
+    environment:
+      UMA_BCT_API_KEY: ${UMA_BCT_API_KEY:-}
+      UMA_BCT_API_MODEL: ${UMA_BCT_API_MODEL:-}
+    volumes:
+      - ./inputs:/data/inputs:ro
+      - ./outputs:/data/outputs
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m
+    init: true
+    command:
+      - --json
+      - --path-to-inputs
+      - /data/inputs
+      - --path-to-outputs
+      - /data/outputs/catalogue.csv
+      - --path-to-box-images
+      - /data/outputs/crops
+
 volumes:
   ollama-models:

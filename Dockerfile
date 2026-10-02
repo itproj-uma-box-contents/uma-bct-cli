@@ -19,7 +19,7 @@ WORKDIR /app
 # metadata first keeps this layer reusable when only application code changes.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --locked --no-dev --no-editable
+RUN uv sync --locked --no-dev --no-editable --extra hosted
 
 FROM ${PYTHON_IMAGE} AS production
 
