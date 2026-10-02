@@ -184,6 +184,13 @@ photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 ## Compatibility and privacy
 
+The future hosted-model configuration uses `UMA_BCT_API_KEY` and
+`UMA_BCT_API_MODEL` (in `provider/model` form). An empty key keeps the local
+Qwen workflow, even if a model name is set. A nonempty key without a model is
+rejected. Hosted processing is not implemented yet, so the CLI currently
+rejects all nonempty keys before reading photographs or contacting a model.
+Never put API keys in command arguments or committed files.
+
 Older extracted bundles with private data only in `inputs` and `outputs` remain
 supported in place. New legacy runs create `outputs/Batch ...`; existing
 top-level catalogues, manifests, and crops are not changed. If both the friendly
