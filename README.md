@@ -225,6 +225,91 @@ transcription confidence is treated as unavailable and sent for review. A
 managed batch resumes only with the same backend, provider, model, and HTTPS
 origin. Changing models after completion creates a separate batch.
 
+### Test Gemini without paying
+
+Google currently lists [`gemini-3.8-flash`](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.8-flash)
+with free input and output tokens. It accepts image input and returns text.
+Free-tier access and quotas depend on your project; check its **Billing Tier**
+and [active rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+in Google AI Studio before testing. Keep the project on the Free Tier to avoid
+paid API usage. The model here reads images; it is not the separate image
+*generation* model. See the [model capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash/)
+and [billing guide](https://ai.google.dev/gemini-api/docs/billing).
+
+Google states that Free Tier content may be used to improve its products.
+**Use only invented test images with a Free Tier key. Never use UMA client photos
+or other confidential material for this test.** Obtain a Gemini API key in
+[Google AI Studio](https://aistudio.google.com/apikey). The key belongs to a
+project, so confirm that project's tier before using it. See Google's
+[API key guide](https://ai.google.dev/gemini-api/docs/api-key).
+
+From the repository root, this Bash example makes one synthetic archive-box
+image in a private temporary directory, then runs the full detection and
+transcription workflow. Enter the key at the hidden prompt; it will not appear
+in the shell history:
+
+```bash
+uv sync --locked --extra hosted
+test_root="$(mktemp -d)"
+export UMA_BCT_API_MODEL=gemini/gemini-3.8-flash
+printf 'Gemini API key: '
+read -r -s UMA_BCT_API_KEY
+printf '\n'
+export UMA_BCT_API_KEY
+
+uv run --extra hosted python - "$test_root" <<'PY'
+from pathlib import Path
+import sys
+from PIL import Image, ImageDraw, ImageFont
+
+root = Path(sys.argv[1])
+image = Image.new("RGB", (1200, 800), "#e8e4db")
+draw = ImageDraw.Draw(image)
+draw.rectangle((120, 100, 1080, 700), fill="#ad9270", outline="#574936", width=10)
+draw.rectangle((240, 255, 960, 565), fill="white", outline="black", width=5)
+font = ImageFont.load_default(size=58)
+draw.text((280, 315), "1960.0009", font=font, fill="black")
+draw.text((280, 425), "Unit 4", font=font, fill="black")
+image.save(root / "synthetic-box.png")
+PY
+
+uv run --extra hosted uma-bct --json \
+  --path-to-inputs "$test_root/synthetic-box.png" \
+  --path-to-outputs "$test_root/catalogue.csv" \
+  --path-to-box-images "$test_root/crops"
+```
+
+The JSON summary names the actual model and the run manifest. Open
+`$test_root/catalogue.run.json` to check `model.backend` is `hosted` and
+`model.model` is `gemini/gemini-3.8-flash`; review `catalogue.csv` and its crop
+if a row was produced. A synthetic drawing may be missed or transcribed
+imperfectly, so inspect `status`, `failures`, and `images` in the manifest
+rather than treating catalogue accuracy as the API connection check. If a
+warning says `Hosted model request failed`, check the key, model name, and quota
+in AI Studio. One photo can make several API requests through detection,
+transcription, and fallback. When finished, run
+`unset UMA_BCT_API_KEY UMA_BCT_API_MODEL` in Bash.
+
+On Windows, create an invented PNG in Paint and save it in a new temporary
+folder. In PowerShell, set the model and enter the key without putting it in
+command history, then point the same CLI at that PNG:
+
+```powershell
+uv sync --locked --extra hosted
+$env:UMA_BCT_API_MODEL = 'gemini/gemini-3.8-flash'
+$secret = Read-Host 'Gemini API key' -AsSecureString
+$env:UMA_BCT_API_KEY = [System.Net.NetworkCredential]::new('', $secret).Password
+uv run --extra hosted uma-bct --json `
+  --path-to-inputs 'C:\path\to\invented-box.png' `
+  --path-to-outputs 'C:\path\to\gemini-test.csv'
+Remove-Item Env:UMA_BCT_API_KEY
+Remove-Item Env:UMA_BCT_API_MODEL
+```
+
+Replace both paths with your own temporary paths. The CSV and its run manifest
+must not already exist, unless you use `--force`. The
+[direct CLI options](#compatibility-and-privacy) are the same on every platform.
+
 Older extracted bundles with private data only in `inputs` and `outputs` remain
 supported in place. New legacy runs create `outputs/Batch ...`; existing
 top-level catalogues, manifests, and crops are not changed. If both the friendly
