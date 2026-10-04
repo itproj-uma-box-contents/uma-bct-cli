@@ -12,7 +12,8 @@ class Date:
     year: int | None = None
 
     def to_string(self) -> str:
-        return f"{component_to_string(self.day, 2)}/{component_to_string(self.month, 2)}/{component_to_string(self.year, 4)}"
+        string = f"{component_to_string(self.day, 2)}/{component_to_string(self.month, 2)}/{component_to_string(self.year, 4)}"
+        return string if string != "//" else "None"
 
     def is_valid(self) -> bool:
         try: 
