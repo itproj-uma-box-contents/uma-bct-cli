@@ -23,7 +23,9 @@ class CatalogueRulesTest(unittest.TestCase):
                 self.assertEqual(list(record)[:6], ["Unit Type", "Unit Number", "Description", "Dates", "Earliest Date", "Latest Date"])
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
-                self.assertEqual(record["Date Range"], "No Dates")
+                self.assertEqual(record["Dates"], "No Dates")
+                self.assertEqual(record["Earliest Date"], "None")
+                self.assertEqual(record["Latest Date"], "None")
 
     def test_accepts_a_prefix_on_the_line_before_unit_number(self):
         box = make_box()
@@ -359,7 +361,8 @@ class CsvExportTest(unittest.TestCase):
                     "Unit Number",
                     "Description",
                     "Dates",
-                    "Date Range",
+                    "Earliest Date",
+                    "Latest Date",
                     "Transcription Confidence (%)",
                     "Review Flags",
                     "Cropped Box Image Link",
