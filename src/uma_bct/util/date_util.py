@@ -12,9 +12,17 @@ class Date:
     year: int | None = None
 
     def to_string(self) -> str:
-        string = f"{component_to_string(self.day, 2)}/{component_to_string(self.month, 2)}/{component_to_string(self.year, 4)}"
-        return string if string != "//" else "None"
-
+        string = component_to_string(self.day, 2)
+        if self.month:
+            if self.day:
+                string+="/"
+            string+=component_to_string(self.month, 2)
+        if self.year:
+            if self.month:
+                string+="/"
+            string+=component_to_string(self.year, 4)
+        return string if string else "None"
+    
     def is_valid(self) -> bool:
         try: 
             datetime(self.year if self.year else 2000, 

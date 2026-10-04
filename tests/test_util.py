@@ -41,7 +41,7 @@ class TestDateRangeBasics(unittest.TestCase):
  
     def test_to_string(self):
         dr = DateRange(start=Date(year=2020), end=Date(year=2021))
-        self.assertEqual(dr.to_string(), "//2020 - //2021")
+        self.assertEqual(dr.to_string(), "2020 - 2021")
  
     def test_invalid_if_start_is_invalid(self):
         dr = DateRange(start=Date(day=32, month=2, year=2023), end=Date(year=2023))
