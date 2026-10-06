@@ -488,15 +488,20 @@ class ClientDeliveryTest(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
     def test_posix_launcher_preserves_stdin_for_verification_prompt(self):
-        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, _events):
-            output = root / "answer.txt"
-            environment["UMA_BCT_TEST_ANSWER"] = str(output)
-            write_executable(root / ".uma-bct-runtime/app/bin/uma-bct",
-                             '#!/bin/sh\nread -r answer\nprintf \'%s\' "$answer" >"$UMA_BCT_TEST_ANSWER"\n')
-            result = subprocess.run(launcher_command(launcher), env=environment, input="y\n",
-                                    capture_output=True, text=True, timeout=20)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(output.read_text(), "y")
+        shells = ["sh"]
+        if dash := shutil.which("dash"):
+            shells.append(dash)
+        for shell in shells:
+            with self.subTest(shell=shell), launcher_fixture(prepare_posix_launcher) as fixture:
+                root, launcher, environment, _events = fixture
+                output = root / "answer.txt"
+                environment["UMA_BCT_TEST_ANSWER"] = str(output)
+                write_executable(root / ".uma-bct-runtime/app/bin/uma-bct",
+                                 '#!/bin/sh\nread -r answer\nprintf \'%s\' "$answer" >"$UMA_BCT_TEST_ANSWER"\n')
+                result = subprocess.run([shell, str(launcher)], env=environment, input="y\n",
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(), "y")
 
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(["sh", "-n", str(ROOT / "run-uma-bct.sh")], check=True, capture_output=True, text=True)

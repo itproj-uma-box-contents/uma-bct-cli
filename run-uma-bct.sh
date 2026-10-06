@@ -738,9 +738,11 @@ has_input_images || fail "No supported photos were found in $INPUTS"
 set +e
 # Leave the CLI attached to this terminal so progress stays on stderr and its
 # final readable report appears here before the Results folder opens.
-# Explicit stdin redirection keeps a background child attached to the terminal.
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" <&0 &
+# Save stdin before dash replaces a background child's fd 0 with /dev/null.
+exec 3<&0
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" <&3 3<&- &
 APP_PID=$!
+exec 3<&-
 wait "$APP_PID"
 status=$?
 APP_PID=""
