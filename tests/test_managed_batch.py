@@ -523,6 +523,58 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(status, 2)
             self.assertIn("processing configuration changed", stderr)
 
+    def test_legacy_checkpoint_resumes_without_verification(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            status, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg")
+            )
+            self.assertEqual(status, 130)
+            batch = Path(interrupted["batch_directory"])
+            progress_path = batch / PROGRESS_FILE_NAME
+            progress = read_json_file(progress_path, "Run progress")
+            progress["configuration"].pop("detect_missing_boxes")
+            progress.pop("verification")
+            progress_path.write_text(json.dumps(progress), encoding="utf-8")
+            crops = {path: path.read_bytes() for path in (batch / BOX_IMAGES_DIRECTORY_NAME).iterdir()}
+
+            resumed = ManagedPipeline()
+            resumed.transcriber = Mock()
+            with patch.dict(os.environ, {"UMA_BCT_VERIFICATION": "always"}):
+                status, summary, _ = self.run_managed_batch_and_capture_output(root, resumed)
+
+            self.assertEqual(status, 0)
+            self.assertEqual(resumed.calls, ["02.jpg"])
+            self.assertEqual(summary["images_reused"], 1)
+            resumed.transcriber.verify.assert_not_called()
+            resumed.transcriber.resolve_discrepancy.assert_not_called()
+            details = read_json_file(Path(summary["run_manifest"]), "Run details")
+            self.assertEqual(details["verification"], {"mode": "never", "decision": False, "complete": True})
+            for path, content in crops.items():
+                self.assertEqual(path.read_bytes(), content)
+
+    def test_legacy_checkpoint_still_rejects_changed_processing_options(self):
+        for change in ("missing_boxes", "confidence"):
+            with self.subTest(change=change), self.prepared_root("01.jpg", "02.jpg") as root:
+                _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(interrupt_name="02.jpg")
+                )
+                progress_path = Path(interrupted["batch_directory"]) / PROGRESS_FILE_NAME
+                progress = read_json_file(progress_path, "Run progress")
+                progress["configuration"].pop("detect_missing_boxes")
+                progress.pop("verification")
+                if change == "confidence":
+                    progress["configuration"]["minimum_transcription_confidence"] = 90
+                progress_path.write_text(json.dumps(progress), encoding="utf-8")
+                pipeline = ManagedPipeline()
+
+                status, _, stderr = self.run_managed_batch_and_capture_output(
+                    root, pipeline, detect_missing_boxes=change != "missing_boxes"
+                )
+
+                self.assertEqual(status, 2)
+                self.assertEqual(pipeline.calls, [])
+                self.assertIn("processing configuration changed", stderr)
+
     def test_stable_read_rejects_a_short_read_hidden_by_restored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source.bin"

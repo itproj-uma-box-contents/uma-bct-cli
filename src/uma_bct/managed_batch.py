@@ -638,7 +638,11 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         requested_verification = getattr(arguments, "verification", None)
         if requested_verification and requested_verification != progress.get("verification", {}).get("mode", "never"):
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
-        if progress.get("configuration") != current_configuration:
+        stored_configuration = progress.get("configuration")
+        if isinstance(stored_configuration, dict):
+            # Older managed runs always generated missing-box suggestions.
+            stored_configuration = {"detect_missing_boxes": True, **stored_configuration}
+        if stored_configuration != current_configuration:
             raise ManagedBatchSelectionError(
                 batch_directory,
                 f"Cannot resume {batch_directory}: the processing configuration changed. Restore the original options.",

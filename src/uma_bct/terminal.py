@@ -58,7 +58,7 @@ class TerminalProgress:
     def __enter__(self) -> TerminalProgress:
         # Rich refreshes one line on an interactive terminal. Captured output
         # gets milestones so logs do not fill with repeated progress frames.
-        if self.console is not None and self.console.is_terminal:
+        if self.console is not None and self.console.is_terminal and not self.console.is_dumb_terminal:
             try:
                 columns = [SpinnerColumn(), TextColumn("{task.description}")]
                 if self.total is not None:

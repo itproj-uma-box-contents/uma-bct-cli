@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +11,11 @@ from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
 
 
 class TerminalProgressTest(unittest.TestCase):
+    def setUp(self):
+        terminal = patch.dict(os.environ, {"TERM": "xterm-256color"})
+        terminal.start()
+        self.addCleanup(terminal.stop)
+
     def test_captured_progress_and_human_report_use_plain_committed_counts(self):
         moment = [100.0]
         output = io.StringIO()
@@ -97,6 +103,24 @@ class TerminalProgressTest(unittest.TestCase):
                 reporter.photo_finished(1, "complete", 1)
         self.assertIn("Processing Photo 1 of 1: shelf.jpg", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
+
+    def test_dumb_terminal_uses_milestones_instead_of_silent_live_updates(self):
+        for total in (None, 1):
+            with self.subTest(total=total), patch.dict(os.environ, {"TERM": "dumb"}):
+                output = io.StringIO()
+                with patch("uma_bct.terminal.Progress") as make_progress:
+                    with TerminalProgress(total, stream=output, force_terminal=True) as reporter:
+                        reporter.phase("Verifying crop 1 of 1")
+                        if total is not None:
+                            reporter.photo_started(1, Path("shelf.jpg"))
+                            reporter.photo_finished(1, "complete", 1)
+                    make_progress.assert_not_called()
+                self.assertIn("Verifying crop 1 of 1", output.getvalue())
+                self.assertNotIn("\x1b[", output.getvalue())
+                if total is None:
+                    self.assertIn("Preparing UMA BCT", output.getvalue())
+                else:
+                    self.assertIn("Photo 1 finished: complete | 1 box found", output.getvalue())
 
     def test_live_display_error_falls_back_to_milestones(self):
         output = io.StringIO()
