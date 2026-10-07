@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
+from uma_bct.adapters.qwen_transcriber import GEMINI_FULL_IMAGE_QUESTION, crop_question, gemini_crop_question
 from uma_bct.bootstrap import build_pipeline
 from uma_bct.cli import parse_args
 from uma_bct.export import export_catalogue
@@ -25,6 +26,7 @@ from uma_bct.managed_batch import (
     validate_model_resume,
 )
 from uma_bct.model_config import HostedModelConfig
+from uma_bct.ports import ModelResponse
 from uma_bct.setup_command import run_setup
 
 
@@ -55,14 +57,16 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertIs(pipeline.transcriber.client, model)
         self.assertEqual(pipeline.model_metadata, self.metadata)
         self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
+        self.assertIs(pipeline.transcriber.crop_prompt, crop_question)
 
     def test_gemini_pipeline_selects_y_first_grounding_without_ollama(self):
         config = HostedModelConfig(model="gemini/gemini-3.5-flash-lite", api_key="secret-test-key")
         model = Mock()
         model.preflight.return_value = {"backend": "hosted", "model": config.model}
+        stdout, stderr = io.StringIO(), io.StringIO()
         with patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), patch(
             "uma_bct.bootstrap.OllamaVisionModel"
-        ) as ollama:
+        ) as ollama, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             pipeline = build_pipeline(
                 detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
                 work_directory=Path("unused"), minimum_detector_confidence=0.6,
@@ -72,6 +76,55 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertEqual(pipeline.detector.coordinate_order, "yxyx")
         self.assertIs(pipeline.detector.client, model)
         self.assertIs(pipeline.transcriber.client, model)
+        self.assertIs(pipeline.transcriber.crop_prompt, gemini_crop_question)
+        self.assertEqual(pipeline.transcriber.full_image_prompt, GEMINI_FULL_IMAGE_QUESTION)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn(f"Selected model: {config.model} (hosted)", stderr.getvalue())
+        self.assertNotIn(config.api_key, stderr.getvalue())
+
+    def test_gemini_preserves_unreadable_front_and_omits_no_box_response(self):
+        config = HostedModelConfig(model="gemini/gemini-3.5-flash-lite", api_key="secret-test-key")
+        model = Mock()
+        model.preflight.return_value = {"backend": "hosted", "model": config.model}
+        model.query.side_effect = [
+            ModelResponse(value={"boxes": [
+                {"bbox_2d": [0, 0, 1000, 500]},
+                {"bbox_2d": [900, 600, 1000, 1000]},
+            ]}),
+            ModelResponse(value={"boxes": [{
+                "position": "centre", "record_identifiers": [], "unit": "",
+                "typed": [], "handwritten": [], "auxiliary_annotations": [],
+            }]}),
+            ModelResponse(value={"boxes": []}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo = root / "synthetic.png"
+            Image.new("RGB", (300, 200), "white").save(photo)
+            with patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                pipeline = build_pipeline(
+                    detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                    work_directory=root / "crops", minimum_detector_confidence=0.6, hosted_model=config,
+                )
+                result = pipeline.process(photo)
+            catalogue = root / "catalogue.csv"
+            export_catalogue([result], catalogue)
+            with catalogue.open(encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+        self.assertEqual(model.query.call_count, 3, "a retained unreadable box prevents full-image retry")
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(rows), 1, "preserve the unreadable front, not the rejected fragment")
+        self.assertEqual(rows[0]["Unit Number"], "")
+        self.assertIn("Missing unit", rows[0]["Review Flags"])
+        self.assertTrue(rows[0]["Cropped Box Image Link"])
+        self.assertTrue(any("returned no boxes" in warning for warning in result.warnings))
+        self.assertEqual(
+            model.query.call_args_list[1].args[1], gemini_crop_question(result.records[0].box)
+        )
+        self.assertEqual(result.records[0].transcription.confidence, 0)
+        self.assertTrue(result.records[0].transcription.needs_review)
 
 
     def test_synthetic_photo_runs_detection_and_transcription_through_hosted_client(self):

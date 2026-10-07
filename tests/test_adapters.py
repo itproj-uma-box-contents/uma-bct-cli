@@ -18,7 +18,13 @@ from uma_bct.adapters.ollama_client import (
     json_from_text,
     normalize_ollama_host,
 )
-from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, QwenBoxDetector, validate_grounding_proposals
+from uma_bct.adapters.qwen_detector import (
+    GEMINI_GROUNDING_SCHEMA,
+    GROUNDING_QUESTION,
+    GROUNDING_SCHEMA,
+    QwenBoxDetector,
+    validate_grounding_proposals,
+)
 from uma_bct.adapters.qwen_response import box_object_spans, box_token_confidences, wrap_boxes
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
@@ -113,6 +119,7 @@ class QwenAdapterTest(unittest.TestCase):
             regions = detector.detect(make_image())
         self.assertEqual(regions[0].bounding_box.as_xywh(), (20, 60, 80, 180))
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
+        self.assertIs(client.calls[0][2], GROUNDING_SCHEMA)
 
     def test_gemini_detector_converts_y_first_coordinates_on_a_non_square_image(self):
         client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]})
@@ -126,6 +133,8 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
         self.assertIn("[ymin, xmin, ymax, xmax]", client.calls[0][1])
         self.assertNotIn("[x1, y1, x2, y2]", client.calls[0][1])
+        self.assertIs(client.calls[0][2], GEMINI_GROUNDING_SCHEMA)
+        self.assertNotIn("description", GROUNDING_SCHEMA["properties"]["boxes"]["items"]["properties"]["bbox_2d"])
 
     def test_gemini_detector_keeps_side_by_side_boxes_as_vertical_crops(self):
         client = FakeVision({"boxes": [

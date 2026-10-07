@@ -226,6 +226,10 @@ Gemini requests use the versioned `/v1beta` API base; the manifest retains the
 provider's HTTPS origin. LiteLLM's feedback banner is suppressed to keep JSON
 stdout clean.
 
+After model preflight, the CLI prints `Selected model: <model> (<backend>)` on
+stderr before processing photos. For hosted models, preflight checks configuration
+and dependencies; the first API request still determines model access.
+
 The same variables work with the opt-in Compose service:
 `docker compose --profile hosted run --rm hosted`. That service has no Ollama
 dependency. Hosted APIs may omit token probabilities; the corresponding
@@ -247,6 +251,14 @@ The `qwen` stage name also appears in hosted manifests. Its detector confidence
 of `1.0` is a placeholder for accepted geometry, not a measured probability of
 correct detection. `--min-detector-confidence` filters OpenCV proposals only.
 Thin fragments and empty or unreadable crop responses still require review.
+
+Gemini-specific prompts request one rectangle per substantially visible physical
+box front and exclude shelves, side panels, labels, and thin edge fragments.
+Transcription can return `{"boxes": []}` for a non-box crop; this produces a
+processing warning without a catalogue row. A genuine box with unreadable text
+retains its row for review. These prompts do not impose a fixed box count or
+guarantee correct localization; assess the latest run's crops and manifest rather
+than a crop directory from an earlier run.
 
 The current `Transcription mismatch` flag also covers `needs_review`, including
 unavailable token confidence. It can therefore appear alongside `Low confidence`

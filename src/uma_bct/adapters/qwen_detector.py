@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import tempfile
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -33,7 +34,28 @@ any text. Return exactly one JSON object containing one top-level "boxes" array;
 never return separate JSON objects. Return only the requested JSON."""
 
 GROUNDING_QUESTION = _GROUNDING_QUESTION.format(coordinates="[x1, y1, x2, y2]")
-GEMINI_GROUNDING_QUESTION = _GROUNDING_QUESTION.format(coordinates="[ymin, xmin, ymax, xmax]")
+GEMINI_GROUNDING_QUESTION = """Detect physical cardboard archive-box FRONT FACES in this image.
+
+A qualifying object is one substantially visible front face of one physical
+archive box. Labels and handwriting belong to that face, not to separate boxes.
+A side panel, lid, thin sliver of a neighbouring box, shelf board, shelf upright,
+gap, shadow, or loose label is not a qualifying front face. Do not require a
+legible label: a real box with an unreadable or absent label still qualifies.
+
+First count the qualifying front faces visually, then return exactly one tight
+bounding rectangle for each face in left-to-right, top-row-first order. Do not
+split one face into multiple rectangles or add boxes to fill gaps in a sequence.
+Enclose the whole visible front face, including its printed label and handwriting;
+do not crop just the label, an edge, or a narrow side strip. Base all four edges
+on visible boundaries; do not extrapolate hidden boxes. A qualifying front face
+that extends to the image boundary can use that boundary as its rectangle edge.
+
+Return one JSON object with a "boxes" array. Each object contains only "bbox_2d":
+[ymin, xmin, ymax, xmax], normalized to 0-1000 for the supplied image.
+Y means vertical distance from the TOP; X means horizontal distance from the LEFT.
+0 is the top/left boundary and 1000 is the bottom/right boundary.
+Use {"boxes": []} when no qualifying front face is visible.
+Do not transcribe text or report the count separately. Return only the JSON."""
 
 GROUNDING_SCHEMA = {
     "type": "object",
@@ -50,6 +72,12 @@ GROUNDING_SCHEMA = {
     },
     "required": ["boxes"],
 }
+
+GEMINI_GROUNDING_SCHEMA = deepcopy(GROUNDING_SCHEMA)
+GEMINI_GROUNDING_SCHEMA["properties"]["boxes"]["items"]["properties"]["bbox_2d"]["description"] = (
+    "One whole visible archive-box front face as [ymin, xmin, ymax, xmax], normalized to 0-1000. "
+    "Do not return a label, side panel, shelf part, or thin fragment as a separate box."
+)
 
 
 def validate_grounding_proposals(
@@ -123,11 +151,12 @@ class QwenBoxDetector:
         self.dropped_proposal_warnings = ()
         validator = partial(validate_grounding_proposals, coordinate_order=self.coordinate_order)
         prompt = GEMINI_GROUNDING_QUESTION if self.coordinate_order == "yxyx" else GROUNDING_QUESTION
+        schema = GEMINI_GROUNDING_SCHEMA if self.coordinate_order == "yxyx" else GROUNDING_SCHEMA
         # Qwen needs only pixels for grounding. The temporary PNG prevents
         # source EXIF from entering the model request.
         with sanitized_detection_image(image) as image_path:
             response = self.client.query(
-                image_path, prompt, GROUNDING_SCHEMA, validator=validator
+                image_path, prompt, schema, validator=validator
             )
         normalized_boxes, dropped = validator(response.value)
         regions: list[DetectedRegion] = []

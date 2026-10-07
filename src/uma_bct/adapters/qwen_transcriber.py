@@ -21,7 +21,8 @@ rather than guessing a plausible-looking number.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 from ..domain import Box, BoxTranscription
@@ -167,6 +168,35 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 {RULES}"""
 
 
+GEMINI_PHYSICAL_BOX_RULES = """Physical-box checks:
+- Report only substantially visible archive-box front faces. A side panel, lid,
+  shelf, gap, shadow, loose label, or thin edge fragment is not a separate box.
+- If no qualifying front face is visible, return {"boxes": []}. Never create an
+  empty placeholder record for a non-box region or an edge fragment.
+- If a real qualifying front face is visible but its text is unreadable or
+  absent, preserve its record with blank fields and [] lists as appropriate.
+- Never invent identifiers, unit numbers, handwriting, or missing boxes to
+  complete a sequence. Missing-number suggestions are handled after transcription.
+- Do not copy text from a neighbouring face into the target box's record."""
+
+GEMINI_FULL_IMAGE_QUESTION = f"{QUESTION}\n\n{GEMINI_PHYSICAL_BOX_RULES}"
+
+
+def gemini_crop_question(box: Box) -> str:
+    return f"""Inspect only the supplied archive-box crop. The original photo is not supplied.
+Target position in the original photo: {box.position}.
+
+Report the substantially visible front face occupying the central area of this
+crop. Ignore neighbouring side panels and front-face fragments near the edges.
+Return multiple records only if multiple substantial front faces occupy comparable
+central areas. Each physical front face must appear at most once.
+{GEMINI_PHYSICAL_BOX_RULES}
+
+{FIELDS}
+
+{RULES}"""
+
+
 def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTranscription:
     values = (*item["typed"], *item["handwritten"], *item["auxiliary_annotations"])
     unit_number, unit_needs_review = resolve_unit_claim(item["unit"], item["typed"], item["handwritten"])
@@ -193,6 +223,8 @@ def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTra
 class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
+    crop_prompt: Callable[[Box], str] = field(default=crop_question, kw_only=True, repr=False)
+    full_image_prompt: str = field(default=QUESTION, kw_only=True, repr=False)
 
     def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         # Validate the model's structure before mapping it to domain objects.
@@ -205,7 +237,7 @@ class QwenTextTranscriber:
         return [to_domain(box, record, confidence) for record, confidence in zip(records, confidences, strict=True)]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
-        return self.request(box, crop_question(box))
+        return self.request(box, self.crop_prompt(box))
 
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
-        return self.request(box, QUESTION)
+        return self.request(box, self.full_image_prompt)
