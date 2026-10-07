@@ -1,6 +1,7 @@
 """Hosted selection shares the local pipeline without crossing run identities."""
 
 import contextlib
+import csv
 import io
 import json
 import tempfile
@@ -13,6 +14,7 @@ from PIL import Image
 
 from uma_bct.bootstrap import build_pipeline
 from uma_bct.cli import parse_args
+from uma_bct.export import export_catalogue
 from uma_bct.managed_batch import (
     DETAILS_FILE_NAME,
     ManagedBatchError,
@@ -83,6 +85,16 @@ class HostedWorkflowTest(unittest.TestCase):
                     hosted_model=self.config,
                 )
                 result = pipeline.process(photo)
+            catalogue = root / "catalogue.csv"
+            export_catalogue([result], catalogue, detect_missing_boxes=False)
+            with catalogue.open(encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+            self.assertEqual(rows[0]["Unit Type"], "1960.0009")
+            self.assertEqual(rows[0]["Unit Number"], "0004")
+            self.assertEqual(rows[0]["Transcription Confidence (%)"], "0")
+            self.assertTrue(rows[0]["Review Flags"])
         self.assertEqual(sdk.completion.call_count, 2)
         self.assertEqual(result.model_metadata, self.metadata)
         self.assertEqual(len(result.records), 1)

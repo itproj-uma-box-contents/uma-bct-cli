@@ -10,6 +10,9 @@ from __future__ import annotations
 import base64
 import json
 import math
+import random
+import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +28,41 @@ PROVIDER_API_BASES = {
     "gemini": "https://generativelanguage.googleapis.com",
 }
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
+MAX_SERVER_RETRIES = 2
+HTTP_ERROR_HINTS = {
+    400: "The provider rejected the request parameters.",
+    401: "Check the API key.",
+    403: "Check the API key restrictions and project access.",
+    404: "Check the model name and its availability for this project.",
+    429: "Check the project's request, token, and daily quotas in the provider console.",
+    503: "The provider is temporarily unavailable or experiencing high demand; try again later.",
+}
+
+
+def _http_status(error: Exception) -> int | None:
+    status = getattr(error, "status_code", None)
+    if type(status) is not int:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    return status if type(status) is int and 400 <= status <= 599 else None
+
+
+def _logprobs_rejected(error: Exception) -> bool:
+    """Inspect only to recognize an optional capability rejection; never log it."""
+
+    return _http_status(error) == 400 and re.search(
+        r"logprobs\s+(?:is|are)\s+not\s+(?:supported|enabled)", str(error), re.IGNORECASE
+    ) is not None
+
+
+def _request_failure(error: Exception) -> RuntimeError:
+    status = _http_status(error)
+    detail = type(error).__name__
+    if status is not None:
+        detail += f"; HTTP {status}"
+    hint = HTTP_ERROR_HINTS.get(status, "")
+    message = f"Hosted model request failed ({detail})."
+    return RuntimeError(f"{message} {hint}" if hint else message)
 
 
 def _load_litellm() -> Any:
@@ -32,6 +70,9 @@ def _load_litellm() -> Any:
         import litellm
     except ImportError as error:
         raise RuntimeError("Hosted models require the optional 'hosted' package extra.") from error
+    # LiteLLM otherwise prints its feedback banner to stdout on failures,
+    # corrupting the CLI's machine-readable JSON output.
+    litellm.suppress_debug_info = True
     return litellm
 
 
@@ -129,10 +170,16 @@ class HostedVisionModel:
         request_prompt = f"{prompt}\n\nReturn only one JSON object matching this schema: {schema_text}"
         litellm = _load_litellm()
         supported = _supported_parameters(litellm, self.config.model)
+        api_base = PROVIDER_API_BASES[self.config.provider]
+        if self.config.provider == "gemini":
+            # LiteLLM treats a supplied Gemini base as including its API version.
+            # Keep the public metadata as the origin, but use the versioned base
+            # so the SDK constructs /v1beta/models/<model>:generateContent.
+            api_base += "/v1beta"
         arguments: dict[str, Any] = {
             "model": self.config.model,
             "api_key": self.config.api_key,
-            "api_base": PROVIDER_API_BASES[self.config.provider],
+            "api_base": api_base,
             "messages": [
                 {
                     "role": "user",
@@ -156,11 +203,24 @@ class HostedVisionModel:
                 arguments["response_format"] = {"type": "json_object"}
         if logprobs and "logprobs" in supported:
             arguments["logprobs"] = True
-        try:
-            response = litellm.completion(**arguments)
-        except Exception as error:
-            # Provider exceptions may contain credentials, URLs, or reply text.
-            raise RuntimeError(f"Hosted model request failed ({type(error).__name__}).") from None
+        server_retries = 0
+        while True:
+            try:
+                response = litellm.completion(**arguments)
+                break
+            except Exception as error:
+                # SDK capability lists describe parameter translation, not
+                # necessarily support by the selected model or account.
+                if self.config.provider == "gemini" and "logprobs" in arguments and _logprobs_rejected(error):
+                    arguments.pop("logprobs")
+                    continue
+                if _http_status(error) in TRANSIENT_HTTP_STATUSES and server_retries < MAX_SERVER_RETRIES:
+                    time.sleep(2 ** (server_retries + 1) + random.uniform(0, 1))
+                    server_retries += 1
+                    continue
+                # Provider exceptions may contain credentials, URLs, or reply
+                # text. Expose only a numeric status and our own fixed hint.
+                raise _request_failure(error) from None
         choices = response_field(response, "choices")
         if not isinstance(choices, (list, tuple)) or len(choices) != 1:
             raise ValueError("The hosted model returned an invalid response envelope.")

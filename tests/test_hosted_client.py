@@ -16,6 +16,12 @@ from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 from uma_bct.model_config import HostedModelConfig
 
 
+class ProviderError(Exception):
+    def __init__(self, status_code, message="secret-test-key private-image-text"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class HostedVisionModelTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -50,7 +56,11 @@ class HostedVisionModelTest(unittest.TestCase):
                 self.assertEqual(result.token_logprobs, ())
                 arguments = sdk.completion.call_args.kwargs
                 self.assertEqual(arguments["model"], f"{provider}/example")
-                self.assertEqual(arguments["api_base"], PROVIDER_API_BASES[provider])
+                expected_base = (
+                    "https://generativelanguage.googleapis.com/v1beta"
+                    if provider == "gemini" else PROVIDER_API_BASES[provider]
+                )
+                self.assertEqual(arguments["api_base"], expected_base)
                 self.assertEqual(arguments["api_key"], "secret-test-key")
                 self.assertEqual(arguments["response_format"], {"type": "json_object"})
                 self.assertEqual(arguments["num_retries"], 0)
@@ -105,6 +115,89 @@ class HostedVisionModelTest(unittest.TestCase):
         self.assertEqual(metadata["backend"], "hosted")
         self.assertEqual(metadata["api_base"], PROVIDER_API_BASES["gemini"])
         sdk.completion.assert_not_called()
+
+    def test_client_load_suppresses_sdk_stdout_feedback(self):
+        sdk = self.sdk()
+        sdk.suppress_debug_info = False
+        client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+        with patch.dict("sys.modules", {"litellm": sdk}):
+            client.preflight()
+        self.assertTrue(sdk.suppress_debug_info)
+        sdk.completion.assert_not_called()
+
+    def test_temporary_server_error_retries_the_same_request(self):
+        for status in (500, 502, 503, 504):
+            sdk = self.sdk()
+            sdk.completion.side_effect = [ProviderError(status), sdk.completion.return_value]
+            client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+            with self.subTest(status=status), patch(
+                "uma_bct.adapters.hosted_client._load_litellm", return_value=sdk
+            ), patch("uma_bct.adapters.hosted_client.time.sleep") as sleep:
+                result = client.query(self.image_path, "Read box.", self.schema)
+            self.assertEqual(result.value, {"boxes": []})
+            self.assertEqual(sdk.completion.call_count, 2)
+            self.assertEqual(sdk.completion.call_args_list[0], sdk.completion.call_args_list[1])
+            sleep.assert_called_once()
+            self.assertGreaterEqual(sleep.call_args.args[0], 2)
+            self.assertLessEqual(sleep.call_args.args[0], 3)
+
+    def test_server_retries_are_bounded_and_do_not_expose_reply_text(self):
+        sdk = self.sdk()
+        sdk.completion.side_effect = ProviderError(503)
+        client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret-test-key"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk), patch(
+            "uma_bct.adapters.hosted_client.time.sleep"
+        ) as sleep, self.assertRaises(RuntimeError) as raised:
+            client.query(self.image_path, "Read box.", self.schema)
+        self.assertEqual(sdk.completion.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertIn("HTTP 503", str(raised.exception))
+        self.assertIn("high demand", str(raised.exception))
+        self.assertNotIn("secret-test-key", str(raised.exception))
+        self.assertNotIn("private-image-text", str(raised.exception))
+
+    def test_client_and_quota_errors_are_not_retried(self):
+        for status in (400, 401, 403, 404, 429):
+            sdk = self.sdk(params=("response_format", "logprobs"))
+            sdk.completion.side_effect = ProviderError(status)
+            client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+            with self.subTest(status=status), patch(
+                "uma_bct.adapters.hosted_client._load_litellm", return_value=sdk
+            ), patch("uma_bct.adapters.hosted_client.time.sleep") as sleep, self.assertRaises(RuntimeError) as raised:
+                client.query(self.image_path, "Read box.", self.schema, logprobs=True)
+            sdk.completion.assert_called_once()
+            sleep.assert_not_called()
+            self.assertIn(f"HTTP {status}", str(raised.exception))
+            self.assertNotIn("secret-test-key", str(raised.exception))
+
+    def test_gemini_logprobs_rejection_still_transcribes_and_flags_review(self):
+        content = json.dumps({"boxes": [{
+            "position": "left", "record_identifiers": ["1960.0009"], "unit": "4",
+            "typed": ["1960.0009", "Unit 4"], "handwritten": [], "auxiliary_annotations": [],
+        }]})
+        for message in ("Logprobs is not supported for this model.", "Logprobs is not enabled for this model."):
+            sdk = self.sdk(content, params=("response_format", "logprobs"))
+            sdk.completion.side_effect = [ProviderError(400, message), sdk.completion.return_value]
+            client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+            box = make_box(image=make_image(self.image_path), crop_path=self.image_path)
+            with self.subTest(message=message), patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+                record = QwenTextTranscriber(client).transcribe(box)[0]
+            self.assertEqual(record.unit_number, "4")
+            self.assertEqual(record.confidence, 0)
+            self.assertTrue(record.needs_review)
+            self.assertEqual(sdk.completion.call_count, 2)
+            first, second = (call.kwargs for call in sdk.completion.call_args_list)
+            self.assertTrue(first["logprobs"])
+            self.assertNotIn("logprobs", second)
+            self.assertEqual({key: value for key, value in first.items() if key != "logprobs"}, second)
+
+    def test_rejected_logprobs_retry_is_not_repeated(self):
+        sdk = self.sdk(params=("response_format", "logprobs"))
+        sdk.completion.side_effect = ProviderError(400, "Logprobs is not supported for this model.")
+        client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk), self.assertRaises(RuntimeError):
+            client.query(self.image_path, "Read box.", self.schema, logprobs=True)
+        self.assertEqual(sdk.completion.call_count, 2)
 
     def test_unknown_provider_and_invalid_timeout_fail_before_request(self):
         with self.assertRaisesRegex(ValueError, "openai/"):

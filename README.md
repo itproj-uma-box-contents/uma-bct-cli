@@ -218,10 +218,24 @@ hosted model name is set. A nonempty key requires a provider-qualified model;
 client without making a paid API call, and the launcher does not start Ollama.
 The first image request verifies the key and model with the provider.
 
+Hosted requests report the exception type and HTTP status, with fixed diagnostic
+hints that do not expose provider reply text or credentials. Temporary HTTP
+500/502/503/504 failures receive at most two retries with exponential backoff and
+jitter. Authentication, model-selection, and quota errors are not retried.
+Gemini requests use the versioned `/v1beta` API base; the manifest retains the
+provider's HTTPS origin. LiteLLM's feedback banner is suppressed to keep JSON
+stdout clean.
+
 The same variables work with the opt-in Compose service:
 `docker compose --profile hosted run --rm hosted`. That service has no Ollama
 dependency. Hosted APIs may omit token probabilities; the corresponding
 transcription confidence is treated as unavailable and sent for review. A
+Gemini request that explicitly rejects optional log probabilities with HTTP 400
+is retried once without that parameter. Unavailable confidence is currently
+exported as `0` with review flags; it does not prevent CSV output or mean that
+the transcription has been measured as completely wrong. Available scores use
+the least probable content token, and are not calibrated OCR accuracy scores
+that can be compared directly between different model families. A
 managed batch resumes only with the same backend, provider, model, and HTTPS
 origin. Changing models after completion creates a separate batch.
 
@@ -302,13 +316,55 @@ $env:UMA_BCT_API_KEY = [System.Net.NetworkCredential]::new('', $secret).Password
 uv run --extra hosted uma-bct --json `
   --path-to-inputs 'C:\path\to\invented-box.png' `
   --path-to-outputs 'C:\path\to\gemini-test.csv'
-Remove-Item Env:UMA_BCT_API_KEY
-Remove-Item Env:UMA_BCT_API_MODEL
 ```
 
 Replace both paths with your own temporary paths. The CSV and its run manifest
 must not already exist, unless you use `--force`. The
 [direct CLI options](#compatibility-and-privacy) are the same on every platform.
+
+If the API is failing, first isolate access from image processing. With the key
+still set in the same PowerShell terminal, these requests send only an invented
+text prompt to Google and bypass LiteLLM and Ollama:
+
+```powershell
+$headers = @{ 'x-goog-api-key' = $env:UMA_BCT_API_KEY }
+$models = Invoke-RestMethod `
+  -Uri 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' `
+  -Headers $headers
+$models.models | Where-Object {
+  $_.name -match 'flash' -and $_.supportedGenerationMethods -contains 'generateContent'
+} | Select-Object name, displayName
+
+$modelId = $env:UMA_BCT_API_MODEL -replace '^gemini/', ''
+$body = @{
+  contents = @(@{ parts = @(@{ text = 'Reply with the word OK.' }) })
+} | ConvertTo-Json -Depth 10
+$reply = Invoke-RestMethod -Method Post `
+  -Uri "https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent" `
+  -Headers $headers -ContentType 'application/json' -Body $body
+$reply.candidates.content.parts.text
+```
+
+The model list establishes model names, not free-tier quota eligibility. Confirm
+the selected model's active quota in AI Studio. A 404 can indicate an unavailable
+model or an incorrect endpoint; 401/403 requires checking the key and access;
+429 requires checking the project's minute, token, and daily limits; and 503
+requires waiting or trying another available free-tier vision model. A project
+with no free quota for the selected model cannot be repaired by rapid retries.
+Each photo normally needs one detection call plus one call per crop, with
+additional calls for fallbacks and retries.
+
+After a successful direct request, rerun the full CLI on one invented image and
+inspect the JSON summary and CSV. The `qwen` detector/transcriber names refer to
+the shared prompts and parsers; a configured hosted backend sends both stages
+to Gemini without contacting Ollama. Do not enable LiteLLM debug dumps for
+private photographs or keys. When finished:
+
+```powershell
+Remove-Item Env:UMA_BCT_API_KEY
+Remove-Item Env:UMA_BCT_API_MODEL
+Remove-Variable headers, secret -ErrorAction SilentlyContinue
+```
 
 Older extracted bundles with private data only in `inputs` and `outputs` remain
 supported in place. New legacy runs create `outputs/Batch ...`; existing
