@@ -1,7 +1,7 @@
-"""Find archive boxes with Qwen and return normal pixel coordinates.
+"""Find archive boxes with Qwen or a hosted model and return pixel coordinates.
 
-Qwen uses a 0-1000 grid, which is changed back to image pixels. The request
-uses a fresh PNG with no EXIF data, and every returned box is checked.
+Qwen uses X-first coordinates; Gemini's native convention is Y-first. Both
+use a 0-1000 grid. Requests use a fresh PNG with no EXIF data.
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ import math
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 
@@ -22,12 +23,17 @@ from .qwen_response import response_boxes
 
 MAX_DETECTOR_PROPOSALS = 100
 
-GROUNDING_QUESTION = """Locate every cardboard archive box whose front face is fully or
+CoordinateOrder = Literal["xyxy", "yxyx"]
+
+_GROUNDING_QUESTION = """Locate every cardboard archive box whose front face is fully or
 substantially visible. Return one tight bounding box per physical box as bbox_2d
-[x1, y1, x2, y2], using coordinates normalized from 0 to 1000. Exclude thin box
+{coordinates}, using coordinates normalized from 0 to 1000. Exclude thin box
 fragments, shelf parts, and labels or signs as separate boxes. Do not transcribe
 any text. Return exactly one JSON object containing one top-level "boxes" array;
 never return separate JSON objects. Return only the requested JSON."""
+
+GROUNDING_QUESTION = _GROUNDING_QUESTION.format(coordinates="[x1, y1, x2, y2]")
+GEMINI_GROUNDING_QUESTION = _GROUNDING_QUESTION.format(coordinates="[ymin, xmin, ymax, xmax]")
 
 GROUNDING_SCHEMA = {
     "type": "object",
@@ -46,8 +52,13 @@ GROUNDING_SCHEMA = {
 }
 
 
-def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
-    """Check returned boxes and allow partial results only in the normal shape."""
+def validate_grounding_proposals(
+    value: Any, *, coordinate_order: CoordinateOrder = "xyxy"
+) -> tuple[list[tuple[float, float, float, float]], tuple[str, ...]]:
+    """Validate proposals and normalize either convention to X-first corners."""
+
+    if coordinate_order not in {"xyxy", "yxyx"}:
+        raise ValueError("Grounding coordinate order must be xyxy or yxyx.")
 
     normal_reply = isinstance(value, dict) and "boxes" in value
     proposals = response_boxes(value, maximum=MAX_DETECTOR_PROPOSALS, limit_subject="the grounding response")
@@ -65,7 +76,10 @@ def validate_grounding_proposals(value: Any) -> tuple[list[tuple[float, float, f
                 for coordinate in bbox
             ):
                 raise TypeError(f"box {index}.bbox_2d must contain finite numbers")
-            x1, y1, x2, y2 = (float(coordinate) for coordinate in bbox)
+            first, second, third, fourth = (float(coordinate) for coordinate in bbox)
+            x1, y1, x2, y2 = (
+                (second, first, fourth, third) if coordinate_order == "yxyx" else (first, second, third, fourth)
+            )
             if not all(0.0 <= coordinate <= 1000.0 for coordinate in (x1, y1, x2, y2)):
                 raise ValueError(f"box {index}.bbox_2d must use coordinates from 0 to 1000")
             if x2 <= x1 or y2 <= y1:
@@ -98,21 +112,24 @@ def sanitized_detection_image(image: InputImage):
 
 @dataclass
 class QwenBoxDetector:
-    """Use Qwen to find archive boxes."""
+    """Use the shared detector with the selected model's coordinate convention."""
 
     client: VisionModelClient
     name: str = "qwen"
+    coordinate_order: CoordinateOrder = field(default="xyxy", kw_only=True)
     dropped_proposal_warnings: tuple[str, ...] = field(default=(), init=False)
 
     def detect(self, image: InputImage) -> list[DetectedRegion]:
         self.dropped_proposal_warnings = ()
+        validator = partial(validate_grounding_proposals, coordinate_order=self.coordinate_order)
+        prompt = GEMINI_GROUNDING_QUESTION if self.coordinate_order == "yxyx" else GROUNDING_QUESTION
         # Qwen needs only pixels for grounding. The temporary PNG prevents
         # source EXIF from entering the model request.
         with sanitized_detection_image(image) as image_path:
             response = self.client.query(
-                image_path, GROUNDING_QUESTION, GROUNDING_SCHEMA, validator=validate_grounding_proposals
+                image_path, prompt, GROUNDING_SCHEMA, validator=validator
             )
-        normalized_boxes, dropped = validate_grounding_proposals(response.value)
+        normalized_boxes, dropped = validator(response.value)
         regions: list[DetectedRegion] = []
         conversion_warnings: list[str] = []
         # Grounding coordinates use a 0-1000 scale; round outward in source

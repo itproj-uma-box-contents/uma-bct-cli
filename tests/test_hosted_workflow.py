@@ -54,6 +54,25 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertIs(pipeline.detector.client, model)
         self.assertIs(pipeline.transcriber.client, model)
         self.assertEqual(pipeline.model_metadata, self.metadata)
+        self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
+
+    def test_gemini_pipeline_selects_y_first_grounding_without_ollama(self):
+        config = HostedModelConfig(model="gemini/gemini-3.5-flash-lite", api_key="secret-test-key")
+        model = Mock()
+        model.preflight.return_value = {"backend": "hosted", "model": config.model}
+        with patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), patch(
+            "uma_bct.bootstrap.OllamaVisionModel"
+        ) as ollama:
+            pipeline = build_pipeline(
+                detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                work_directory=Path("unused"), minimum_detector_confidence=0.6,
+                hosted_model=config,
+            )
+        ollama.assert_not_called()
+        self.assertEqual(pipeline.detector.coordinate_order, "yxyx")
+        self.assertIs(pipeline.detector.client, model)
+        self.assertIs(pipeline.transcriber.client, model)
+
 
     def test_synthetic_photo_runs_detection_and_transcription_through_hosted_client(self):
         def reply(value):
@@ -103,6 +122,55 @@ class HostedWorkflowTest(unittest.TestCase):
         for call in sdk.completion.call_args_list:
             parts = call.kwargs["messages"][0]["content"]
             self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_gemini_vertical_crops_export_three_boxes_and_two_gap_suggestions(self):
+        def reply(value):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                finish_reason="stop", message=SimpleNamespace(content=json.dumps(value)), logprobs=None,
+            )])
+
+        config = HostedModelConfig(model="gemini/gemini-3.5-flash-lite", api_key="secret-test-key")
+        sdk = SimpleNamespace(
+            get_supported_openai_params=Mock(return_value=("response_format",)),
+            supports_response_schema=Mock(return_value=False),
+            completion=Mock(side_effect=[
+                reply({"boxes": [
+                    {"bbox_2d": [0, 0, 1000, 330]},
+                    {"bbox_2d": [0, 330, 1000, 660]},
+                    {"bbox_2d": [0, 660, 1000, 1000]},
+                ]}),
+                *(reply({"boxes": [{
+                    "position": "centre", "record_identifiers": ["2008.0036"], "unit": str(unit),
+                    "typed": ["Example Office", "(Example University)", f"2008.0036 Unit {unit}"],
+                    "handwritten": [], "auxiliary_annotations": [],
+                }]}) for unit in (1, 3, 5)),
+            ]),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo = root / "synthetic.png"
+            Image.new("RGB", (300, 200), "white").save(photo)
+            with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                pipeline = build_pipeline(
+                    detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                    work_directory=root / "crops", minimum_detector_confidence=0.6, hosted_model=config,
+                )
+                result = pipeline.process(photo)
+            self.assertEqual(result.status, "complete")
+            self.assertEqual(len(result.records), 3)
+            for record in result.records:
+                self.assertEqual(record.box.bounding_box.height, 200)
+                self.assertLess(record.box.bounding_box.width, 150)
+            catalogue = root / "catalogue.csv"
+            export_catalogue([result], catalogue)
+            with catalogue.open(encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+        self.assertEqual(sdk.completion.call_count, 4)
+        self.assertEqual([row["Unit Number"] for row in rows], ["0001", "0002", "0003", "0004", "0005"])
+        self.assertEqual([row["Unit Number"] for row in rows if row["Review Flags"] == "Missing Box"], ["0002", "0004"])
+        self.assertTrue(all("Ambiguous identifier" not in row["Review Flags"] for row in rows))
 
     def test_hosted_setup_checks_dependency_without_pulling_ollama(self):
         with tempfile.TemporaryDirectory() as directory, patch(

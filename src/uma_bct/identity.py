@@ -148,6 +148,10 @@ def identifier_evidence_details(lines: Iterable[str]) -> tuple[tuple[str, ...], 
             and not malformed_dotted
             and index + 1 < len(visible_lines)
             and CONTEXTUAL_UNIT.search(visible_lines[index + 1])
+            # An identifier already paired with Unit on the next line needs
+            # no preceding prefix. Otherwise an origin heading is misread as
+            # another identifier, causing a false mismatch.
+            and prefixed_unit(visible_lines[index + 1]) is None
         ):
             if identifier := standalone_identifier(line):
                 identifier = normalise_identifier(identifier)

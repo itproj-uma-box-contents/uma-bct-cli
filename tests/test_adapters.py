@@ -114,6 +114,35 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(regions[0].bounding_box.as_xywh(), (20, 60, 80, 180))
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
 
+    def test_gemini_detector_converts_y_first_coordinates_on_a_non_square_image(self):
+        client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]})
+        detector = QwenBoxDetector(client, coordinate_order="yxyx")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            regions = detector.detect(make_image())
+        self.assertEqual(regions[0].bounding_box.as_xywh(), (40, 30, 120, 120))
+        self.assertEqual(len(detector.dropped_proposal_warnings), 1)
+        self.assertIn("[ymin, xmin, ymax, xmax]", client.calls[0][1])
+        self.assertNotIn("[x1, y1, x2, y2]", client.calls[0][1])
+
+    def test_gemini_detector_keeps_side_by_side_boxes_as_vertical_crops(self):
+        client = FakeVision({"boxes": [
+            {"bbox_2d": [0, 0, 1000, 330]},
+            {"bbox_2d": [0, 330, 1000, 660]},
+            {"bbox_2d": [0, 660, 1000, 1000]},
+        ]})
+        detector = QwenBoxDetector(client, coordinate_order="yxyx")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            regions = detector.detect(make_image())
+        self.assertEqual([region.bounding_box.as_xywh() for region in regions], [
+            (0, 0, 66, 300), (66, 0, 66, 300), (132, 0, 68, 300),
+        ])
+
     def test_detector_rejects_an_entirely_invalid_response(self):
         for response in (
             {"boxes": []},

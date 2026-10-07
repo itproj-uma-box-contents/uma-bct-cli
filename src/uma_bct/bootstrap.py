@@ -44,7 +44,10 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
         else OllamaVisionModel(model=model_name, timeout_seconds=request_timeout_seconds)
     )
     model_metadata = model_client.preflight()
-    detector = detector_factory(model_client)
+    if detector_name == "qwen" and hosted_model is not None and hosted_model.provider == "gemini":
+        detector = QwenBoxDetector(model_client, coordinate_order="yxyx")
+    else:
+        detector = detector_factory(model_client)
     fallback_detector = OpenCVBoxDetector() if detector_name == "qwen" else None
     return BoxTranscriptionPipeline(
         detector=detector,

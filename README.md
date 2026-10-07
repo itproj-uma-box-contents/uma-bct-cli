@@ -239,16 +239,48 @@ that can be compared directly between different model families. A
 managed batch resumes only with the same backend, provider, model, and HTTPS
 origin. Changing models after completion creates a separate batch.
 
+The shared detector uses each model family's coordinate convention: Qwen uses
+`[xmin, ymin, xmax, ymax]`, while Gemini uses `[ymin, xmin, ymax, xmax]`, both
+normalized to 0-1000. Gemini coordinates are converted to X-first corners before
+pixel cropping; see Google's [bounding-box guide](https://ai.google.dev/gemini-api/docs/image-understanding#bounding-box-detection).
+The `qwen` stage name also appears in hosted manifests. Its detector confidence
+of `1.0` is a placeholder for accepted geometry, not a measured probability of
+correct detection. `--min-detector-confidence` filters OpenCV proposals only.
+Thin fragments and empty or unreadable crop responses still require review.
+
+The current `Transcription mismatch` flag also covers `needs_review`, including
+unavailable token confidence. It can therefore appear alongside `Low confidence`
+on a correctly transcribed synthetic label. Review flags and successful API
+access do not establish transcription accuracy. `partial` status means some
+processing work remained unresolved; confidence review flags alone do not make
+an image partial.
+
 ### Test Gemini without paying
 
-Google currently lists [`gemini-3.8-flash`](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.8-flash)
+Use `gemini/gemini-3.5-flash-lite` for the verified Free Tier smoke-test example.
+On 2026-10-07, a Windows run using a Google AI Studio key without billing
+successfully generated a text reply and processed one invented box image through
+detection, transcription, and CSV export. The exported Unit Type was `1960.0009`
+and Unit Number was `0004`, with unavailable confidence exported as `0` and
+review flags. This verifies that workflow on that project; it does not establish
+reliable handwriting recognition or guarantee future service availability.
+That smoke test predates the Gemini coordinate-order correction; rerun it after
+updating, and use a non-square image with several boxes to assess localization.
+
+Google currently lists [`gemini-3.5-flash-lite`](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite)
 with free input and output tokens. It accepts image input and returns text.
 Free-tier access and quotas depend on your project; check its **Billing Tier**
 and [active rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
 in Google AI Studio before testing. Keep the project on the Free Tier to avoid
 paid API usage. The model here reads images; it is not the separate image
-*generation* model. See the [model capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash/)
+*generation* model. See the [model capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite/)
 and [billing guide](https://ai.google.dev/gemini-api/docs/billing).
+
+Google also lists `gemini-3.8-flash` with a free tier, but the Windows generation
+probes timed out in both PowerShell and Python while model lookup and token
+counting succeeded. The same key and network generated successfully with
+`gemini-3.5-flash-lite`. Use the verified model for this smoke test rather than
+treating the 3.8 free-tier listing as a successful test result.
 
 Google states that Free Tier content may be used to improve its products.
 **Use only invented test images with a Free Tier key. Never use UMA client photos
@@ -265,13 +297,13 @@ in the shell history:
 ```bash
 uv sync --locked --extra hosted
 test_root="$(mktemp -d)"
-export UMA_BCT_API_MODEL=gemini/gemini-3.8-flash
+export UMA_BCT_API_MODEL=gemini/gemini-3.5-flash-lite
 printf 'Gemini API key: '
 read -r -s UMA_BCT_API_KEY
 printf '\n'
 export UMA_BCT_API_KEY
 
-uv run --extra hosted python - "$test_root" <<'PY'
+uv run --locked --extra hosted python - "$test_root" <<'PY'
 from pathlib import Path
 import sys
 from PIL import Image, ImageDraw, ImageFont
@@ -287,7 +319,7 @@ draw.text((280, 425), "Unit 4", font=font, fill="black")
 image.save(root / "synthetic-box.png")
 PY
 
-uv run --extra hosted uma-bct --json \
+uv run --locked --extra hosted uma-bct --json \
   --path-to-inputs "$test_root/synthetic-box.png" \
   --path-to-outputs "$test_root/catalogue.csv" \
   --path-to-box-images "$test_root/crops"
@@ -295,7 +327,7 @@ uv run --extra hosted uma-bct --json \
 
 The JSON summary names the actual model and the run manifest. Open
 `$test_root/catalogue.run.json` to check `model.backend` is `hosted` and
-`model.model` is `gemini/gemini-3.8-flash`; review `catalogue.csv` and its crop
+`model.model` is `gemini/gemini-3.5-flash-lite`; review `catalogue.csv` and its crop
 if a row was produced. A synthetic drawing may be missed or transcribed
 imperfectly, so inspect `status`, `failures`, and `images` in the manifest
 rather than treating catalogue accuracy as the API connection check. If a
@@ -310,10 +342,10 @@ command history, then point the same CLI at that PNG:
 
 ```powershell
 uv sync --locked --extra hosted
-$env:UMA_BCT_API_MODEL = 'gemini/gemini-3.8-flash'
+$env:UMA_BCT_API_MODEL = 'gemini/gemini-3.5-flash-lite'
 $secret = Read-Host 'Gemini API key' -AsSecureString
 $env:UMA_BCT_API_KEY = [System.Net.NetworkCredential]::new('', $secret).Password
-uv run --extra hosted uma-bct --json `
+uv run --locked --extra hosted uma-bct --json `
   --path-to-inputs 'C:\path\to\invented-box.png' `
   --path-to-outputs 'C:\path\to\gemini-test.csv'
 ```
@@ -338,10 +370,12 @@ $models.models | Where-Object {
 $modelId = $env:UMA_BCT_API_MODEL -replace '^gemini/', ''
 $body = @{
   contents = @(@{ parts = @(@{ text = 'Reply with the word OK.' }) })
+  generationConfig = @{ thinkingConfig = @{ thinkingLevel = 'LOW' } }
 } | ConvertTo-Json -Depth 10
 $reply = Invoke-RestMethod -Method Post `
   -Uri "https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent" `
-  -Headers $headers -ContentType 'application/json' -Body $body
+  -Headers $headers -ContentType 'application/json' -Body $body `
+  -TimeoutSec 60 -ErrorAction Stop
 $reply.candidates.content.parts.text
 ```
 
@@ -354,9 +388,17 @@ with no free quota for the selected model cannot be repaired by rapid retries.
 Each photo normally needs one detection call plus one call per crop, with
 additional calls for fallbacks and retries.
 
+Successful API calls can still produce bad crops or incorrect unit readings.
+Missing-box suggestions use internal gaps between the transcribed numbers in
+each matching Unit Type group. For example, readings `0001`, `0003`, and `0005`
+produce suggestions `0002` and `0004`; incorrect readings `0002` and `0003`
+contain no gap and cannot recover the original sequence. Correct localization
+and review of visible unit numbers come first. Use `--no-missing-box-detection`
+when inspecting raw transcription rows separately from gap suggestions.
+
 After a successful direct request, rerun the full CLI on one invented image and
 inspect the JSON summary and CSV. The `qwen` detector/transcriber names refer to
-the shared prompts and parsers; a configured hosted backend sends both stages
+the shared components; a configured hosted backend sends both stages
 to Gemini without contacting Ollama. Do not enable LiteLLM debug dumps for
 private photographs or keys. When finished:
 

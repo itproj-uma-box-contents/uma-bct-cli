@@ -40,6 +40,20 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertEqual(record["Unit Type"], identifier)
         self.assertEqual(record["Unit Number"], "0030")
 
+    def test_origin_heading_before_prefixed_unit_is_not_an_extra_identifier(self):
+        box = make_box()
+        for identifier in ("2008.0036", "UMA-AC-000000330", "BHP"):
+            with self.subTest(identifier=identifier):
+                transcription = make_transcription(
+                    box, identifiers=(identifier,), unit="7",
+                    typed=("Records of the Example Office", "(Example University)", f"{identifier} Unit 7"),
+                )
+                record = map_catalogue_record(transcription, box.image_file_path)
+                self.assertEqual(record["Unit Type"], f"Records of the Example Office (Example University) {identifier}")
+                self.assertEqual(record["Unit Number"], "0007")
+                self.assertNotIn("Ambiguous identifier", record["Review Flags"])
+                self.assertNotIn("Transcription mismatch", record["Review Flags"])
+
     def test_builds_unit_type_from_all_printed_label_text(self):
         box = make_box()
         cases = (
