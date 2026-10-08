@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from .atomic import rename_new_file
 from .catalogue import image_reference
-from .constants import OUTPUT_COLUMNS
+from .constants import OUTPUT_COLUMNS, MIN_CONFIDENCE_SCORE
 from .export import catalogue_records
 from .path_safety import check_path
 from .pipeline import ImageResult
@@ -72,7 +72,7 @@ def comparison(audit: dict[str, object] | None) -> str:
     return '<details><summary>Compare readings</summary>' + "".join(sections) + '</details>'
 
 
-def render_review(results: Iterable[ImageResult], catalogue_path: Path, *, minimum_confidence: int = 80,
+def render_review(results: Iterable[ImageResult], catalogue_path: Path, *, minimum_confidence: int = MIN_CONFIDENCE_SCORE,
                   detect_missing_boxes: bool = True) -> str:
     results = list(results)
     rows = catalogue_records(results, catalogue_path=catalogue_path, minimum_confidence=minimum_confidence,
@@ -111,7 +111,7 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *, minim
 
 
 def export_review(results: Iterable[ImageResult], destination: Path, *, catalogue_path: Path,
-                  minimum_confidence: int = 80, detect_missing_boxes: bool = True) -> None:
+                  minimum_confidence: int = MIN_CONFIDENCE_SCORE, detect_missing_boxes: bool = True) -> None:
     """Stage one complete HTML file without clobbering an existing destination."""
     content = render_review(results, catalogue_path, minimum_confidence=minimum_confidence,
                             detect_missing_boxes=detect_missing_boxes)

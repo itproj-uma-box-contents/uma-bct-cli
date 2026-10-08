@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from helpers import make_box, make_image, make_transcription
 
 from uma_bct.atomic import open_stable_file, rename_new_file
-from uma_bct.constants import OUTPUT_COLUMNS
+from uma_bct.constants import OUTPUT_COLUMNS, MIN_CONFIDENCE_SCORE
 from uma_bct.domain import BoxResult
 from uma_bct.managed_batch import (
     BOX_IMAGES_DIRECTORY_NAME,
@@ -42,7 +42,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
         detector="qwen",
         transcriber="qwen",
         model="qwen-test",
-        min_transcription_confidence=80,
+        min_transcription_confidence=MIN_CONFIDENCE_SCORE,
         min_detector_confidence=0.6,
         request_timeout=10.0,
         path_to_inputs=root / "Add Photos Here",

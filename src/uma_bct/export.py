@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .atomic import rename_new_file
 from .catalogue import CatalogueRow, append_flag, map_catalogue_record, verification_flags
-from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS
+from .constants import DUPLICATE_FLAG, FALLBACK_USED_FLAG, LOW_CONFIDENCE_FLAG, MISSING_BOX_FLAG, OUTPUT_COLUMNS, MIN_CONFIDENCE_SCORE
 from .path_safety import check_path
 from .pipeline import ImageResult
 
@@ -109,7 +109,7 @@ def _insert_missing_box_records(records: list[dict[str, str | int]]) -> list[dic
 def catalogue_records(
     results: Iterable[ImageResult],
     *,
-    minimum_confidence: int = 80,
+    minimum_confidence: int = MIN_CONFIDENCE_SCORE,
     catalogue_path: str | Path | None = None,
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
@@ -168,7 +168,7 @@ def export_catalogue(
     results: Iterable[ImageResult],
     output_path: str | Path,
     *,
-    minimum_confidence: int = 80,
+    minimum_confidence: int = MIN_CONFIDENCE_SCORE,
     replace_existing: bool = True,
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,

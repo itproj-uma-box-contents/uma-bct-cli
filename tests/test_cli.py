@@ -14,7 +14,7 @@ from helpers import make_box, make_image, make_result, make_transcription
 from uma_bct.atomic import rename_exclusive, rename_new_file
 from uma_bct.batch_runner import export_results_into, run_batch
 from uma_bct.cli import discover_images, main, parse_args, validate_output_layout, validate_output_target
-from uma_bct.constants import IMAGE_EXTENSIONS
+from uma_bct.constants import IMAGE_EXTENSIONS, MIN_CONFIDENCE_SCORE
 from uma_bct.domain import BoxResult
 from uma_bct.export import export_catalogue
 from uma_bct.path_safety import check_path
@@ -67,7 +67,7 @@ def arguments(root: Path, *, force=False):
         detector="qwen",
         transcriber="qwen",
         model="qwen-test",
-        min_transcription_confidence=80,
+        min_transcription_confidence=MIN_CONFIDENCE_SCORE,
         min_detector_confidence=0.6,
         request_timeout=10.0,
         path_to_inputs=root / "inputs",
@@ -85,7 +85,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
         self.assertEqual(defaults.min_detector_confidence, 0.6)
-        self.assertEqual(defaults.min_transcription_confidence, 80)
+        self.assertEqual(defaults.min_transcription_confidence, MIN_CONFIDENCE_SCORE)
         self.assertTrue(defaults.detect_missing_boxes)
         self.assertEqual(aliases.path_to_outputs, Path("other.csv"))
         self.assertEqual(aliases.path_to_box_images, Path("review"))
@@ -561,7 +561,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertNotIn("attempts", str(manifest))
             self.assertNotIn("recovery_path", manifest)
             self.assertNotIn("recovery_path", summary)
-            self.assertEqual(manifest["configuration"]["minimum_transcription_confidence"], 80)
+            self.assertEqual(manifest["configuration"]["minimum_transcription_confidence"], MIN_CONFIDENCE_SCORE)
             self.assertEqual(manifest["configuration"]["minimum_detector_confidence"], 0.6)
             self.assertIn("Processing", progress)
 

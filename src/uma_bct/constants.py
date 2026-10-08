@@ -33,6 +33,7 @@ CONTAINMENT_THRESHOLD = 0.90
 NMS_IOU_THRESHOLD = 0.45
 PADDING_FRACTION = 0.08
 MINIMUM_IMAGE_PADDING_FRACTION = 0.005
+MIN_CONFIDENCE_SCORE = 50
 
 OPENCV_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 PILLOW_IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".heic", ".heif"}
