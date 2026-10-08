@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
 from .domain import Box, BoxResult, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
 from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
@@ -75,7 +76,7 @@ class BoxTranscriptionPipeline:
     cropper: BoxCropper
     transcriber: TextTranscriber
     work_directory: Path
-    minimum_detector_confidence: float = 0.60
+    minimum_detector_confidence: float = DEFAULT_MIN_DETECTOR_CONFIDENCE
     fallback_detector: BoxDetector | None = None
     model_metadata: dict[str, str] = field(default_factory=dict)
     on_stage: Callable[[str], None] | None = None

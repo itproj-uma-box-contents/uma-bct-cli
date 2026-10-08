@@ -89,6 +89,10 @@ photos. Later CSV edits are not recounted.
 Do not remove, rename, or edit an original photo while its batch is unfinished;
 if that happens, the CLI preserves progress and explains which inputs to restore.
 
+An unfinished batch also requires its original processing options. If it was
+started with the former 80% transcription review threshold, resume it with
+`--min-transcription-confidence 80`; the current default is 50%.
+
 You may edit a completed `Catalogue.csv` or save corrected copies and notes beside
 it. Later launches preserve those files and report a changed catalogue. Keep the
 run details and crop files intact: they record which photographs were processed.
@@ -175,6 +179,13 @@ Advanced CLI users can disable this behavior with
 `--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
 
 ### Review results and open crops
+
+Both the CSV and HTML add `Low confidence` to scores below 50% by default;
+a score of exactly 50% does not receive that flag. Set
+`--min-transcription-confidence INTEGER` (or `-c INTEGER`) to choose a review
+threshold from 0 to 100. This flags rows for review and keeps every transcription
+in the catalogue. The separate `--min-detector-confidence` option controls the
+OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
 
 Open `Review.html` in your browser for a compact, read-only catalogue with wrapped
 text and clickable **View crop** links. It works offline and requires no server.

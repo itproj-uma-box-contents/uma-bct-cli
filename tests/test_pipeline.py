@@ -130,6 +130,15 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(result.fallback_path, ("qwen",))
         self.assertEqual(stages, ["Transcribing box 1 of 1"])
 
+    def test_default_detector_threshold_only_filters_opencv_below_sixty_percent(self):
+        regions = [DetectedRegion(self.region.bounding_box, confidence) for confidence in (0.59, 0.60, 0.61)]
+        for name in ("opencv", "qwen"):
+            with self.subTest(detector=name):
+                detector = FakeDetector(name, regions)
+                pipeline = self.pipeline(detector, ScriptedTranscriber([]))
+                retained = pipeline.retained_regions(detector, regions)
+                self.assertEqual(retained, regions[1:] if name == "opencv" else regions)
+
     def test_falls_back_from_qwen_to_opencv(self):
         result = self.process(
             self.pipeline(

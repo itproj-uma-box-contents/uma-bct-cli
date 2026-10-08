@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from helpers import make_box, make_image, make_transcription
 
 from uma_bct.atomic import open_stable_file, rename_new_file
-from uma_bct.constants import OUTPUT_COLUMNS, MIN_CONFIDENCE_SCORE
+from uma_bct.constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
 from uma_bct.managed_batch import (
     BOX_IMAGES_DIRECTORY_NAME,
@@ -42,8 +42,8 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
         detector="qwen",
         transcriber="qwen",
         model="qwen-test",
-        min_transcription_confidence=MIN_CONFIDENCE_SCORE,
-        min_detector_confidence=0.6,
+        min_transcription_confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
+        min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,
         request_timeout=10.0,
         path_to_inputs=root / "Add Photos Here",
         path_to_outputs=root / "unused.csv",
@@ -107,12 +107,14 @@ class ManagedBatchTest(unittest.TestCase):
 
     def run_managed_batch_and_capture_output(
         self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False,
-        detect_missing_boxes: bool = True, verification: str | None = None, patches=()
+        detect_missing_boxes: bool = True, verification: str | None = None, patches=(),
+        min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes)
         arguments.verification = verification
+        arguments.min_transcription_confidence = min_transcription_confidence
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.ExitStack() as stack:
@@ -551,6 +553,32 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(details["verification"], {"mode": "never", "decision": False, "complete": True})
             for path, content in crops.items():
                 self.assertEqual(path.read_bytes(), content)
+
+    def test_older_confidence_threshold_requires_original_option_to_resume(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            status, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg"), min_transcription_confidence=80
+            )
+            self.assertEqual(status, 130)
+            progress_path = Path(interrupted["batch_directory"]) / PROGRESS_FILE_NAME
+            progress_before = progress_path.read_bytes()
+            rejected = ManagedPipeline()
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, rejected)
+            self.assertEqual(status, 2)
+            self.assertEqual(rejected.calls, [])
+            self.assertIn("processing configuration changed", stderr)
+            self.assertEqual(progress_path.read_bytes(), progress_before)
+
+            resumed = ManagedPipeline()
+            status, summary, _ = self.run_managed_batch_and_capture_output(
+                root, resumed, min_transcription_confidence=80
+            )
+            self.assertEqual(status, 0)
+            self.assertTrue(summary["resumed"])
+            self.assertEqual(summary["images_reused"], 1)
+            self.assertEqual(resumed.calls, ["02.jpg"])
+            details = read_json_file(Path(summary["run_manifest"]), "Run details")
+            self.assertEqual(details["configuration"]["minimum_transcription_confidence"], 80)
 
     def test_legacy_checkpoint_still_rejects_changed_processing_options(self):
         for change in ("missing_boxes", "confidence"):

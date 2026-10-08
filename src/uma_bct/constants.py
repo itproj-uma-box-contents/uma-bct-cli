@@ -1,4 +1,4 @@
-"""Catalogue rules and output column names."""
+"""Shared processing defaults, catalogue rules, and image constants."""
 
 OUTPUT_COLUMNS = [
     "Unit Type",
@@ -23,6 +23,10 @@ INVALID_UNIT_FLAG = "Invalid unit"
 TRANSCRIPTION_MISMATCH_FLAG = "Transcription mismatch"
 FALLBACK_USED_FLAG = "Fallback used"
 
+# Transcription review uses integer percentages; detector scores use 0 to 1.
+DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE = 50
+DEFAULT_MIN_DETECTOR_CONFIDENCE = 0.60
+
 MIN_AREA_FRACTION = 0.025
 MAX_AREA_FRACTION = 0.45
 MIN_WIDTH_FRACTION = 0.08
@@ -33,7 +37,6 @@ CONTAINMENT_THRESHOLD = 0.90
 NMS_IOU_THRESHOLD = 0.45
 PADDING_FRACTION = 0.08
 MINIMUM_IMAGE_PADDING_FRACTION = 0.005
-MIN_CONFIDENCE_SCORE = 50
 
 OPENCV_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 PILLOW_IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".heic", ".heif"}

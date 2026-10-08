@@ -19,7 +19,7 @@ from pathlib import Path
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
 from .bootstrap import DETECTORS, TRANSCRIBERS
-from .constants import IMAGE_EXTENSIONS, MIN_CONFIDENCE_SCORE
+from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
@@ -120,7 +120,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         "--min-transcription-confidence",
         dest="min_transcription_confidence",
         type=bounded_percentage,
-        default=MIN_CONFIDENCE_SCORE,
+        default=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         metavar="INTEGER",
         help="review threshold from 0 to 100 (default: %(default)s)",
     )
@@ -129,7 +129,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         "--min-detector-confidence",
         dest="min_detector_confidence",
         type=bounded_float,
-        default=0.60,
+        default=DEFAULT_MIN_DETECTOR_CONFIDENCE,
         metavar="FLOAT",
         help="OpenCV threshold from 0 to 1 (default: %(default).2f)",
     )

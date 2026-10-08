@@ -8,7 +8,7 @@ from helpers import make_box, make_image, make_result, make_transcription
 
 from uma_bct.atomic import rename_exclusive
 from uma_bct.catalogue import map_catalogue_record
-from uma_bct.constants import OUTPUT_COLUMNS
+from uma_bct.constants import DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records, export_catalogue, missing_box_records
 
@@ -223,7 +223,8 @@ class CatalogueRulesTest(unittest.TestCase):
         records = catalogue_records(
             [
                 make_result(
-                    BoxResult(first, make_transcription(first, confidence=70)), BoxResult(second, make_transcription(second))
+                    BoxResult(first, make_transcription(first, confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE - 1)),
+                    BoxResult(second, make_transcription(second)),
                 )
             ]
         )
@@ -316,6 +317,14 @@ class CatalogueRulesTest(unittest.TestCase):
 
         self.assertIn("Low confidence", below_threshold[0]["Review Flags"])
         self.assertNotIn("Low confidence", at_threshold[0]["Review Flags"])
+
+    def test_default_low_confidence_threshold_is_fifty_percent(self):
+        box = make_box()
+        for confidence, flagged in ((0, True), (49, True), (50, False), (79, False), (100, False)):
+            with self.subTest(confidence=confidence):
+                result = make_result(BoxResult(box, make_transcription(box, confidence=confidence)))
+                flags = catalogue_records([result])[0]["Review Flags"]
+                self.assertEqual("Low confidence" in flags, flagged)
 
 
 class CsvExportTest(unittest.TestCase):
