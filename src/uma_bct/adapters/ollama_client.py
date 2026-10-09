@@ -23,6 +23,7 @@ from typing import Any, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
 from ..ports import ModelResponse
+from .request_timings import RequestTimings
 
 DEFAULT_MODEL = "qwen3-vl:8b-instruct-q4_K_M"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -354,17 +355,23 @@ class OllamaVisionModel:
     def probe(self) -> None:
         """Load the model with the production context before image work starts."""
 
+        timings = RequestTimings("preflight")
+        success = False
         try:
             with closing(self.client()) as client:
-                client.chat(
+                response = client.chat(
                     model=self.model,
                     messages=[{"role": "user", "content": "Reply briefly."}],
                     think=DEFAULT_THINK,
                     options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length, "num_predict": 1},
                     stream=False,
                 )
+                timings.observe(response)
+                success = True
         except Exception as error:
             raise RuntimeError(f"Ollama inference preflight failed for model '{self.model}': {error}") from error
+        finally:
+            timings.finish(success)
 
     def pull_model(self, output: TextIO) -> None:
         try:
@@ -399,21 +406,28 @@ class OllamaVisionModel:
         validator: Callable[[Any], object] | None = None,
         logprobs: bool = False,
     ) -> ModelResponse:
+        timings = RequestTimings("transcription" if logprobs else "detection")
+        success = False
         try:
-            with closing(self.client()) as client:
-                stream = client.chat(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt, "images": [str(image_path)]}],
-                    format=schema,
-                    think=DEFAULT_THINK,
-                    options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length},
-                    stream=True,
-                    logprobs=logprobs,
-                )
-                content, thinking, content_logprobs, thinking_logprobs = collect_stream_text(stream)
-        except Exception as error:
-            raise RuntimeError(f"Local Ollama request failed for model '{self.model}': {error}") from error
-        value, token_logprobs = parse_model_response(
-            content, thinking, content_logprobs=content_logprobs, thinking_logprobs=thinking_logprobs, validator=validator
-        )
-        return ModelResponse(value=value, token_logprobs=token_logprobs)
+            try:
+                with closing(self.client()) as client:
+                    stream = client.chat(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt, "images": [str(image_path)]}],
+                        format=schema,
+                        think=DEFAULT_THINK,
+                        options={"temperature": DEFAULT_TEMPERATURE, "num_ctx": self.context_length},
+                        stream=True,
+                        logprobs=logprobs,
+                    )
+                    observed = timings.stream(stream) if timings.path else stream
+                    content, thinking, content_logprobs, thinking_logprobs = collect_stream_text(observed)
+            except Exception as error:
+                raise RuntimeError(f"Local Ollama request failed for model '{self.model}': {error}") from error
+            value, token_logprobs = parse_model_response(
+                content, thinking, content_logprobs=content_logprobs, thinking_logprobs=thinking_logprobs, validator=validator
+            )
+            success = True
+            return ModelResponse(value=value, token_logprobs=token_logprobs)
+        finally:
+            timings.finish(success)

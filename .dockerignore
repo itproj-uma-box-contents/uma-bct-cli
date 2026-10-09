@@ -29,6 +29,11 @@ Add Photos Here
 Results
 inputs
 outputs
+demo_images
+demo_results
+demo_benchmarks
+.demo-ec2-*
+.aws
 **/Add Photos Here
 **/Results
 **/inputs

@@ -240,6 +240,12 @@ photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 ## Compatibility and privacy
 
+An explicitly authorized, temporary EC2 demonstration is available through the
+[private EC2 demo guide](docs/EC2-DEMO.md). It uses a prepared GPU server over SSH,
+fresh first-pass inference and verified retrieval. Setup is opt-in; normal local
+launchers are unchanged. The five-second target requires measurement and human
+review before it can be claimed.
+
 Older extracted bundles with private data only in `inputs` and `outputs` remain
 supported in place. New legacy runs create `outputs/Batch ...`; existing
 top-level catalogues, manifests, and crops are not changed. If both the friendly

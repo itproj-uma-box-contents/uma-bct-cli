@@ -60,6 +60,10 @@ dist/
 .uma-bct-rollback-*
 .uma-bct-backup-*
 /outputs/
+/demo_images/
+/demo_results/
+/demo_benchmarks/
+/.demo-ec2-*/
 **/outputs/
 /Results/
 **/Results/

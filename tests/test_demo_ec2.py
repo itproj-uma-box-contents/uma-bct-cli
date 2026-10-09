@@ -1,0 +1,351 @@
+"""Model-free demo control tests: no AWS account, GPU, model, or private photos."""
+
+import contextlib
+import io
+import json
+import os
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from scripts import demo_benchmark as benchmark
+from scripts import demo_ec2 as client
+from scripts import demo_ec2_health as health
+from scripts import demo_ec2_remote as remote
+from uma_bct.adapters.ollama_client import OllamaVisionModel
+from uma_bct.adapters.request_timings import RequestTimings
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@unittest.skipUnless(os.name == "posix", "Temporary demo scripts target macOS/Linux")
+class DemoConfigTest(unittest.TestCase):
+    def test_self_contained_userdata_is_valid_and_matches_source(self):
+        script = (ROOT / "scripts/demo-ec2-user-data.sh").read_text()
+        self.assertLessEqual(len(script.encode()), 16 * 1024)
+        for marker, path in (("DEMO_COMPOSE", ROOT / "compose.ec2-demo.yaml"),
+                             ("DEMO_HEALTH", ROOT / "scripts/demo_ec2_health.py")):
+            embedded = script.split(f"<<'{marker}'\n", 1)[1].split(f"\n{marker}\n", 1)[0] + "\n"
+            self.assertEqual(embedded, path.read_text())
+        unit = script.split("<<'DEMO_UNIT'\n", 1)[1].split("\nDEMO_UNIT\n", 1)[0]
+        self.assertNotIn("cloud-final.service", unit)  # Prevent multi-user.target boot ordering cycle.
+        self.assertIn("systemctl enable uma-bct-demo.service", script)
+        self.assertNotIn("systemctl start uma-bct-demo.service", script)
+        self.assertIn("shutdown -r +1", script)
+        self.assertIn("107374182400", script)
+        subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2-user-data.sh")], check=True)
+        subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2.sh")], check=True)
+
+    def test_exact_model_pins_agree(self):
+        self.assertEqual(health.MODEL, remote.MODEL)
+        self.assertEqual(health.MODEL_DIGEST, remote.MODEL_DIGEST)
+        self.assertEqual(health.MODEL_DIGEST, benchmark.MODEL_DIGEST)
+        self.assertIn(health.OLLAMA_IMAGE, (ROOT / "compose.yaml").read_text())
+
+    def test_deployment_is_only_source_even_with_private_files_present(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "source.tar"
+            metadata = client.source_bundle(destination)
+            with tarfile.open(destination) as archive:
+                names = archive.getnames()
+                self.assertEqual(set(names), set(metadata["files"]) | {"Deployment.json"})
+                self.assertTrue(all(remote.source_allowed(name) for name in metadata["files"]))
+                self.assertFalse(any(name.endswith((".jpg", ".png", ".gguf")) or "/.git/" in name for name in names))
+
+
+class DemoHealthTest(unittest.TestCase):
+    def info(self):
+        return {"State": {"Running": True}, "Config": {"Image": health.OLLAMA_IMAGE, "Env": [
+            "OLLAMA_NO_CLOUD=1", "OLLAMA_KEEP_ALIVE=-1", "OLLAMA_MAX_LOADED_MODELS=1", "OLLAMA_NUM_PARALLEL=1",
+            "OLLAMA_CONTEXT_LENGTH=16384"]}, "HostConfig": {"PortBindings": {}, "DeviceRequests": [
+                {"Driver": "nvidia", "Count": 1}]}}
+
+    def test_published_api_or_wrong_settings_are_rejected(self):
+        for edit in ("port", "settings", "gpu", "image"):
+            with self.subTest(edit=edit):
+                info = self.info()
+                if edit == "port":
+                    info["HostConfig"]["PortBindings"] = {"11434/tcp": [{"HostPort": "11434"}]}
+                elif edit == "settings":
+                    info["Config"]["Env"] = []
+                elif edit == "gpu":
+                    info["HostConfig"]["DeviceRequests"] = []
+                else:
+                    info["Config"]["Image"] = "latest"
+                with patch.object(health, "command", side_effect=["container", json.dumps([info])]):
+                    with self.assertRaises(RuntimeError):
+                        health.container_info()
+
+    def test_status_never_warms_and_requires_gpu_context_and_identity(self):
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 123}
+        for state in ("ready", "cold", "context", "cpu"):
+            with self.subTest(state=state):
+                value = dict(running)
+                if state == "context":
+                    value["context_length"] = 4096
+                models = [] if state == "cold" else [value]
+                display = f"{health.MODEL} 100% {'CPU' if state == 'cpu' else 'GPU'}"
+                with patch.object(health, "command", side_effect=["NVIDIA L4, 580, 23034 MiB", "GPU device", display]), \
+                        patch.object(health, "container_info", return_value=("container", {})), \
+                        patch.object(health, "inventory", return_value={"digest": health.MODEL_DIGEST}), \
+                        patch.object(health, "api", return_value={"models": models}) as api:
+                    if state == "ready":
+                        self.assertEqual(health.readiness()["status"], "ready")
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            health.readiness()
+                    self.assertEqual(api.call_args.args[1], "ps")
+                    self.assertEqual(len(api.call_args.args), 2)
+
+    def test_warming_uses_production_settings_and_no_image(self):
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 1}
+        with patch.object(health, "command", side_effect=["NVIDIA L4", "GPU device", f"{health.MODEL} 100% GPU"]), \
+                patch.object(health, "container_info", return_value=("container", {})), \
+                patch.object(health, "inventory", return_value={}), \
+                patch.object(health, "api", side_effect=[{"load_duration": 10}, {"models": [running]}]) as api:
+            value = health.readiness(warm=True)
+        payload = api.call_args_list[0].args[2]
+        self.assertEqual(payload["options"], {"num_ctx": 16384, "temperature": 0, "num_predict": 1})
+        self.assertFalse(payload["think"])
+        self.assertEqual(payload["keep_alive"], -1)
+        self.assertNotIn("images", payload["messages"][0])
+        self.assertEqual(value["cold_or_reheat_probe"]["load_duration"], 10)
+
+    def test_changed_weights_are_rejected(self):
+        with patch.object(health, "api", side_effect=[{"version": "0.32.9"}, {"models": [
+            {"name": health.MODEL, "digest": "changed", "details": {"quantization_level": "Q4_K_M"}}]}]):
+            with self.assertRaisesRegex(RuntimeError, "identity"):
+                health.inventory({})
+
+
+@unittest.skipUnless(os.name == "posix", "EC2 controller targets Linux")
+class DemoRemoteTest(unittest.TestCase):
+    def test_unsafe_archives_are_rejected_before_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, kind in (("../escape.py", tarfile.REGTYPE), ("src/uma_bct/model.py", tarfile.SYMTYPE),
+                               ("approved.jpg", tarfile.REGTYPE)):
+                with self.subTest(name=name, kind=kind):
+                    archive = root / "upload.tar"
+                    with tarfile.open(archive, "w") as bundle:
+                        member = tarfile.TarInfo(name)
+                        member.type = kind
+                        member.size = 0
+                        bundle.addfile(member, io.BytesIO())
+                    with patch.object(remote, "APPLICATION", root / "app"), patch.object(remote.subprocess, "run") as build:
+                        with self.assertRaises(ValueError):
+                            remote.install_source(archive)
+                        build.assert_not_called()
+            self.assertFalse((root / "escape.py").exists())
+
+    def test_each_run_is_fresh_and_retains_status_and_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, results = root / "images", root / "results"
+            inputs.mkdir()
+            results.mkdir()
+            image = inputs / "approved.jpg"
+            image.write_bytes(b"synthetic image fixture")
+            for cli_code, status in ((0, "complete"), (1, "partial"), (2, "failed")):
+                run_id = f"{cli_code + 1:032x}"
+                def execute(args, *, stdout, stderr, run_id=run_id, status=status, cli_code=cli_code):
+                    self.assertIn("--reprocess", args)
+                    self.assertEqual(args[args.index("--verification") + 1], "never")
+                    self.assertEqual(args[args.index("--model") + 1], remote.MODEL)
+                    self.assertNotIn("--gpus", args)  # CLI itself does not own the persistent model service.
+                    batch = results / run_id / "Batch fixture"
+                    batch.mkdir()
+                    for name in ("Catalogue.csv", "Review.html"):
+                        (batch / name).write_text("fixture")
+                    (batch / "Run Details.json").write_text(json.dumps({"images": [
+                        {"boxes": [{"box_id": "1"}, {"box_id": "2"}], "fallback_path": []}]}))
+                    json.dump({"status": status, "images_total": 1, "images_reused": 0,
+                               "images_processed_this_start": 1, "catalogue_records": 3,
+                               "batch_directory": "/data/outputs/Batch fixture"}, stdout)
+                    return SimpleNamespace(returncode=cli_code)
+                with patch.object(remote, "INPUTS", inputs), patch.object(remote, "RESULTS", results), \
+                        patch.object(remote, "health", return_value={"status": "ready"}), \
+                        patch.object(remote, "deployment", return_value={"image": "prepared"}), \
+                        patch.object(remote, "staged", return_value=(image, {"source_sha256": remote.digest(image)})), \
+                        patch.object(remote.subprocess, "run", side_effect=execute):
+                    response = remote.run({"run_id": run_id})
+                    self.assertEqual(response["envelope"]["cli_exit_code"], cli_code)
+                    self.assertEqual(response["envelope"]["status"], status)
+                    self.assertEqual(response["envelope"]["physical_box_records"], 2)
+                    self.assertEqual(response["envelope"]["catalogue_rows"], 3)
+                    self.assertIn("Batch fixture/Review.html", response["transfer"]["files"])
+                    with self.assertRaises(FileExistsError):
+                        remote.run({"run_id": run_id})
+
+    def test_cold_server_fails_before_inference_or_result_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(remote, "RESULTS", Path(temporary)), \
+                    patch.object(remote, "health", side_effect=RuntimeError("cold")), \
+                    patch.object(remote.subprocess, "run") as execute:
+                with self.assertRaisesRegex(RuntimeError, "cold"):
+                    remote.run({"run_id": "a" * 32})
+                execute.assert_not_called()
+                self.assertEqual(list(Path(temporary).iterdir()), [])
+
+
+@unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
+class DemoClientTest(unittest.TestCase):
+    def test_output_root_cannot_enter_checkout_even_through_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            alias = Path(temporary) / "alias"
+            alias.symlink_to(ROOT, target_is_directory=True)
+            for destination in (ROOT / "unsafe-results", alias / "unsafe-results"):
+                with patch.dict(os.environ, {"UMA_BCT_DEMO_RESULTS": str(destination)}):
+                    with self.assertRaisesRegex(ValueError, "outside"):
+                        client.result_root()
+
+    def test_transfer_checks_full_file_set_and_hashes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "Review.html").write_text('<a href="Box Images/box.png">View</a>')
+            crops = directory / "Box Images"
+            crops.mkdir()
+            (crops / "box.png").write_bytes(b"synthetic crop")
+            transfer = remote.transfer_manifest(directory)
+            client.validate_transfer(directory, transfer)
+            (crops / "box.png").write_bytes(b"changed")
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                client.validate_transfer(directory, transfer)
+            (crops / "box.png").unlink()
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                client.validate_transfer(directory, transfer)
+
+    def test_retrieve_reserves_new_folder_each_time_and_retains_failed_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = root / "server"
+            fixture.mkdir()
+            (fixture / "Review.html").write_text("fixture")
+            response = {"envelope": {"run_id": "a" * 32}, "transfer": remote.transfer_manifest(fixture)}
+            def copy(_source, target, *, recursive):
+                shutil.copytree(fixture, target, dirs_exist_ok=True)
+            with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                    patch.object(client, "copy", side_effect=copy):
+                first = client.retrieve(response, root / "local")
+                second = client.retrieve(response, root / "local")
+                self.assertNotEqual(first, second)
+                self.assertTrue(first.is_dir())
+                (fixture / "Review.html").unlink()
+                with self.assertRaisesRegex(RuntimeError, "partial copy retained"):
+                    client.retrieve(response, root / "local")
+                self.assertTrue(first.is_dir())
+                self.assertEqual(len(list((root / "local").iterdir())), 3)
+
+    def test_retrieval_failure_preserves_nonzero_cli_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "fixture.jpg"
+            image.write_bytes(b"synthetic")
+            response = {"envelope": {"run_id": "a" * 32, "cli_exit_code": 1, "status": "partial",
+                                     "source": {"source_sha256": client.digest(image)}}}
+            with patch.object(client, "result_root", return_value=Path(temporary)), \
+                    patch.object(client.uuid, "uuid4", return_value=SimpleNamespace(hex="a" * 32)), \
+                    patch.object(client, "rpc", return_value=response), \
+                    patch.object(client, "retrieve", side_effect=OSError("transfer unavailable")):
+                value, code = client.demo_run(image, "never", time.monotonic())
+            self.assertEqual(code, 1)
+            self.assertEqual(value["cli_status"], "partial")
+            self.assertEqual(value["status"], "failed")
+
+    def test_timer_finalization_preserves_failure_code_and_clean_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            summary, timer = root / "summary.json", root / "timer.txt"
+            summary.write_text(json.dumps({"status": "partial", "cli_exit_code": 1, "local_results": str(root)}))
+            timer.write_text("real 12.34\nuser 0.10\nsys 0.05\n")
+            with patch.object(client, "write_private_json", side_effect=OSError("disk unavailable")), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = client.finish_timing([str(summary), str(timer), "1", "1"])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output.getvalue())["status"], "failed")
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = client.finish_timing([str(summary), str(root / "missing"), "1", "1"])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output.getvalue())["status"], "failed")
+
+    def test_actual_shell_failed_run_has_clean_json_and_external_wall_time(self):
+        process = subprocess.run([str(ROOT / "scripts/demo-ec2.sh"), "run", "--image", "/missing.jpg", "--json"],
+                                 capture_output=True, text=True)
+        value = json.loads(process.stdout)
+        self.assertEqual(process.returncode, 2)
+        self.assertEqual(value["status"], "failed")
+        self.assertIn("end_to_end_seconds", value)
+        self.assertFalse(value["timing_target_met_provisionally"])
+
+
+class RequestTimingsTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "Opt-in demo timings target macOS/Linux")
+    def test_stream_and_logprob_response_are_unchanged_with_opt_in(self):
+        chunks = [{"message": {"content": '{"unit":"4"}'}, "logprobs": [{"token": "4", "logprob": -0.1}]},
+                  {"done": True, "eval_count": 4, "eval_duration": 123, "load_duration": 0}]
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "timings.jsonl"
+            fake = SimpleNamespace(chat=lambda **kwargs: iter(chunks), close=lambda: None)
+            with patch.dict(os.environ, {"UMA_BCT_DEMO_TIMINGS_FILE": str(destination)}), \
+                    patch.object(OllamaVisionModel, "client", return_value=fake):
+                response = OllamaVisionModel().query(Path("fixture.png"), "secret text", {}, logprobs=True)
+            self.assertEqual(response.value, {"unit": "4"})
+            self.assertEqual(response.token_logprobs, (("4", -0.1),))
+            value = json.loads(destination.read_text())
+            self.assertTrue(value["success"])
+            self.assertEqual(value["ollama_nanoseconds_and_counts"]["eval_duration"], 123)
+            self.assertNotIn("secret", destination.read_text())
+            self.assertNotIn("unit", destination.read_text())
+
+    def test_disabled_diagnostics_have_no_file_io(self):
+        with patch.dict(os.environ, {}, clear=True), patch("os.open") as opened:
+            timings = RequestTimings("detection")
+            self.assertEqual(list(timings.stream([{"eval_count": 3}])), [{"eval_count": 3}])
+            timings.finish(True)
+            opened.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "Unix FIFOs and symlinks")
+    def test_fifo_and_symlink_do_not_block_or_change_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            target = root / "target"
+            target.write_text("retained")
+            link = root / "link"
+            link.symlink_to(target)
+            for destination in (fifo, link):
+                with patch.dict(os.environ, {"UMA_BCT_DEMO_TIMINGS_FILE": str(destination)}), \
+                        contextlib.redirect_stderr(io.StringIO()) as output:
+                    RequestTimings("detection").finish(True)
+                self.assertIn("inference outcome is unchanged", output.getvalue())
+            self.assertEqual(target.read_text(), "retained")
+
+
+class BenchmarkReportTest(unittest.TestCase):
+    def test_every_duration_failures_and_physical_count_are_preserved(self):
+        runs = [{"status": "complete", "cli_exit_code": 0, "cli_elapsed_seconds": duration,
+                 "physical_box_records": 2, "catalogue_rows": 3} for duration in (3, 4, 8)]
+        value = benchmark.report(runs)
+        self.assertEqual(value["cli_execution"]["every_duration_seconds"], [3, 4, 8])
+        self.assertEqual(value["cli_execution"]["median_seconds"], 4)
+        self.assertEqual(value["cli_execution"]["slowest_seconds"], 8)
+        self.assertFalse(value["completion_target"]["verified_correct_configuration"])
+        self.assertFalse(value["completion_target"]["met_for_all_measured_runs_provisionally"])
+        runs[2].update(status="partial", cli_elapsed_seconds=2)
+        self.assertFalse(benchmark.report(runs)["completion_target"]["met_for_all_measured_runs_provisionally"])
+
+    def test_full_mac_command_is_the_ec2_acceptance_measure(self):
+        value = benchmark.report([{"status": "complete", "cli_exit_code": 0, "cli_elapsed_seconds": 3,
+                                   "full_mac_command_seconds": 6}])
+        self.assertEqual(value["completion_target"]["measurement"], "full_mac_command_seconds")
+        self.assertFalse(value["completion_target"]["met_for_all_measured_runs_provisionally"])
+
+
+if __name__ == "__main__":
+    unittest.main()
