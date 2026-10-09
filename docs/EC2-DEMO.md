@@ -10,7 +10,71 @@ accuracy-unverified. A complete CLI status or 11 records does not prove every
 physical box and handwritten annotation was transcribed correctly. Do not
 represent historical model results as ground truth.
 
-## Console launch checklist
+## G5 GPU and M7i CPU scripts
+
+Both alternatives use **Ubuntu Server 24.04 LTS amd64**, **100 GiB encrypted gp3**,
+the exact pinned Ollama/model, private model storage and SSH-only control.
+
+| Purpose | Suggested instance/Region | Self-contained Console User Data |
+| --- | --- | --- |
+| G5 GPU measurement | `g5.2xlarge` in Sydney (one A10G, 24 GB VRAM, 8 vCPU, 32 GiB RAM); `g5.xlarge` also supported | [G5 script](../scripts/demo-ec2-g5-user-data.sh) |
+| M7i CPU functional rehearsal | `m7i.2xlarge` in Melbourne (8 vCPU, 32 GiB RAM) | [M7i script](../scripts/demo-ec2-m7i-user-data.sh) |
+
+G5 is not listed in Melbourne's published regional offerings. Confirm the chosen
+Region/AZ's offering and capacity in your account before launching. G5 uses the
+G/VT vCPU quota; M7i uses the separate Standard On-Demand quota (eight available
+vCPUs for either suggested 2xlarge). Create/select the key pair and security group
+in the chosen Region, and use that Region's Canonical Ubuntu AMI.
+[AWS offerings](https://docs.aws.amazon.com/ec2/latest/instancetypes/ec2-instance-regions.html),
+[G5 specifications](https://aws.amazon.com/ec2/instance-types/g5/),
+[M7i specifications](https://aws.amazon.com/ec2/instance-types/m7i/).
+
+Copy the appropriate whole script into **Advanced details → User data**, with
+base64-encoded input unchecked:
+
+```bash
+pbcopy < scripts/demo-ec2-g5-user-data.sh
+# OR, for the CPU rehearsal:
+pbcopy < scripts/demo-ec2-m7i-user-data.sh
+```
+
+G5 installs NVIDIA's driver/toolkit, reboots once, and requires an A10G with the
+model fully on GPU. M7i installs neither driver nor toolkit, checks for at least
+32 GiB provisioned RAM, starts preparation without a driver reboot, disables CUDA
+and Vulkan device use, and requires `100% CPU` residency. Both use an enabled
+service for later stop/start. The scripts are under EC2's 16 KiB raw User Data
+limit and need no repository token or private input download URL.
+
+Use the usual SSH environment variables below. **M7i requires explicit CPU mode
+on every prepare/status/run**; the default GPU command rejects a CPU server before
+warming or inference. No GPU demo silently becomes CPU processing:
+
+```bash
+# G5:
+./scripts/demo-ec2.sh prepare --image "$PHOTO"
+./scripts/demo-ec2.sh status
+./scripts/demo-ec2.sh run --image "$PHOTO" --verification never
+
+# M7i CPU rehearsal:
+./scripts/demo-ec2.sh prepare --backend cpu --image "$PHOTO"
+./scripts/demo-ec2.sh status --backend cpu
+./scripts/demo-ec2.sh run --backend cpu --image "$PHOTO" --verification never
+```
+
+Backend and pre/post readiness are recorded in private run details. These variants
+retain Qwen detection, all crops, sequential transcription, confidence, fallbacks
+and exports. CPU rehearsal has **no established five-second capability**. GPU
+latency also needs measurement on the actual instance. For CPU setup diagnostics,
+use `/usr/local/bin/uma-bct-demo-health status --backend cpu` and service logs;
+NVIDIA commands apply only to GPU installations. For a CPU EC2 benchmark, add
+`--backend cpu` to the `demo_benchmark.py ec2` command below. Do not run further
+local real-photo benchmarks when the current workflow is testing EC2.
+
+Maintainers can regenerate all three embedded scripts without contacting AWS:
+`uv run python scripts/build_demo_userdata.py`. Tests verify the generated files
+match their shared helper/Compose configuration.
+
+## Console launch checklist (original G6 GPU variant)
 
 1. Select **Asia Pacific (Sydney), ap-southeast-2**. In **Service Quotas → Amazon
    EC2 → Running On-Demand G and VT instances**, check the applied regional
@@ -103,7 +167,8 @@ unchanged-copy policy; there is no resampling, re-encoding or inference shortcut
 
 `run` selects one image by its local SHA-256 and verifies the remote association
 and bytes. It checks the pinned model, production context, NVIDIA availability,
-actual service device access and full GPU residency. A cold/missing model or image
+actual service device access and full GPU residency, or explicitly selected CPU
+residency for M7i. A cold/missing model or image
 fails with preparation instructions. It does not pull, build, warm or start EC2.
 It invokes the existing CLI with a new result destination and `--reprocess`,
 so each demonstration performs fresh detection and every crop transcription.
@@ -264,12 +329,16 @@ actual presentation run's report; never replace it with a historical catalogue.
 
 ## Budget and rehearsal
 
-Sydney public Linux On-Demand rates checked **9 October 2026**, USD before tax:
+Regional Linux On-Demand rates checked **9 October 2026**, USD before tax.
+GPU rows are Sydney; the M7i CPU row is Melbourne:
 
 | Resource | Rate |
 | --- | ---: |
 | g6.xlarge, 4 vCPU / 16 GiB RAM / one L4 | $1.04640/hour |
 | g6.2xlarge, 8 vCPU / 32 GiB RAM / one L4 | $1.27107/hour |
+| g5.xlarge in Sydney, 4 vCPU / 16 GiB RAM / one A10G | $1.30800/hour |
+| g5.2xlarge in Sydney, 8 vCPU / 32 GiB RAM / one A10G | $1.57584/hour |
+| m7i.2xlarge in Melbourne, 8 vCPU / 32 GiB RAM / CPU | $0.50400/hour |
 | c7i.2xlarge optional CPU rehearsal | $0.46620/hour |
 | gp3 storage | $0.096/GiB-month |
 | Public IPv4 | $0.005/hour |
@@ -283,13 +352,20 @@ Sources: [official compute feed](https://b0.p.awsstatic.com/pricing/2.0/meteredU
 Recheck before launch. AWS's 100 GB monthly internet-egress allowance is shared
 across services/Regions, not exclusive to this demo. Check remaining allowance.
 
-Plan four g6.2xlarge preparation hours, six benchmark hours and four rehearsal
+For the original G6 plan, budget four g6.2xlarge preparation hours, six benchmark hours and four rehearsal
 hours, plus four g6.xlarge comparison hours. Including IPv4, 14 days of 100 GiB
 gp3 (about $4.48 using a 30-day month), and $1.14 for 10 GB charged egress gives
 approximately **$27.69 before presentation**. Reserve **$30** for presentation
 and contingencies. Two g6.2xlarge presentation hours bring expected total to
 approximately **$30.24**, well below $120. Storage remains charged for its entire
 retention period, even while EC2 is stopped.
+
+For the alternatives, 16 total running hours (including two presentation hours),
+14 days of 100 GiB gp3 and the same $1.14 charged-egress allowance would cost about
+**$30.91 on Sydney g5.2xlarge** or **$13.76 on Melbourne m7i.2xlarge**, including
+IPv4. These are cost envelopes, not inference-time predictions. Hold the $30
+presentation/contingency reserve until presentation; count any extra comparison
+hours and storage retention separately. M7i remains a CPU functional rehearsal.
 
 Credit coverage was user-reported; this workspace has not independently inspected
 the AWS account. Before launching, verify Billing → Credits still

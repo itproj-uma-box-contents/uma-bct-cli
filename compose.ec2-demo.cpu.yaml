@@ -1,0 +1,21 @@
+# Explicit CPU rehearsal. No NVIDIA toolkit/device access and no public API port.
+name: uma-bct-demo
+services:
+  ollama:
+    image: ollama/ollama:0.32.9@sha256:1685741456770df6e3cceb2a945a5f75e020f658d1701509668d6f4688f1dd3f
+    restart: unless-stopped
+    environment:
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: "16384"
+      CUDA_VISIBLE_DEVICES: "-1"
+      OLLAMA_VULKAN: "0"
+    volumes:
+      - /var/lib/uma-bct-demo/models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 24

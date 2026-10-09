@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from scripts import build_demo_userdata as userdata
 from scripts import demo_benchmark as benchmark
 from scripts import demo_ec2 as client
 from scripts import demo_ec2_health as health
@@ -41,6 +42,35 @@ class DemoConfigTest(unittest.TestCase):
         self.assertIn("107374182400", script)
         subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2-user-data.sh")], check=True)
         subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2.sh")], check=True)
+
+    def test_g5_and_m7i_userdata_are_self_contained_and_match_their_backend(self):
+        for variant in ("g5", "m7i"):
+            with self.subTest(variant=variant):
+                path = ROOT / "scripts" / userdata.FILENAMES[variant]
+                script = path.read_text()
+                self.assertEqual(script, userdata.render(variant))
+                self.assertLessEqual(len(script.encode()), 16 * 1024)
+                config = json.loads(script.split("<<'DEMO_BACKEND'\n", 1)[1].split("\nDEMO_BACKEND\n", 1)[0])
+                self.assertEqual(config["mode"], "cpu" if variant == "m7i" else "gpu")
+                self.assertEqual(config["gpu_name"], None if variant == "m7i" else "A10G")
+                helper = script.split("<<'DEMO_HEALTH'\n", 1)[1].split("\nDEMO_HEALTH\n", 1)[0] + "\n"
+                self.assertEqual(helper, (ROOT / "scripts/demo_ec2_health.py").read_text())
+                startup = script.split("<<'DEMO_START'\n", 1)[1].split("\nDEMO_START\n", 1)[0]
+                if variant == "m7i":
+                    self.assertNotIn("ubuntu-drivers install", script)
+                    self.assertNotIn("apt-get install -y \"nvidia-container-toolkit", script)
+                    self.assertNotIn("\nnvidia-smi\n", startup)
+                    self.assertNotIn("shutdown -r", script)
+                    self.assertIn("start --no-block uma-bct-demo.service", script)
+                    self.assertIn("31457280", script)
+                    self.assertIn("uma-bct-demo-health warm --backend cpu", startup)
+                    cpu_compose = script.split("<<'DEMO_COMPOSE'\n", 1)[1].split("\nDEMO_COMPOSE\n", 1)[0] + "\n"
+                    self.assertEqual(cpu_compose, (ROOT / "compose.ec2-demo.cpu.yaml").read_text())
+                    self.assertNotIn("capabilities: [gpu]", cpu_compose)
+                else:
+                    self.assertIn("shutdown -r +1", script)
+                    self.assertIn("ubuntu-drivers install --gpgpu", script)
+                subprocess.run(["bash", "-n", str(path)], check=True)
 
     def test_exact_model_pins_agree(self):
         self.assertEqual(health.MODEL, remote.MODEL)
@@ -123,6 +153,58 @@ class DemoHealthTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "identity"):
                 health.inventory({})
 
+    def test_g5_requires_a10g_and_full_gpu_residency(self):
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 1}
+        with patch.object(health, "backend_config", return_value={"mode": "gpu", "gpu_name": "A10G"}), \
+                patch.object(health, "command", side_effect=["NVIDIA A10G", "GPU device", f"{health.MODEL} 100% GPU"]), \
+                patch.object(health, "container_info", return_value=("container", {})), \
+                patch.object(health, "inventory", return_value={}), \
+                patch.object(health, "api", return_value={"models": [running]}):
+            self.assertEqual(health.readiness()["backend"]["gpu_name"], "A10G")
+        with patch.object(health, "backend_config", return_value={"mode": "gpu", "gpu_name": "A10G"}), \
+                patch.object(health, "command", return_value="NVIDIA L4"):
+            with self.assertRaisesRegex(RuntimeError, "A10G"):
+                health.readiness()
+
+    def test_cpu_readiness_is_explicit_and_never_executes_nvidia_tooling(self):
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 0}
+        config = {"mode": "cpu", "gpu_name": None}
+        with patch.object(health, "backend_config", return_value=config), \
+                patch.object(health, "command", return_value=f"{health.MODEL} 100% CPU") as command, \
+                patch.object(health, "container_info", return_value=("container", {})), \
+                patch.object(health, "inventory", return_value={}), \
+                patch.object(health, "api", return_value={"models": [running]}) as api:
+            with self.assertRaisesRegex(RuntimeError, "explicitly"):
+                health.readiness(warm=True)
+            api.assert_not_called()
+            value = health.readiness(expected_backend="cpu")
+            self.assertEqual(value["backend"]["mode"], "cpu")
+            self.assertIsNone(value["gpu"])
+            self.assertEqual(command.call_args.args, ("docker", "exec", "container", "ollama", "ps"))
+            running["size_vram"] = 1
+            with self.assertRaisesRegex(RuntimeError, "CPU"):
+                health.readiness(expected_backend="cpu")
+
+    def test_cpu_container_cannot_request_a_gpu_or_omit_explicit_cpu_settings(self):
+        config = {"mode": "cpu", "gpu_name": None}
+        info = self.info()
+        with patch.object(health, "command", side_effect=["container", json.dumps([info])]):
+            with self.assertRaisesRegex(RuntimeError, "disable GPU"):
+                health.container_info(config)
+        info["HostConfig"]["DeviceRequests"] = []
+        info["Config"]["Env"] += ["CUDA_VISIBLE_DEVICES=-1", "OLLAMA_VULKAN=0"]
+        with patch.object(health, "command", side_effect=["container", json.dumps([info])]):
+            self.assertEqual(health.container_info(config)[0], "container")
+
+    def test_malformed_backend_configuration_is_rejected(self):
+        for configuration in ({"mode": "auto"}, {"mode": "gpu", "gpu_name": "unknown"}, []):
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "backend.json"
+                path.write_text(json.dumps(configuration))
+                with patch.object(health, "BACKEND_FILE", path):
+                    with self.assertRaises(RuntimeError):
+                        health.backend_config()
+
 
 @unittest.skipUnless(os.name == "posix", "EC2 controller targets Linux")
 class DemoRemoteTest(unittest.TestCase):
@@ -196,6 +278,36 @@ class DemoRemoteTest(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
 class DemoClientTest(unittest.TestCase):
+    def test_cpu_backend_is_an_explicit_wrapper_option(self):
+        args = client.parser().parse_args(["run", "--image", "/fixture.jpg"])
+        self.assertEqual(args.backend, "gpu")
+        args = client.parser().parse_args(["run", "--image", "/fixture.jpg", "--backend", "cpu"])
+        self.assertEqual(args.backend, "cpu")
+        with patch.object(client, "ssh_json") as ssh:
+            with self.assertRaises(ValueError):
+                client.prepare(None, backend="cpu; shell-injection")
+            ssh.assert_not_called()
+
+    def test_prepare_retains_legacy_gpu_health_arguments(self):
+        for backend, expected in (("gpu", "/usr/local/bin/uma-bct-demo-health warm"),
+                                  ("cpu", "/usr/local/bin/uma-bct-demo-health warm --backend cpu")):
+            with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                    patch.object(client, "ssh_json", side_effect=RuntimeError("stop before transfer")) as ssh:
+                with self.assertRaises(RuntimeError):
+                    client.prepare(None, backend=backend)
+                self.assertEqual(ssh.call_args.args[0], expected)
+
+    def test_cpu_run_rejects_a_legacy_gpu_controller_before_inference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.jpg"
+            image.write_bytes(b"synthetic")
+            with patch.object(client, "result_root", return_value=root), \
+                    patch.object(client, "rpc", return_value={"status": "ready", "readiness": {"gpu": "NVIDIA L4"}}) as rpc:
+                value, code = client.demo_run(image, "never", time.monotonic(), backend="cpu")
+            self.assertEqual(code, 2)
+            self.assertIn("explicit CPU", value["error"])
+            rpc.assert_called_once_with({"action": "status", "backend": "cpu"})
     def test_output_root_cannot_enter_checkout_even_through_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
             alias = Path(temporary) / "alias"

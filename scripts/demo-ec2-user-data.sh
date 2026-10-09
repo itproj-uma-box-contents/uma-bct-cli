@@ -13,7 +13,9 @@ chmod 0600 /var/log/uma-bct-demo-setup.log
 trap 'rc=$?; echo "SETUP FAILED: line $LINENO, exit $rc; inspect this log and journalctl -u uma-bct-demo.service"; exit "$rc"' ERR
 printf 'Bootstrap began: %s\n' "$(date -Is)"
 . /etc/os-release
-[ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] && [ "$(dpkg --print-architecture)" = amd64 ]
+if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != 24.04 ] || [ "$(dpkg --print-architecture)" != amd64 ]; then
+    echo 'This setup requires Ubuntu 24.04 LTS amd64.'; exit 1
+fi
 
 # Check the provisioned block device, not filesystem capacity (which has overhead).
 # A filesystem grow command cannot enlarge the underlying EBS volume.
@@ -69,6 +71,10 @@ install -o ubuntu -g ubuntu -m 0700 -d /home/ubuntu/demo_images /home/ubuntu/dem
 
 # The service configuration and health helper are embedded so no repository access
 # or private artifact URL is needed in User Data. Tests keep these copies in sync.
+cat >/opt/uma-bct-demo/backend.json <<'DEMO_BACKEND'
+{"mode": "gpu", "gpu_name": "L4"}
+DEMO_BACKEND
+chmod 0644 /opt/uma-bct-demo/backend.json
 cat >/opt/uma-bct-demo/compose.yaml <<'DEMO_COMPOSE'
 # Standalone temporary EC2 service: no photographs or application build context.
 # User Data embeds this exact configuration so Ollama can start before deployment.
@@ -110,11 +116,12 @@ host can reach the private Docker bridge without publishing an Ollama port.
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
-import sys
 import time
 import urllib.request
+from pathlib import Path
 
 MODEL = "qwen3-vl:8b-instruct-q4_K_M"
 MODEL_DIGEST = "0533d74300e4f9bc367d675d4e64ffd073d50ff16a2b4096cc2e8a1cf8c96319"
@@ -122,6 +129,7 @@ OLLAMA_IMAGE = "ollama/ollama:0.32.9@sha256:1685741456770df6e3cceb2a945a5f75e020
 CONTEXT = 16384
 COMPOSE = "/opt/uma-bct-demo/compose.yaml"
 NETWORK = "uma-bct-demo_default"
+BACKEND_FILE = Path("/opt/uma-bct-demo/backend.json")
 SETTINGS = {"model": MODEL, "num_ctx": CONTEXT, "temperature": 0, "think": False,
             "transcription_logprobs": True, "parallel_requests": 1}
 
@@ -130,7 +138,20 @@ def command(*args: str) -> str:
     return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=15).strip()
 
 
-def container_info() -> tuple[str, dict]:
+def backend_config() -> dict:
+    try:
+        value = json.loads(BACKEND_FILE.read_text())
+    except FileNotFoundError:
+        value = {"mode": "gpu", "gpu_name": "L4"}  # Original G6 installations.
+    if not isinstance(value, dict) or value.get("mode") not in {"gpu", "cpu"}:
+        raise RuntimeError("Invalid prepared backend configuration.")
+    if value["mode"] == "gpu" and value.get("gpu_name") not in {"L4", "A10G"}:
+        raise RuntimeError("GPU setup must specify L4 or A10G.")
+    return value
+
+
+def container_info(config: dict | None = None) -> tuple[str, dict]:
+    config = config or backend_config()
     container = command("docker", "compose", "-p", "uma-bct-demo", "-f", COMPOSE, "ps", "-q", "ollama")
     if not container:
         raise RuntimeError("Ollama service is stopped. Inspect sudo journalctl -u uma-bct-demo.service.")
@@ -144,7 +165,10 @@ def container_info() -> tuple[str, dict]:
     if not required.issubset(info["Config"].get("Env", [])):
         raise RuntimeError("Ollama service settings differ from the prepared demo configuration.")
     devices = info["HostConfig"].get("DeviceRequests") or []
-    if not any(item.get("Driver") == "nvidia" and item.get("Count") == 1 for item in devices):
+    if config["mode"] == "cpu":
+        if devices or not {"CUDA_VISIBLE_DEVICES=-1", "OLLAMA_VULKAN=0"}.issubset(info["Config"].get("Env", [])):
+            raise RuntimeError("CPU rehearsal must disable GPU access explicitly.")
+    elif not any(item.get("Driver") == "nvidia" and item.get("Count") == 1 for item in devices):
         raise RuntimeError("The Ollama container does not request its NVIDIA GPU.")
     return container, info
 
@@ -176,13 +200,18 @@ def inventory(info: dict) -> dict:
     return model
 
 
-def readiness(*, warm: bool = False) -> dict:
-    gpu = command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader")
-    if len(gpu.splitlines()) != 1 or "L4" not in gpu:
-        raise RuntimeError("GPU demo requires one NVIDIA L4; CPU fallback is not permitted.")
-    container, info = container_info()
-    # Also verify that the toolkit exposes the device inside the actual service.
-    command("docker", "exec", container, "nvidia-smi", "-L")
+def readiness(*, warm: bool = False, expected_backend: str = "gpu") -> dict:
+    config = backend_config()
+    if config["mode"] != expected_backend:
+        raise RuntimeError(f"Server is {config['mode']}; select --backend {config['mode']} explicitly. No automatic fallback.")
+    gpu = None
+    if config["mode"] == "gpu":
+        gpu = command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader")
+        if len(gpu.splitlines()) != 1 or config["gpu_name"] not in gpu:
+            raise RuntimeError(f"GPU setup requires one NVIDIA {config['gpu_name']}; CPU fallback is not permitted.")
+    container, info = container_info(config)
+    if config["mode"] == "gpu":
+        command("docker", "exec", container, "nvidia-smi", "-L")
     model = inventory(info)
     timing = None
     if warm:
@@ -197,22 +226,29 @@ def readiness(*, warm: bool = False) -> dict:
                                                        "eval_duration", "prompt_eval_count", "eval_count")}}
     running = next((item for item in api(info, "ps").get("models", []) if item.get("name") == MODEL), None)
     display = command("docker", "exec", container, "ollama", "ps")
+    processor = "GPU" if config["mode"] == "gpu" else "CPU"
+    correct_memory = (running is not None and
+                      (bool(running.get("size_vram")) if processor == "GPU" else running.get("size_vram") == 0))
     if (running is None or running.get("digest") != MODEL_DIGEST or running.get("context_length") != CONTEXT
-            or not running.get("size_vram") or not any(MODEL in line and "100% GPU" in line for line in display.splitlines())):
-        raise RuntimeError("Model is cold, has the wrong context, or is not fully on GPU. Run prepare; warming is not a live run.")
-    return {"status": "ready", "gpu": gpu, "model": model, "running_model": running,
+            or not correct_memory or not any(MODEL in line and f"100% {processor}" in line for line in display.splitlines())):
+        raise RuntimeError(f"Model is cold, has wrong context, or is not fully on {processor}. Run prepare before a live run.")
+    return {"status": "ready", "backend": config, "gpu": gpu, "model": model, "running_model": running,
             "settings": SETTINGS, "cold_or_reheat_probe": timing}
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("status", "inventory", "warm"), nargs="?", default="status")
+    parser.add_argument("--backend", choices=("gpu", "cpu"), default="gpu")
+    args = parser.parse_args()
     try:
-        if sys.argv[1:] == ["inventory"]:
+        if backend_config()["mode"] != args.backend:
+            raise RuntimeError("Backend mismatch; CPU rehearsal requires explicit --backend cpu.")
+        if args.action == "inventory":
             _container, info = container_info()
             value = inventory(info)
-        elif sys.argv[1:] in ([], ["status"], ["warm"]):
-            value = readiness(warm=sys.argv[1:] == ["warm"])
         else:
-            raise ValueError("Use status, inventory, or warm.")
+            value = readiness(warm=args.action == "warm", expected_backend=args.backend)
         print(json.dumps(value))
         return 0
     except Exception as error:

@@ -147,7 +147,8 @@ def benchmark(args: argparse.Namespace) -> dict:
         else:
             gpu_before = None
             command = [str(ROOT / "scripts/demo-ec2.sh"), "run", "--image", str(image), "--json",
-                       "--verification", args.verification, *(["--timings"] if args.timings else [])]
+                       "--verification", args.verification, "--backend", args.backend,
+                       *(["--timings"] if args.timings else [])]
         started = time.monotonic()
         interrupted = False
         with (trial / "CLI Summary.json").open("w") as output:
@@ -188,6 +189,7 @@ def benchmark(args: argparse.Namespace) -> dict:
             value.update(full_mac_command_seconds=elapsed, cli_elapsed_seconds=summary.get("cli_elapsed_seconds"),
                          physical_box_records=summary.get("physical_box_records"), catalogue_rows=summary.get("catalogue_rows"),
                          fallbacks=summary.get("fallbacks"), local_results=summary.get("local_results"))
+            value["settings"]["backend"] = summary.get("backend", args.backend)
             value["application"] = summary.get("application", application)
             if summary.get("local_results"):
                 value["request_timings"] = request_totals(Path(summary["local_results"]))
@@ -214,6 +216,8 @@ def main() -> int:
         command.add_argument("--runs", type=int, default=5)
         command.add_argument("--verification", choices=("never", "always"), default="never")
         command.add_argument("--timings", action="store_true")
+        if name == "ec2":
+            command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu")
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")

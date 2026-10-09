@@ -57,8 +57,12 @@ def write_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def health(action: str = "status") -> dict:
-    process = subprocess.run([HEALTH, action], capture_output=True, text=True, timeout=960 if action == "warm" else 90)
+def health(action: str = "status", *, backend: str = "gpu") -> dict:
+    if backend not in {"gpu", "cpu"}:
+        raise ValueError("Backend must be gpu or cpu.")
+    args = [HEALTH, action, *(["--backend", "cpu"] if backend == "cpu" else [])]
+    process = subprocess.run(args, capture_output=True, text=True,
+                             timeout=960 if action == "warm" else 90)
     value = json.loads(process.stdout)
     if process.returncode:
         raise RuntimeError(value.get("error", "GPU/model readiness failed."))
@@ -147,7 +151,7 @@ def install_source(archive: Path) -> dict:
 
 def prepare(request: dict) -> dict:
     # The Mac has explicitly reheated before transfer; live runs never do so.
-    ready = health()
+    ready = health(backend=request.get("backend", "gpu"))
     upload_id = token(request["upload_id"])
     image_name = request["filename"]
     if image_name is None:
@@ -213,7 +217,8 @@ def run(request: dict) -> dict:
     mode = request.get("verification", "never")
     if mode not in {"never", "always"}:
         raise ValueError("Demo verification must be never or always.")
-    before = health()
+    backend = request.get("backend", "gpu")
+    before = health(backend=backend)
     app = deployment()
     image, source = staged(request)
     directory = RESULTS / run_id
@@ -229,7 +234,7 @@ def run(request: dict) -> dict:
             "--results-directory", "/data/outputs", "--reprocess", "--verification", mode, "--model", MODEL]
     if request.get("timings") is True:
         args[2:2] = ["-e", "UMA_BCT_DEMO_TIMINGS_FILE=/data/outputs/Request Timings.jsonl"]
-    print("Running fresh EC2 inference; CLI progress follows.", file=sys.stderr, flush=True)
+    print(f"Running fresh EC2 inference on {backend.upper()}; CLI progress follows.", file=sys.stderr, flush=True)
     started = time.monotonic()
     with (directory / "CLI stdout.json").open("w") as output:
         process = subprocess.run(args, stdout=output, stderr=sys.stderr)
@@ -241,7 +246,7 @@ def run(request: dict) -> dict:
     try:
         summary = json.loads((directory / "CLI stdout.json").read_text())
         batch = validate_summary(summary, directory, process.returncode)
-        after = health()
+        after = health(backend=backend)
     except Exception as failure:
         error = str(failure)
     details = {}
@@ -250,9 +255,10 @@ def run(request: dict) -> dict:
     records = [box for image_result in details.get("images", []) for box in image_result.get("boxes", [])]
     envelope = {"schema_version": 1, "run_id": run_id, "status": summary.get("status", "failed"),
                 "cli_exit_code": process.returncode, "cli": summary, "cli_elapsed_seconds": elapsed,
-                "application": app, "source": source, "settings": {**SETTINGS, "verification": mode},
+                "application": app, "source": source, "backend": backend,
+                "settings": {**SETTINGS, "verification": mode, "backend": backend},
                 "physical_box_records": len(records), "catalogue_rows": summary.get("catalogue_records"),
-                "accuracy": "unreviewed", "gpu_before": before, "gpu_after": after,
+                "accuracy": "unreviewed", "readiness_before": before, "readiness_after": after,
                 "orchestration_error": error,
                 "batch_relative_path": batch.relative_to(directory).as_posix() if batch else None,
                 "fallbacks": [item.get("fallback_path", []) for item in details.get("images", [])]}
@@ -279,7 +285,8 @@ def main() -> int:
             if action == "prepare":
                 result = prepare(request)
             elif action == "status":
-                result = {"status": "ready", "readiness": health(), "application": deployment()}
+                result = {"status": "ready", "readiness": health(backend=request.get("backend", "gpu")),
+                          "application": deployment()}
             elif action == "run":
                 result = run(request)
             elif action == "retrieve":

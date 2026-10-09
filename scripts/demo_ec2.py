@@ -67,6 +67,11 @@ def rpc(request: dict) -> dict:
     return ssh_json("python3 /home/ubuntu/demo_control.py", request)
 
 
+def require_cpu_status(value: dict) -> None:
+    if value.get("readiness", {}).get("backend", {}).get("mode") != "cpu":
+        raise RuntimeError("Server did not confirm explicit CPU mode. Install M7i User Data and prepare --backend cpu first.")
+
+
 def copy(source: str, destination: str, *, recursive: bool = False) -> None:
     _host, options = connection()
     # OpenSSH's default SFTP transport retains host verification and handles spaces.
@@ -100,13 +105,15 @@ def source_bundle(destination: Path, *, root: Path = ROOT) -> dict:
     return metadata
 
 
-def prepare(image: Path | None) -> dict:
+def prepare(image: Path | None, *, backend: str = "gpu") -> dict:
+    if backend not in {"gpu", "cpu"}:
+        raise ValueError("Backend must be gpu or cpu.")
     host, options = connection()
     chosen, fingerprint = selected_image(image) if image is not None else (None, None)
     print("Preparing the server, application, and selected input; this is outside live-run timing.", file=sys.stderr)
     # Verify infrastructure/reheat before any private transfer. A stopped or unfinished
     # server fails here with setup instructions; the wrapper does not start EC2.
-    ready = ssh_json("/usr/local/bin/uma-bct-demo-health warm")
+    ready = ssh_json("/usr/local/bin/uma-bct-demo-health warm" + (" --backend cpu" if backend == "cpu" else ""))
     subprocess.run(["ssh", "-T", *options, host, "install -d -m 0700 /home/ubuntu/demo_incoming"], check=True,
                    stdout=sys.stderr, stderr=sys.stderr)
     upload_id = uuid.uuid4().hex
@@ -125,7 +132,7 @@ def prepare(image: Path | None) -> dict:
             copy(str(staged_copy), f"{host}:{REMOTE_BASE}/demo_incoming/{upload_id}.jpg")
         response = ssh_json(f"python3 /home/ubuntu/demo_incoming/{upload_id}.py", {
             "action": "prepare", "upload_id": upload_id, "filename": chosen.name if chosen else None,
-            "source_sha256": fingerprint, "source_path": str(chosen) if chosen else None,
+            "source_sha256": fingerprint, "source_path": str(chosen) if chosen else None, "backend": backend,
         })
     response["initial_reheat"] = ready
     return response
@@ -190,7 +197,9 @@ def result_root() -> Path:
 
 
 def demo_run(image: Path | None, verification: str, started: float, *, run_id: str | None = None,
-             timings: bool = False) -> tuple[dict, int]:
+             timings: bool = False, backend: str = "gpu") -> tuple[dict, int]:
+    if backend not in {"gpu", "cpu"}:
+        raise ValueError("Backend must be gpu or cpu.")
     identifier = run_id or uuid.uuid4().hex
     if not re.fullmatch(r"[a-f0-9]{32}", identifier):
         raise ValueError("--run-id must be the recorded 32-character run identifier.")
@@ -203,9 +212,13 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
         raise ValueError("Local result root must be private and writable; fix it before running inference.")
     request = ({"action": "retrieve", "run_id": identifier} if run_id else
                {"action": "run", "run_id": identifier, "source_sha256": fingerprint, "verification": verification,
-                "timings": timings})
+                "timings": timings, "backend": backend})
     print(f"Demo run ID: {identifier}", file=sys.stderr, flush=True)
     try:
+        if not run_id and backend == "cpu":
+            # Old G6 controllers ignore unknown RPC fields. Confirm CPU capability
+            # before asking such a controller to perform any fresh inference.
+            require_cpu_status(rpc({"action": "status", "backend": "cpu"}))
         response = rpc(request)
     except Exception as error:
         return {"status": "failed", "run_id": identifier, "cli_exit_code": None,
@@ -217,6 +230,9 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
     if envelope.get("run_id") != identifier or (not run_id and envelope.get("source", {}).get("source_sha256") != fingerprint):
         return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
                 "error": "Remote run/source identity does not match the selected input."}, cli_code or 2
+    if not run_id and envelope.get("backend", "gpu") != backend:
+        return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
+                "error": "Remote backend differs from the explicitly selected backend."}, cli_code or 2
     try:
         local = retrieve(response, destination)
     except Exception as error:
@@ -239,6 +255,9 @@ def parser() -> argparse.ArgumentParser:
     for name in ("prepare", "status", "run", "retrieve"):
         command = commands.add_parser(name)
         command.add_argument("--json", action="store_true", help="one JSON summary on stdout; progress stays on stderr")
+        if name != "retrieve":
+            command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu",
+                                 help="gpu by default; select cpu explicitly for M7i functional rehearsal")
         if name in {"prepare", "run"}:
             command.add_argument("--image", type=Path, required=name == "run")
         if name == "run":
@@ -254,6 +273,9 @@ def display(value: dict, *, json_mode: bool) -> None:
         print(json.dumps(value))
         return
     print(f"Demo outcome: {value.get('status')}")
+    backend = value.get("backend") or value.get("readiness", {}).get("backend", {}).get("mode")
+    if backend:
+        print(f"Backend: {backend.upper()}" + (" (functional rehearsal)" if backend == "cpu" else ""))
     if "cli_exit_code" in value:
         print(f"CLI exit code: {value['cli_exit_code']}")
     if "cli_elapsed_seconds" in value:
@@ -329,12 +351,15 @@ def main(argv: list[str] | None = None) -> int:
     code = 0
     try:
         if args.command == "prepare":
-            value = prepare(args.image)
+            value = prepare(args.image, backend=args.backend)
         elif args.command == "status":
-            value = rpc({"action": "status"})
+            value = rpc({"action": "status", "backend": args.backend})
+            if args.backend == "cpu":
+                require_cpu_status(value)
         else:
             value, code = demo_run(getattr(args, "image", None), getattr(args, "verification", "never"), started,
-                                   run_id=getattr(args, "run_id", None), timings=getattr(args, "timings", False))
+                                   run_id=getattr(args, "run_id", None), timings=getattr(args, "timings", False),
+                                   backend=getattr(args, "backend", "gpu"))
     except KeyboardInterrupt:
         value, code = {"status": "interrupted", "error": "Interrupted; inspect the recorded run ID before retrying."}, 130
     except Exception as error:
