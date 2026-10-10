@@ -7,13 +7,15 @@ a warning instead of stopping the whole image.
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
 from typing import Literal
 
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
-from .domain import Box, BoxResult, DetectedRegion, InputImage
+from .domain import Box, BoxResult, BoxTranscription, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
 from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
@@ -80,6 +82,8 @@ class BoxTranscriptionPipeline:
     fallback_detector: BoxDetector | None = None
     model_metadata: dict[str, str] = field(default_factory=dict)
     on_stage: Callable[[str], None] | None = None
+    # Explicit demo injection only; ordinary local/CLI processing stays sequential.
+    parallel_transcribers: tuple[TextTranscriber, ...] = ()
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
@@ -181,6 +185,8 @@ class BoxTranscriptionPipeline:
         return observations_from_response(box, returned, 0)
 
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
+        if self.parallel_transcribers:
+            return self.transcribe_parallel_crops(boxes, warnings)
         observations: list[ObservedBox] = []
         unresolved = 0
         for index, box in enumerate(boxes, start=1):
@@ -196,6 +202,69 @@ class BoxTranscriptionPipeline:
                 unresolved += 1
                 continue
             observations.extend(observations_from_response(box, returned, index))
+        return observations, unresolved
+
+    def transcribe_parallel_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
+        """Keep one request per independent runner and assemble in detection order."""
+        if not boxes:
+            return [], 0
+        transcribers = (self.transcriber, *self.parallel_transcribers)
+        completed: Queue[tuple[int, list[BoxTranscription] | BaseException]] = Queue()
+        stopping = threading.Event()
+
+        def read_crops(slot: int, transcriber: TextTranscriber) -> None:
+            for index in range(slot, len(boxes), len(transcribers)):
+                if stopping.is_set():
+                    return
+                returned: list[BoxTranscription] | BaseException
+                try:
+                    returned = transcriber.transcribe(boxes[index])
+                except BaseException as error:
+                    # Non-recoverable interrupts are delivered to the owning thread.
+                    returned = error
+                    if not isinstance(error, Exception):
+                        stopping.set()
+                completed.put((index, returned))
+                if isinstance(returned, BaseException) and not isinstance(returned, Exception):
+                    return
+
+        workers = [threading.Thread(target=read_crops, args=(slot, transcriber), daemon=True)
+                   for slot, transcriber in enumerate(transcribers)]
+        readings: dict[int, list[BoxTranscription] | Exception] = {}
+        self.report_stage(f"Transcribing {len(boxes)} crops with {len(transcribers)} independent runners")
+        interrupted = False
+        try:
+            for worker in workers:
+                worker.start()
+            while len(readings) < len(boxes):
+                index, returned = completed.get()
+                if isinstance(returned, BaseException) and not isinstance(returned, Exception):
+                    raise returned
+                readings[index] = returned
+                # Progress callbacks and all catalogue work stay on the owning thread.
+                self.report_stage(f"Finished crop {index + 1} of {len(boxes)}")
+        except BaseException as error:
+            interrupted = not isinstance(error, Exception)
+            raise
+        finally:
+            stopping.set()
+            # Daemon readers let Ctrl-C exit promptly instead of waiting for HTTP timeouts.
+            # Other errors drain active readers before a resilient batch moves on.
+            for worker in workers:
+                if worker.ident is not None:
+                    worker.join(timeout=0.1 if interrupted else None)
+        observations: list[ObservedBox] = []
+        unresolved = 0
+        for index, box in enumerate(boxes, start=1):
+            returned = readings[index - 1]
+            if isinstance(returned, Exception):
+                warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} failed: {warning_text(returned)}")
+                unresolved += 1
+            elif not returned:
+                warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} returned no boxes.")
+                unresolved += 1
+            else:
+                observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
 

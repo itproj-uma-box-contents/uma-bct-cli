@@ -78,7 +78,15 @@ def reheating(directory: Path) -> dict:
 def request_totals(root: Path) -> dict:
     files = list(root.rglob("Request Timings.jsonl"))
     requests = [json.loads(line) for file in files for line in file.read_text().splitlines() if line]
-    return {"requests": requests,
+    spans = {}
+    for kind in ("preflight", "detection", "transcription"):
+        selected = [row for row in requests if row["request"] == kind]
+        starts = [row.get("started_monotonic_seconds") for row in selected]
+        finishes = [row.get("finished_monotonic_seconds") for row in selected]
+        spans[kind] = (max(finishes) - min(starts) if selected and all(isinstance(value, (int, float))
+                       for value in [*starts, *finishes]) else None)
+    return {"requests": requests, "request_span_seconds_by_kind": spans,
+            "timing_scope": "wall sums are cumulative request cost; spans are first request start to last finish, including gaps",
             "wall_seconds_by_request": {kind: sum(row["wall_seconds"] for row in requests if row["request"] == kind)
                                         for kind in ("preflight", "detection", "transcription")}}
 
@@ -148,6 +156,8 @@ def benchmark(args: argparse.Namespace) -> dict:
             gpu_before = None
             command = [str(ROOT / "scripts/demo-ec2.sh"), "run", "--image", str(image), "--json",
                        "--verification", args.verification, "--backend", args.backend,
+                       "--transcription-workers", str(args.transcription_workers),
+                       *(["--archive-results"] if args.archive_results else []),
                        *(["--timings"] if args.timings else [])]
         started = time.monotonic()
         interrupted = False
@@ -190,6 +200,7 @@ def benchmark(args: argparse.Namespace) -> dict:
                          physical_box_records=summary.get("physical_box_records"), catalogue_rows=summary.get("catalogue_rows"),
                          fallbacks=summary.get("fallbacks"), local_results=summary.get("local_results"))
             value["settings"]["backend"] = summary.get("backend", args.backend)
+            value["settings"]["transcription_workers"] = summary.get("settings", {}).get("transcription_workers", args.transcription_workers)
             value["application"] = summary.get("application", application)
             if summary.get("local_results"):
                 value["request_timings"] = request_totals(Path(summary["local_results"]))
@@ -218,6 +229,8 @@ def main() -> int:
         command.add_argument("--timings", action="store_true")
         if name == "ec2":
             command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu")
+            command.add_argument("--transcription-workers", type=int, choices=(1, 2), default=1)
+            command.add_argument("--archive-results", action="store_true")
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")

@@ -12,12 +12,13 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from scripts import build_demo_userdata as userdata
 from scripts import demo_benchmark as benchmark
 from scripts import demo_ec2 as client
 from scripts import demo_ec2_health as health
+from scripts import demo_ec2_parallel as parallel
 from scripts import demo_ec2_remote as remote
 from uma_bct.adapters.ollama_client import OllamaVisionModel
 from uma_bct.adapters.request_timings import RequestTimings
@@ -27,6 +28,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.name == "posix", "Temporary demo scripts target macOS/Linux")
 class DemoConfigTest(unittest.TestCase):
+    def test_p5_userdata_is_self_contained_and_requires_one_h100(self):
+        path = ROOT / "scripts/demo-ec2-p5-user-data.sh"
+        script = path.read_text()
+        self.assertEqual(script, userdata.render("p5"))
+        self.assertLessEqual(len(script.encode()), 16 * 1024)
+        backend = json.loads(script.split("<<'DEMO_BACKEND'\n", 1)[1].split("\nDEMO_BACKEND\n", 1)[0])
+        self.assertEqual(backend, {"mode": "gpu", "gpu_name": "H100"})
+        self.assertIn("one NVIDIA H100", script)
+        self.assertIn("supported H100 CUDA backends", script)
+        self.assertIn("shutdown -r +1", script)
+        self.assertIn("107374182400", script)
+        self.assertIn(health.OLLAMA_IMAGE, script)
+        self.assertIn("OLLAMA_NUM_PARALLEL: \"1\"", script)
+        helper = script.split("<<'DEMO_HEALTH'\n", 1)[1].split("\nDEMO_HEALTH\n", 1)[0] + "\n"
+        self.assertEqual(helper, (ROOT / "scripts/demo_ec2_health.py").read_text())
+        subprocess.run(["bash", "-n", str(path)], check=True)
+
     def test_self_contained_userdata_is_valid_and_matches_source(self):
         script = (ROOT / "scripts/demo-ec2-user-data.sh").read_text()
         self.assertLessEqual(len(script.encode()), 16 * 1024)
@@ -40,6 +58,8 @@ class DemoConfigTest(unittest.TestCase):
         self.assertNotIn("systemctl start uma-bct-demo.service", script)
         self.assertIn("shutdown -r +1", script)
         self.assertIn("107374182400", script)
+        self.assertIn("chmod 0644 /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg", script)
+        self.assertIn("apt-get install -y nvidia-utils-580-server", script)
         subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2-user-data.sh")], check=True)
         subprocess.run(["bash", "-n", str(ROOT / "scripts/demo-ec2.sh")], check=True)
 
@@ -70,6 +90,8 @@ class DemoConfigTest(unittest.TestCase):
                 else:
                     self.assertIn("shutdown -r +1", script)
                     self.assertIn("ubuntu-drivers install --gpgpu", script)
+                    self.assertIn("apt-get install -y nvidia-utils-580-server", script)
+                    self.assertIn("chmod 0644 /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg", script)
                 subprocess.run(["bash", "-n", str(path)], check=True)
 
     def test_exact_model_pins_agree(self):
@@ -90,10 +112,33 @@ class DemoConfigTest(unittest.TestCase):
 
 
 class DemoHealthTest(unittest.TestCase):
+    def test_h100_configuration_and_readiness_reject_other_devices_and_cpu_spill(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            backend = Path(temporary) / "backend.json"
+            backend.write_text('{"mode":"gpu","gpu_name":"H100"}')
+            with patch.object(health, "BACKEND_FILE", backend):
+                self.assertEqual(health.backend_config()["gpu_name"], "H100")
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 1}
+        for gpu, processor, accepted in (("NVIDIA H100 80GB HBM3", "100% GPU", True),
+                                         ("NVIDIA L4", "100% GPU", False),
+                                         ("H100\nH100", "100% GPU", False),
+                                         ("H100", "60%/40% CPU/GPU", False)):
+            with self.subTest(gpu=gpu, processor=processor), \
+                    patch.object(health, "backend_config", return_value={"mode": "gpu", "gpu_name": "H100"}), \
+                    patch.object(health, "command", side_effect=[gpu, "GPU device", f"{health.MODEL} {processor}"]), \
+                    patch.object(health, "container_info", return_value=("container", {})), \
+                    patch.object(health, "inventory", return_value={}), \
+                    patch.object(health, "api", return_value={"models": [running]}):
+                if accepted:
+                    self.assertEqual(health.readiness()["status"], "ready")
+                else:
+                    with self.assertRaises(RuntimeError):
+                        health.readiness()
+
     def info(self):
         return {"State": {"Running": True}, "Config": {"Image": health.OLLAMA_IMAGE, "Env": [
             "OLLAMA_NO_CLOUD=1", "OLLAMA_KEEP_ALIVE=-1", "OLLAMA_MAX_LOADED_MODELS=1", "OLLAMA_NUM_PARALLEL=1",
-            "OLLAMA_CONTEXT_LENGTH=16384"]}, "HostConfig": {"PortBindings": {}, "DeviceRequests": [
+                "OLLAMA_CONTEXT_LENGTH=16384"]}, "HostConfig": {"Runtime": "runc", "PortBindings": {}, "DeviceRequests": [
                 {"Driver": "nvidia", "Count": 1}]}}
 
     def test_published_api_or_wrong_settings_are_rejected(self):
@@ -181,7 +226,12 @@ class DemoHealthTest(unittest.TestCase):
             self.assertEqual(value["backend"]["mode"], "cpu")
             self.assertIsNone(value["gpu"])
             self.assertEqual(command.call_args.args, ("docker", "exec", "container", "ollama", "ps"))
-            running["size_vram"] = 1
+            self.assertIn("test ! -e /dev/nvidiactl", command.call_args_list[0].args[-1])
+            running["size_vram"] = 4761698959
+            command.return_value = f"{health.MODEL} 42%/58% CPU/GPU"
+            value = health.readiness(expected_backend="cpu")
+            self.assertIn("42%/58%", value["ollama_ps"])
+            running["context_length"] = 4096
             with self.assertRaisesRegex(RuntimeError, "CPU"):
                 health.readiness(expected_backend="cpu")
 
@@ -240,16 +290,17 @@ class DemoRemoteTest(unittest.TestCase):
                     self.assertIn("--reprocess", args)
                     self.assertEqual(args[args.index("--verification") + 1], "never")
                     self.assertEqual(args[args.index("--model") + 1], remote.MODEL)
+                    self.assertEqual(args[args.index("--results-directory") + 1], "/data/outputs/Batches")
                     self.assertNotIn("--gpus", args)  # CLI itself does not own the persistent model service.
-                    batch = results / run_id / "Batch fixture"
-                    batch.mkdir()
+                    batch = results / run_id / "Batches" / "Batch fixture"
+                    batch.mkdir(parents=True)
                     for name in ("Catalogue.csv", "Review.html"):
                         (batch / name).write_text("fixture")
                     (batch / "Run Details.json").write_text(json.dumps({"images": [
                         {"boxes": [{"box_id": "1"}, {"box_id": "2"}], "fallback_path": []}]}))
                     json.dump({"status": status, "images_total": 1, "images_reused": 0,
                                "images_processed_this_start": 1, "catalogue_records": 3,
-                               "batch_directory": "/data/outputs/Batch fixture"}, stdout)
+                               "batch_directory": "/data/outputs/Batches/Batch fixture"}, stdout)
                     return SimpleNamespace(returncode=cli_code)
                 with patch.object(remote, "INPUTS", inputs), patch.object(remote, "RESULTS", results), \
                         patch.object(remote, "health", return_value={"status": "ready"}), \
@@ -261,7 +312,7 @@ class DemoRemoteTest(unittest.TestCase):
                     self.assertEqual(response["envelope"]["status"], status)
                     self.assertEqual(response["envelope"]["physical_box_records"], 2)
                     self.assertEqual(response["envelope"]["catalogue_rows"], 3)
-                    self.assertIn("Batch fixture/Review.html", response["transfer"]["files"])
+                    self.assertIn("Batches/Batch fixture/Review.html", response["transfer"]["files"])
                     with self.assertRaises(FileExistsError):
                         remote.run({"run_id": run_id})
 
@@ -277,7 +328,144 @@ class DemoRemoteTest(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
+class DemoParallelServiceTest(unittest.TestCase):
+    def test_active_run_excludes_configuration_before_any_mutation(self):
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = Path(temporary) / "lock"
+            lock.touch(mode=0o600)
+            with lock.open("a") as active, patch.object(parallel, "LOCK", lock), \
+                    patch.object(parallel, "ubuntu_identity", return_value=(os.getuid(), os.getgid())), \
+                    patch.object(parallel, "configure_locked") as configure:
+                fcntl.flock(active, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(RuntimeError, "configuration was not changed"):
+                    parallel.configure(SimpleNamespace(workers=1))
+                configure.assert_not_called()
+
+    def test_startup_wait_is_bounded_api_only_and_rejects_changed_version(self):
+        module = SimpleNamespace(COMPOSE="fixture", container_info=Mock(return_value=("second", {})),
+                                 api=Mock(side_effect=[ConnectionError("starting"), {"version": "0.32.9"}]),
+                                 readiness=Mock())
+        with patch.object(parallel.time, "sleep") as sleep:
+            parallel.wait_api(module, service="ollama-parallel", compose="parallel fixture")
+        self.assertEqual(module.api.call_count, 2)
+        module.readiness.assert_not_called()
+        sleep.assert_called_once()
+        module.api = Mock(return_value={"version": "other"})
+        with self.assertRaisesRegex(ValueError, "version"):
+            parallel.wait_api(module)
+
+    def test_status_requires_both_runners_on_gpu_and_rechecks_primary_after_loading(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "parallel.json"
+            config.write_text('{"workers": 2}')
+            ready = {"backend": {"mode": "gpu"}, "gpu": "L4", "settings": health.SETTINGS}
+            module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"})
+            with patch.object(parallel, "CONFIG", config), patch.object(parallel, "health_module", return_value=module):
+                module.readiness = Mock(side_effect=[ready, ready, RuntimeError("primary left GPU")])
+                with self.assertRaisesRegex(RuntimeError, "primary left GPU"):
+                    parallel.status(warm_second=True)
+                self.assertEqual(module.readiness.call_args_list[1].kwargs,
+                                 {"warm": True, "service": "ollama-parallel", "compose": str(parallel.COMPOSE)})
+                module.readiness = Mock(side_effect=[ready, ready, ready])
+                value = parallel.status()
+                self.assertEqual(len(value["runners"]), 2)
+                self.assertEqual(value["settings"]["transcription_workers"], 2)
+
+    def test_second_runner_failure_is_not_accepted_as_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "parallel.json"
+            config.write_text('{"workers": 2}')
+            module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"},
+                                     readiness=Mock(side_effect=[{}, RuntimeError("wrong model digest")]))
+            with patch.object(parallel, "CONFIG", config), patch.object(parallel, "health_module", return_value=module):
+                with self.assertRaisesRegex(RuntimeError, "wrong model digest"):
+                    parallel.status()
+
+    def test_failed_preparation_restores_one_runner_without_cpu_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            root = Path(temporary)
+            for name in ("HEALTH", "INSTALLED", "COMPOSE", "CONFIG", "UNIT", "LOCK"):
+                stack.enter_context(patch.object(parallel, name, root / name))
+            stack.enter_context(patch.object(parallel, "ubuntu_identity", return_value=(os.getuid(), os.getgid())))
+            source_health, source_compose = root / "source-health", root / "source-compose"
+            source_health.write_text("source helper")
+            source_compose.write_text("source compose")
+            module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"},
+                                     container_info=lambda: ("first", {}), command=Mock())
+            stack.enter_context(patch.object(parallel, "health_module", return_value=module))
+
+            def command(*args):
+                if args[:2] == ("systemctl", "restart"):
+                    raise subprocess.CalledProcessError(1, args)
+
+            execute = stack.enter_context(patch.object(parallel, "command", side_effect=command))
+            with self.assertRaisesRegex(RuntimeError, "restored one-runner"):
+                parallel.configure(SimpleNamespace(workers=2, health_file=source_health, compose_file=source_compose))
+            self.assertEqual(json.loads(parallel.CONFIG.read_text()), {"workers": 1})
+            self.assertIn(call("systemctl", "disable", "--now", parallel.SERVICE), execute.call_args_list)
+
+
+@unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
 class DemoClientTest(unittest.TestCase):
+    def test_archive_retrieval_preserves_exact_files_and_relative_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, extracted = root / "source", root / "extracted"
+            source.mkdir()
+            extracted.mkdir()
+            (source / "Batch fixture/Box Images").mkdir(parents=True)
+            (source / "Batch fixture/Review.html").write_text('<a href="Box Images/crop.png">crop</a>')
+            (source / "Batch fixture/Box Images/crop.png").write_bytes(b"synthetic crop bytes")
+            transfer = remote.transfer_manifest(source)
+            archive = root / "transfer.tar"
+            with tarfile.open(archive, "w") as bundle:
+                bundle.add(source, arcname=".")
+            client.extract_result_archive(archive, extracted, transfer)
+            client.validate_transfer(extracted, transfer)
+            self.assertEqual((extracted / "Batch fixture/Box Images/crop.png").read_bytes(), b"synthetic crop bytes")
+
+    def test_archive_rejects_traversal_links_and_duplicate_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, attack in enumerate(("../escape", "symlink", "duplicate")):
+                directory = root / str(index)
+                directory.mkdir()
+                archive = root / f"attack-{index}.tar"
+                with tarfile.open(archive, "w") as bundle:
+                    member = tarfile.TarInfo("../escape" if attack == "../escape" else "fixture")
+                    if attack == "symlink":
+                        member.type, member.linkname = tarfile.SYMTYPE, "../escape"
+                    else:
+                        member.size = 3
+                    bundle.addfile(member, None if attack == "symlink" else io.BytesIO(b"abc"))
+                    if attack == "duplicate":
+                        bundle.addfile(member, io.BytesIO(b"abc"))
+                with self.assertRaises((ValueError, RuntimeError)):
+                    client.extract_result_archive(archive, directory, {"files": {"fixture": {"size": 3}}})
+            self.assertFalse((root / "escape").exists())
+
+    def test_parallel_mode_rejects_legacy_single_runner_before_inference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.jpg"
+            image.write_bytes(b"synthetic")
+            with patch.object(client, "result_root", return_value=root), \
+                    patch.object(client, "rpc", return_value={"status": "ready", "readiness": {"settings": {}}}) as rpc:
+                value, code = client.demo_run(image, "never", time.monotonic(), transcription_workers=2)
+            self.assertEqual(code, 2)
+            self.assertIn("two independent runners", value["error"])
+            rpc.assert_called_once_with({"action": "status", "backend": "gpu", "transcription_workers": 2})
+
+    def test_parallel_cpu_prepare_fails_before_transfer(self):
+        with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                patch.object(client, "copy") as copy, patch.object(client, "ssh_json") as ssh:
+            with self.assertRaises(ValueError):
+                client.prepare(None, backend="cpu", transcription_workers=2)
+            copy.assert_not_called()
+            ssh.assert_not_called()
+
     def test_cpu_backend_is_an_explicit_wrapper_option(self):
         args = client.parser().parse_args(["run", "--image", "/fixture.jpg"])
         self.assertEqual(args.backend, "gpu")
@@ -440,6 +628,21 @@ class RequestTimingsTest(unittest.TestCase):
 
 
 class BenchmarkReportTest(unittest.TestCase):
+    def test_parallel_request_spans_are_distinct_from_cumulative_wall_cost(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Request Timings.jsonl").write_text("\n".join(json.dumps(row) for row in (
+                {"request": "transcription", "wall_seconds": 3, "started_monotonic_seconds": 10,
+                 "finished_monotonic_seconds": 13},
+                {"request": "transcription", "wall_seconds": 4, "started_monotonic_seconds": 10,
+                 "finished_monotonic_seconds": 14},
+            )))
+            value = benchmark.request_totals(root)
+            self.assertEqual(value["wall_seconds_by_request"]["transcription"], 7)
+            self.assertEqual(value["request_span_seconds_by_kind"]["transcription"], 4)
+            (root / "Request Timings.jsonl").write_text(json.dumps({"request": "transcription", "wall_seconds": 3}))
+            self.assertIsNone(benchmark.request_totals(root)["request_span_seconds_by_kind"]["transcription"])
+
     def test_every_duration_failures_and_physical_count_are_preserved(self):
         runs = [{"status": "complete", "cli_exit_code": 0, "cli_elapsed_seconds": duration,
                  "physical_box_records": 2, "catalogue_rows": 3} for duration in (3, 4, 8)]

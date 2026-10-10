@@ -282,9 +282,10 @@ def normalize_ollama_host(value: str) -> str:
     except ValueError:
         loopback = False
 
-    # Only the exact Compose service name has an internal-network exception.
-    # Other hostnames can receive image pixels only through the HTTPS opt-in.
-    container = hostname == "ollama" and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
+    # Fixed private Compose service names only; the second requires explicit demo
+    # mode as well. Other hostnames still require the HTTPS privacy opt-in.
+    demo_runner = hostname == "ollama-parallel" and os.getenv("UMA_BCT_DEMO_TRANSCRIPTION_WORKERS") == "2"
+    container = (hostname == "ollama" or demo_runner) and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
     remote = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
     if not loopback and not container and not remote:
         raise ValueError(

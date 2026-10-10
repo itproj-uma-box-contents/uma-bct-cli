@@ -105,10 +105,12 @@ def source_bundle(destination: Path, *, root: Path = ROOT) -> dict:
     return metadata
 
 
-def prepare(image: Path | None, *, backend: str = "gpu") -> dict:
+def prepare(image: Path | None, *, backend: str = "gpu", transcription_workers: int = 1) -> dict:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
     host, options = connection()
+    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
+        raise ValueError("Use one worker normally; two independent runners require GPU demo mode.")
     chosen, fingerprint = selected_image(image) if image is not None else (None, None)
     print("Preparing the server, application, and selected input; this is outside live-run timing.", file=sys.stderr)
     # Verify infrastructure/reheat before any private transfer. A stopped or unfinished
@@ -117,6 +119,17 @@ def prepare(image: Path | None, *, backend: str = "gpu") -> dict:
     subprocess.run(["ssh", "-T", *options, host, "install -d -m 0700 /home/ubuntu/demo_incoming"], check=True,
                    stdout=sys.stderr, stderr=sys.stderr)
     upload_id = uuid.uuid4().hex
+    # Source-only setup before any private photograph transfer. Configure/reheat
+    # is explicit preparation, never hidden inside a timed run.
+    for source, suffix in (("scripts/demo_ec2_health.py", "health.py"),
+                           ("scripts/demo_ec2_parallel.py", "parallel.py"),
+                           ("compose.ec2-demo.parallel.yaml", "parallel.yaml")):
+        copy(str(ROOT / source), f"{host}:{REMOTE_BASE}/demo_incoming/{upload_id}-{suffix}")
+    ssh_json(f"sudo python3 {REMOTE_BASE}/demo_incoming/{upload_id}-parallel.py configure "
+             f"--workers {transcription_workers} --health-file {REMOTE_BASE}/demo_incoming/{upload_id}-health.py "
+             f"--compose-file {REMOTE_BASE}/demo_incoming/{upload_id}-parallel.yaml")
+    if transcription_workers == 2:
+        ready = {**ssh_json("/usr/local/bin/uma-bct-demo-parallel status"), "primary_reheat": ready}
     with tempfile.TemporaryDirectory(prefix="uma-bct-demo-deploy-") as temporary:
         directory = Path(temporary)
         bundle = directory / "application.tar"
@@ -133,6 +146,7 @@ def prepare(image: Path | None, *, backend: str = "gpu") -> dict:
         response = ssh_json(f"python3 /home/ubuntu/demo_incoming/{upload_id}.py", {
             "action": "prepare", "upload_id": upload_id, "filename": chosen.name if chosen else None,
             "source_sha256": fingerprint, "source_path": str(chosen) if chosen else None, "backend": backend,
+            "transcription_workers": transcription_workers,
         })
     response["initial_reheat"] = ready
     return response
@@ -166,7 +180,37 @@ def validate_transfer(directory: Path, transfer: dict) -> None:
             raise RuntimeError(f"Result checksum mismatch: {name}")
 
 
-def retrieve(response: dict, root: Path) -> Path:
+def extract_result_archive(archive: Path, directory: Path, transfer: dict) -> None:
+    """Extract only authenticated regular result files; never trust tar paths/types."""
+    expected = transfer["files"]
+    allowed = {*expected, "Transfer Manifest.json"}
+    parents = {parent.as_posix() for name in allowed for parent in PurePosixPath(name).parents if parent.as_posix() != "."}
+    seen = set()
+    with tarfile.open(archive, "r:") as bundle:
+        for member in bundle:
+            name = member.name.removeprefix("./")
+            if member.isdir() and name == ".":
+                continue
+            relative = safe_relative(name)
+            if member.isdir() and name in parents:
+                (directory / relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            if not member.isfile() or name not in allowed or name in seen or member.sparse is not None:
+                raise RuntimeError("Result archive contains an unexpected file, duplicate, link or special entry.")
+            maximum = expected[name]["size"] if name in expected else 1024 * 1024
+            if member.size < 0 or (member.size != maximum if name in expected else member.size > maximum):
+                raise RuntimeError("Result archive file size differs from its authenticated manifest.")
+            seen.add(name)
+            target = directory / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with bundle.extractfile(member) as source, target.open("xb") as output:
+                shutil.copyfileobj(source, output, length=64 * 1024)
+            target.chmod(0o600)
+    if seen != allowed:
+        raise RuntimeError("Result archive is incomplete.")
+
+
+def retrieve(response: dict, root: Path, *, archive_results: bool = False) -> Path:
     run_id = response["envelope"]["run_id"]
     if not re.fullmatch(r"[a-f0-9]{32}", run_id):
         raise ValueError("Invalid remote run identifier.")
@@ -178,10 +222,22 @@ def retrieve(response: dict, root: Path) -> Path:
     reserved = Path(tempfile.mkdtemp(prefix=f"{run_id}-", dir=root))
     staging = reserved / "Incoming"
     staging.mkdir(mode=0o700)
-    host, _options = connection()
+    host, options = connection()
     try:
-        copy(f"{host}:{REMOTE_BASE}/demo_results/{run_id}/.", str(staging), recursive=True)
+        if archive_results:
+            archive = reserved / "Transfer.tar"
+            with archive.open("xb") as output:
+                archive.chmod(0o600)
+                # The only interpolated value is the validated hexadecimal run ID.
+                command = f"tar --directory={REMOTE_BASE}/demo_results/{run_id} --create --file=- ."
+                subprocess.run(["ssh", "-T", *options, host, command], check=True,
+                               stdout=output, stderr=sys.stderr)
+            extract_result_archive(archive, staging, response["transfer"])
+        else:
+            copy(f"{host}:{REMOTE_BASE}/demo_results/{run_id}/.", str(staging), recursive=True)
         validate_transfer(staging, response["transfer"])
+        if archive_results:
+            archive.unlink()
         final = reserved / "Results"
         staging.rename(final)
         return final
@@ -197,9 +253,12 @@ def result_root() -> Path:
 
 
 def demo_run(image: Path | None, verification: str, started: float, *, run_id: str | None = None,
-             timings: bool = False, backend: str = "gpu") -> tuple[dict, int]:
+             timings: bool = False, backend: str = "gpu", transcription_workers: int = 1,
+             archive_results: bool = False) -> tuple[dict, int]:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
+    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
+        raise ValueError("Two independent transcription runners require GPU demo mode.")
     identifier = run_id or uuid.uuid4().hex
     if not re.fullmatch(r"[a-f0-9]{32}", identifier):
         raise ValueError("--run-id must be the recorded 32-character run identifier.")
@@ -212,18 +271,24 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
         raise ValueError("Local result root must be private and writable; fix it before running inference.")
     request = ({"action": "retrieve", "run_id": identifier} if run_id else
                {"action": "run", "run_id": identifier, "source_sha256": fingerprint, "verification": verification,
-                "timings": timings, "backend": backend})
+                "timings": timings, "backend": backend, "transcription_workers": transcription_workers})
     print(f"Demo run ID: {identifier}", file=sys.stderr, flush=True)
+    rpc_started = time.monotonic()
     try:
         if not run_id and backend == "cpu":
             # Old G6 controllers ignore unknown RPC fields. Confirm CPU capability
             # before asking such a controller to perform any fresh inference.
             require_cpu_status(rpc({"action": "status", "backend": "cpu"}))
+        if not run_id and transcription_workers == 2:
+            prepared = rpc({"action": "status", "backend": "gpu", "transcription_workers": 2})
+            if prepared.get("readiness", {}).get("settings", {}).get("transcription_workers") != 2:
+                raise RuntimeError("Server did not confirm two independent runners. Run prepare --transcription-workers 2.")
         response = rpc(request)
     except Exception as error:
         return {"status": "failed", "run_id": identifier, "cli_exit_code": None,
                 "error": str(error), "elapsed_seconds": time.monotonic() - started}, 2
     envelope = response["envelope"]
+    rpc_seconds = time.monotonic() - rpc_started
     cli_code = envelope["cli_exit_code"]
     if not isinstance(cli_code, int) or not 0 <= cli_code <= 255:
         raise ValueError("Remote CLI exit code is invalid.")
@@ -233,8 +298,13 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
     if not run_id and envelope.get("backend", "gpu") != backend:
         return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
                 "error": "Remote backend differs from the explicitly selected backend."}, cli_code or 2
+    if not run_id and envelope.get("settings", {}).get("transcription_workers", 1) != transcription_workers:
+        return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
+                "error": "Remote transcription worker count differs from the selected mode."}, cli_code or 2
     try:
-        local = retrieve(response, destination)
+        retrieval_started = time.monotonic()
+        local = retrieve(response, destination, archive_results=archive_results)
+        retrieval_seconds = time.monotonic() - retrieval_started
     except Exception as error:
         return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
                 "cli_status": envelope.get("status"), "retrieval_error": str(error),
@@ -242,6 +312,10 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
     value = {**envelope, "cli_status": envelope["status"], "local_results": str(local),
              "worker_elapsed_seconds": time.monotonic() - started, "retrieval_complete": True,
              "operation": "retrieve" if run_id else "run", "host": connection()[0]}
+    value["result_transport"] = "ssh-tar" if archive_results else "scp"
+    if timings:
+        value["workflow_timings"] = {"remote_calls_seconds": rpc_seconds,
+                                    "retrieval_and_validation_seconds": retrieval_seconds}
     if envelope.get("orchestration_error"):
         value["status"] = "failed"
     # Private evidence, outside the source/build context. Browser opening is manual.
@@ -258,11 +332,16 @@ def parser() -> argparse.ArgumentParser:
         if name != "retrieve":
             command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu",
                                  help="gpu by default; select cpu explicitly for M7i functional rehearsal")
+            command.add_argument("--transcription-workers", type=int, choices=(1, 2), default=1,
+                                 help="opt-in two independent GPU runners; default sequential")
         if name in {"prepare", "run"}:
             command.add_argument("--image", type=Path, required=name == "run")
         if name == "run":
             command.add_argument("--verification", choices=("never", "always"), default="never")
             command.add_argument("--timings", action="store_true", help="private per-request timings; inference settings unchanged")
+        if name in {"run", "retrieve"}:
+            command.add_argument("--archive-results", action="store_true",
+                                 help="retrieve all unchanged result files as one verified private SSH archive")
         if name == "retrieve":
             command.add_argument("--run-id", required=True)
     return argument_parser
@@ -351,15 +430,20 @@ def main(argv: list[str] | None = None) -> int:
     code = 0
     try:
         if args.command == "prepare":
-            value = prepare(args.image, backend=args.backend)
+            value = prepare(args.image, backend=args.backend, transcription_workers=args.transcription_workers)
         elif args.command == "status":
-            value = rpc({"action": "status", "backend": args.backend})
+            value = rpc({"action": "status", "backend": args.backend,
+                         "transcription_workers": args.transcription_workers})
             if args.backend == "cpu":
                 require_cpu_status(value)
+            if args.transcription_workers == 2 and value.get("readiness", {}).get("settings", {}).get("transcription_workers") != 2:
+                raise RuntimeError("Server did not confirm two independent runners; prepare this mode first.")
         else:
             value, code = demo_run(getattr(args, "image", None), getattr(args, "verification", "never"), started,
                                    run_id=getattr(args, "run_id", None), timings=getattr(args, "timings", False),
-                                   backend=getattr(args, "backend", "gpu"))
+                                   backend=getattr(args, "backend", "gpu"),
+                                   transcription_workers=getattr(args, "transcription_workers", 1),
+                                   archive_results=getattr(args, "archive_results", False))
     except KeyboardInterrupt:
         value, code = {"status": "interrupted", "error": "Interrupted; inspect the recorded run ID before retrying."}, 130
     except Exception as error:

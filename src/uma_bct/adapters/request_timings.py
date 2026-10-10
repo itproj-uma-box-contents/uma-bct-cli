@@ -41,7 +41,9 @@ class RequestTimings:
     def finish(self, success: bool) -> None:
         if not self.path or self.started is None:
             return
-        value = {"request": self.kind, "success": success, "wall_seconds": time.monotonic() - self.started,
+        finished = time.monotonic()
+        value = {"request": self.kind, "success": success, "wall_seconds": finished - self.started,
+                 "started_monotonic_seconds": self.started, "finished_monotonic_seconds": finished,
                  "ollama_nanoseconds_and_counts": self.fields}
         try:
             descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK

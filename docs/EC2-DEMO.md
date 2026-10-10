@@ -5,10 +5,15 @@ launchers and processing defaults remain unchanged. The server runs the existing
 CLI beside a persistent Ollama service; the Mac controls it through SSH. The
 Ollama API is never published. There is no automatic AWS launch or stop action.
 
-**The five-second target is unverified on EC2.** Timing evidence is initially
+**Five seconds is an acceptance target, not an established EC2 capability.** Timing evidence is initially
 accuracy-unverified. A complete CLI status or 11 records does not prove every
 physical box and handwritten annotation was transcribed correctly. Do not
 represent historical model results as ground truth.
+
+For the bounded single-H100 experiment, use the
+[complete Sydney p5.4xlarge checklist](EC2-P5-SYDNEY.md) and
+[P5 User Data](../scripts/demo-ec2-p5-user-data.sh). This requires Sydney's
+separate P-instance quota; H100 runtime and the five-second target are unmeasured.
 
 ## G5 GPU and M7i CPU scripts
 
@@ -41,7 +46,10 @@ pbcopy < scripts/demo-ec2-m7i-user-data.sh
 G5 installs NVIDIA's driver/toolkit, reboots once, and requires an A10G with the
 model fully on GPU. M7i installs neither driver nor toolkit, checks for at least
 32 GiB provisioned RAM, starts preparation without a driver reboot, disables CUDA
-and Vulkan device use, and requires `100% CPU` residency. Both use an enabled
+and Vulkan device use, and verifies CPU isolation (runc, no GPU requests/bindings
+or device nodes). Ollama 0.32.9 can count native Intel AMX CPU buffers as VRAM and
+display mixed CPU/GPU placement on a CPU-only M7i; the raw API/CLI reports are
+retained instead of treating that display alone as GPU evidence. Both use an enabled
 service for later stop/start. The scripts are under EC2's 16 KiB raw User Data
 limit and need no repository token or private input download URL.
 
@@ -70,11 +78,83 @@ NVIDIA commands apply only to GPU installations. For a CPU EC2 benchmark, add
 `--backend cpu` to the `demo_benchmark.py ec2` command below. Do not run further
 local real-photo benchmarks when the current workflow is testing EC2.
 
-Maintainers can regenerate all three embedded scripts without contacting AWS:
+## Experimental parallel crop transcription
+
+Normal execution remains sequential. `--transcription-workers 2` is an explicit
+demo experiment, not an established five-second configuration. Ollama 0.32.9
+forces Qwen3-VL to one request slot; increasing `OLLAMA_NUM_PARALLEL` does not
+enable concurrent processing for this model. The experiment therefore prepares
+two independent persistent Ollama services, each with the same pinned model,
+16,384-token context, one slot, temperature zero and thinking disabled.
+[Pinned Ollama architecture restriction](https://github.com/ollama/ollama/blob/v0.32.9/server/sched.go).
+
+Both services use the private Docker bridge with no published API ports. The
+second mounts already downloaded EBS model storage read-only. Readiness checks
+both model digests and full GPU residency before/after processing. Two copies
+consume more VRAM; preparation fails clearly and stops the extra service if
+either cannot remain fully on GPU. CPU mode does not support this experiment.
+Four runners are not offered on this 24 GB GPU. Sharing a GPU is not proof of
+faster inference; measure the resulting contention and output changes.
+
+```bash
+./scripts/demo-ec2.sh prepare --image "$PHOTO" --transcription-workers 2
+./scripts/demo-ec2.sh status --transcription-workers 2
+./scripts/demo-ec2.sh run --image "$PHOTO" --verification never \
+  --transcription-workers 2 --timings
+
+uv run python scripts/demo_benchmark.py ec2 --image "$PHOTO" \
+  --results-directory "$HOME/UMA-BCT-Demo/Benchmarks" --runs 5 \
+  --verification never --transcription-workers 2 --timings
+```
+
+Add `--archive-results` to `run`, `retrieve` or the EC2 benchmark to test a single
+private SSH tar transfer in place of recursive SCP. Extraction accepts only
+manifest-listed regular files with safe relative paths, checks every byte's
+fingerprint, and publishes the complete local folder atomically. Original result
+bytes and crop links are unchanged; failed archives/partial copies stay private
+for diagnosis. SCP remains the default. With `--timings`, the private summary also
+records remote-call time and retrieval/validation time.
+
+Detection and crop creation finish first. Each runner then processes its assigned
+crops sequentially, with the two runners overlapping. Catalogue consolidation,
+progress callbacks and publication stay on the owning thread and preserve
+detection order, per-crop confidence and failure handling. Existing all-crop
+failure recovery remains available; it is not used to substitute a full-photo
+request for the normal pipeline. Optional second-reading verification retains
+its existing sequential behaviour and must be timed separately.
+
+The additional exact hostname `ollama-parallel` is permitted only with both the
+container privacy opt-in and the explicit two-worker demo environment. Arbitrary
+remote HTTP endpoints remain rejected. No photograph/result/model state enters
+the source deployment bundle or container build context.
+
+After stop/start, the enabled extra service starts after the primary and reheats
+its model. Finish preparation before presentation timing. A failed second-service
+startup is not readiness; inspect `sudo journalctl -u uma-bct-demo-parallel.service`.
+Return to one runner with `prepare --transcription-workers 1`; that disables and
+stops the additional service. Keep parallel output accuracy-unverified until
+human review of every visible box, label and handwritten annotation. Differences
+from earlier model output are comparison evidence, not correctness judgements.
+
+Parallel request durations overlap: their sum is cumulative request cost,
+not elapsed stage time. New diagnostics include monotonic request boundaries and
+reports give a first-start to last-finish span for each request kind. Those spans
+include gaps between requests and exclude later catalogue work; whole CLI and Mac
+timers remain the completion measures. Old logs without boundaries retain their
+durations and report no span.
+
+Maintainers can regenerate all four embedded scripts without contacting AWS:
 `uv run python scripts/build_demo_userdata.py`. Tests verify the generated files
 match their shared helper/Compose configuration.
 
 ## Console launch checklist (original G6 GPU variant)
+
+The G6 User Data also works in another Region offering G6. Select that Region's
+Ubuntu AMI, SSH key pair, security group and regional quota. For Malaysia,
+`ap-southeast-5` is the Region and `ap-southeast-5a` is an Availability Zone.
+The Ubuntu/GPU setup does not require changing a Region setting in the script.
+Recheck regional prices and available capacity; an approval in another Region
+does not transfer.
 
 1. Select **Asia Pacific (Sydney), ap-southeast-2**. In **Service Quotas → Amazon
    EC2 → Running On-Demand G and VT instances**, check the applied regional
@@ -201,6 +281,8 @@ verifies its file list, sizes and SHA-256 hashes, and then publishes `Results/`.
 Catalogue, review HTML, crops, CLI stdout, run details, provenance and any request
 timings stay together. Relative crop links continue to work. Earlier and partial
 copies are retained. Local result destinations inside the checkout are rejected.
+Managed batches live under the run folder's `Batches/` directory so lock guards
+and publication share a writable filesystem inside the read-only CLI container.
 Open the returned batch's `Review.html` manually; browser opening is outside
 inference/retrieval timing and is not included in a five-second claim.
 
@@ -249,6 +331,10 @@ sudo cat /var/lib/uma-bct-demo/latest-warm.json
 ```
 
 Driver/module mismatches require fixing packages and rebooting during preparation.
+For NVIDIA apt `NO_PUBKEY`, inspect the public keyring's permissions: `_apt` must
+be able to read it. An existing mode-600 keyring can be repaired with
+`sudo chmod 0644 /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg` before
+resuming the corrected setup script. Keep signature verification enabled.
 Missing models can be prepared with `sudo systemctl restart uma-bct-demo.service`;
 changed model digests require investigating the established model identity, not
 changing the pin to get past readiness. `100% CPU` or mixed CPU/GPU residency is
@@ -320,9 +406,8 @@ If the target is missed, state it, identify the measured bottleneck and report t
 fastest **reviewed-correct** configuration if one exists. Do not change context,
 resolution, concurrency, model, quantization or processing behaviour on assumption.
 
-**Measurement status:** EC2 and actual presentation runtime remain unmeasured
-until the presenter launches and prepares a server. Actual local, EC2, rehearsal
-and presentation evidence belongs in private `Feasibility Report.json` and
+**Measurement evidence:** Actual local, EC2, rehearsal and presentation evidence
+belongs in private `Feasibility Report.json` and
 `Demo Run.json` artifacts, not committed documentation. Record presentation timing
 with the full-command benchmark, include all trial durations, and retain the
 actual presentation run's report; never replace it with a historical catalogue.
@@ -366,6 +451,17 @@ For the alternatives, 16 total running hours (including two presentation hours),
 IPv4. These are cost envelopes, not inference-time predictions. Hold the $30
 presentation/contingency reserve until presentation; count any extra comparison
 hours and storage retention separately. M7i remains a CPU functional rehearsal.
+
+Malaysia rates checked **10 October 2026**: Linux On-Demand `g6.2xlarge`
+**$1.23147/hour**, `g6.xlarge` **$1.01380/hour**, gp3 **$0.0864/GiB-month**,
+and first paid internet-egress tier **$0.108/GB** after the shared global
+allowance. Public IPv4 adds $0.005/hour. Sixteen total G6 2xlarge running hours,
+14 days of 100 GiB gp3 (30-day month), and 10 GB of charged egress would be
+approximately **$24.90**, before tax and other instances' usage. Retain the
+**$30 presentation/contingency reserve**; include the earlier CPU instance and
+any retained volumes when checking the $120 total.
+[Malaysia compute/storage price list](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/ap-southeast-5/index.json),
+[Malaysia transfer price list](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/current/ap-southeast-5/index.json).
 
 Credit coverage was user-reported; this workspace has not independently inspected
 the AWS account. Before launching, verify Billing → Credits still

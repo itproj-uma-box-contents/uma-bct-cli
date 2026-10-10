@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private SSH control helper. Never manages AWS resources or changes the pipeline."""
+"""Private SSH control helper. AWS resources are managed only by the presenter."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ APPLICATION = BASE / "demo_app"
 INPUTS = BASE / "demo_images"
 RESULTS = BASE / "demo_results"
 HEALTH = "/usr/local/bin/uma-bct-demo-health"
+PARALLEL_HEALTH = "/usr/local/bin/uma-bct-demo-parallel"
 MODEL = "qwen3-vl:8b-instruct-q4_K_M"
 MODEL_DIGEST = "0533d74300e4f9bc367d675d4e64ffd073d50ff16a2b4096cc2e8a1cf8c96319"
 SETTINGS = {"model": MODEL, "num_ctx": 16384, "temperature": 0, "think": False,
@@ -57,10 +58,13 @@ def write_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def health(action: str = "status", *, backend: str = "gpu") -> dict:
+def health(action: str = "status", *, backend: str = "gpu", transcription_workers: int = 1) -> dict:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
-    args = [HEALTH, action, *(["--backend", "cpu"] if backend == "cpu" else [])]
+    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
+        raise ValueError("Two independent runners require GPU mode.")
+    args = ([PARALLEL_HEALTH, "status"] if transcription_workers == 2 else
+            [HEALTH, action, *(["--backend", "cpu"] if backend == "cpu" else [])])
     process = subprocess.run(args, capture_output=True, text=True,
                              timeout=960 if action == "warm" else 90)
     value = json.loads(process.stdout)
@@ -151,12 +155,12 @@ def install_source(archive: Path) -> dict:
 
 def prepare(request: dict) -> dict:
     # The Mac has explicitly reheated before transfer; live runs never do so.
-    ready = health(backend=request.get("backend", "gpu"))
+    ready = health(backend=request.get("backend", "gpu"), transcription_workers=request.get("transcription_workers", 1))
     upload_id = token(request["upload_id"])
     image_name = request["filename"]
     if image_name is None:
         app = install_source(INCOMING / f"{upload_id}.tar")
-        for suffix in (".tar", ".py"):
+        for suffix in (".tar", ".py", "-health.py", "-parallel.py", "-parallel.yaml"):
             (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
         return {"status": "prepared", "application": app, "readiness": ready, "image_staged": False}
     if Path(image_name).name != image_name or image_name.startswith(".") or not image_name.lower().endswith((".jpg", ".jpeg")):
@@ -177,6 +181,8 @@ def prepare(request: dict) -> dict:
     write_json(image_directory / "Source.json", {"filename": image_name, "source_sha256": fingerprint,
                "staged_sha256": fingerprint, "metadata_policy": "unchanged original JPEG", "source_path": request["source_path"]})
     for suffix in (".jpg", ".tar", ".py"):
+        (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
+    for suffix in ("-health.py", "-parallel.py", "-parallel.yaml"):
         (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
     return {"status": "prepared", "source_sha256": fingerprint, "application": app, "readiness": ready}
 
@@ -218,7 +224,8 @@ def run(request: dict) -> dict:
     if mode not in {"never", "always"}:
         raise ValueError("Demo verification must be never or always.")
     backend = request.get("backend", "gpu")
-    before = health(backend=backend)
+    workers = request.get("transcription_workers", 1)
+    before = health(backend=backend, transcription_workers=workers)
     app = deployment()
     image, source = staged(request)
     directory = RESULTS / run_id
@@ -231,9 +238,12 @@ def run(request: dict) -> dict:
             "--mount", f"type=bind,source={INPUTS},target=/data/inputs,readonly",
             "--mount", f"type=bind,source={directory},target=/data/outputs", app["image"],
             "--json", "--path-to-inputs", f"/data/inputs/{image.relative_to(INPUTS).as_posix()}",
-            "--results-directory", "/data/outputs", "--reprocess", "--verification", mode, "--model", MODEL]
+            # Managed locking needs a writable parent on the same filesystem.
+            "--results-directory", "/data/outputs/Batches", "--reprocess", "--verification", mode, "--model", MODEL]
     if request.get("timings") is True:
         args[2:2] = ["-e", "UMA_BCT_DEMO_TIMINGS_FILE=/data/outputs/Request Timings.jsonl"]
+    if workers == 2:
+        args[2:2] = ["-e", "UMA_BCT_DEMO_TRANSCRIPTION_WORKERS=2"]
     print(f"Running fresh EC2 inference on {backend.upper()}; CLI progress follows.", file=sys.stderr, flush=True)
     started = time.monotonic()
     with (directory / "CLI stdout.json").open("w") as output:
@@ -246,7 +256,7 @@ def run(request: dict) -> dict:
     try:
         summary = json.loads((directory / "CLI stdout.json").read_text())
         batch = validate_summary(summary, directory, process.returncode)
-        after = health(backend=backend)
+        after = health(backend=backend, transcription_workers=workers)
     except Exception as failure:
         error = str(failure)
     details = {}
@@ -256,7 +266,8 @@ def run(request: dict) -> dict:
     envelope = {"schema_version": 1, "run_id": run_id, "status": summary.get("status", "failed"),
                 "cli_exit_code": process.returncode, "cli": summary, "cli_elapsed_seconds": elapsed,
                 "application": app, "source": source, "backend": backend,
-                "settings": {**SETTINGS, "verification": mode, "backend": backend},
+                "settings": {**SETTINGS, "verification": mode, "backend": backend,
+                             "transcription_workers": workers, "independent_runners": workers},
                 "physical_box_records": len(records), "catalogue_rows": summary.get("catalogue_records"),
                 "accuracy": "unreviewed", "readiness_before": before, "readiness_after": after,
                 "orchestration_error": error,
@@ -278,14 +289,15 @@ def main() -> int:
             raise ValueError("Expected a JSON request object.")
         for directory in (INCOMING, APPLICATION, INPUTS, RESULTS):
             directory.mkdir(mode=0o700, exist_ok=True)
-        # Serialise preparation and runs: one model, one request slot, no overlapping demo clients.
+        # Serialise demo clients; an explicit run can use two independently served crop readers.
         with (BASE / ".uma-bct-demo.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             action = request.get("action")
             if action == "prepare":
                 result = prepare(request)
             elif action == "status":
-                result = {"status": "ready", "readiness": health(backend=request.get("backend", "gpu")),
+                result = {"status": "ready", "readiness": health(backend=request.get("backend", "gpu"),
+                           transcription_workers=request.get("transcription_workers", 1)),
                           "application": deployment()}
             elif action == "run":
                 result = run(request)
