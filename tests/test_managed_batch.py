@@ -27,14 +27,17 @@ from uma_bct.managed_batch import (
     ResultsRootLock,
     allocate_source_names,
     create_batch_directory,
+    deserialize_result,
     fingerprint_file,
     publish_reserved_crop,
     read_json_file,
     restore_unlinked_crop_content,
     run_managed_batch,
     sanitize_source_name,
+    serialize_result,
 )
 from uma_bct.pipeline import ImageResult
+from uma_bct.util.date_util import Date, DateRange
 
 
 def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True) -> argparse.Namespace:
@@ -842,6 +845,35 @@ class ManagedBatchTest(unittest.TestCase):
 
             self.assertIn('"Box Images/Shelf Photo - Box 01.png"', row["Cropped Box Image Link"])
             self.assertTrue((moved / BOX_IMAGES_DIRECTORY_NAME / "Shelf Photo - Box 01.png").is_file())
+
+    def test_serialize_results(self):
+        batch_dir=Path("/test")
+
+        model_metadata = {
+            "model": "qwen-test",
+            "model_digest": "test",
+            "ollama_host": "test",
+        }
+
+        image = make_image(Path("/test/test.jpg"))
+        box = make_box(image=image, box_id="1", crop_path=Path("/test/test.jpg"))
+        date = Date(day=10,month=1,year=2005)
+        date_range = DateRange(Date(day=10,month=12,year=1901),Date(day=10,month=5,year=1920))
+        
+        results = [
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "none", "failed", (), (), model_metadata
+            ),
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "none", "complete", (BoxResult(box, make_transcription(box)),), (), model_metadata
+            ),
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "none", "complete", (BoxResult(box, make_transcription(box, dates=(date, date_range))),), (), model_metadata
+            ),   
+        ]
+
+        for result in results:
+            self.assertEqual(result, deserialize_result(serialize_result(result, batch_dir), batch_dir))
 
 
 if __name__ == "__main__":

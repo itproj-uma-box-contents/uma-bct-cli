@@ -4,6 +4,7 @@ from pathlib import Path
 
 from uma_bct.domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from uma_bct.pipeline import ImageResult
+from uma_bct.util.date_util import Date, DateRange
 
 
 def make_image(path: Path | None = None) -> InputImage:
@@ -25,7 +26,8 @@ def make_box(*, image: InputImage | None = None, box_id: str = "shelf:001", bbox
 
 def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",), unit: str = "4",
                        typed: tuple[str, ...] | None = None, handwritten: tuple[str, ...] = (),
-                       auxiliary: tuple[str, ...] = (), confidence: int = 95, needs_review: bool = False) -> BoxTranscription:
+                       auxiliary: tuple[str, ...] = (), confidence: int = 95, needs_review: bool = False,
+                       dates: tuple[Date | DateRange, ...]=()) -> BoxTranscription:
     # Default printed lines corroborate the structured fields. Individual
     # tests can pass even an empty tuple to model missing visible evidence.
     if typed is None:
@@ -38,6 +40,7 @@ def make_transcription(box: Box, *, identifiers: tuple[str, ...] = ("1960.0009",
         unit_number=unit,
         typed_lines=typed,
         handwritten_lines=handwritten,
+        dates=dates,
         auxiliary_annotations=auxiliary,
         needs_review=needs_review,
     )
