@@ -1062,10 +1062,10 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
         dates = []
         for date in transcription_value["dates"]:
             if "start" in date:
-                dates.append[DateRange(
+                dates.append(DateRange(
                     Date(**date["start"]),
                     Date(**date["end"])
-                )]
+                ))
             else:
                 dates.append(Date(**date))
 
