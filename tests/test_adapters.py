@@ -554,12 +554,23 @@ class RegexDateDetectorTest(unittest.TestCase):
             ("12 May 1990", Date(day=12, month=5, year=1990)),
             ("12th May 1990", Date(day=12, month=5, year=1990)),
             ("12 MAY 1990", Date(day=12, month=5, year=1990)),
-            ("may 90", Date(month=5, year=90)),
+            ("may 1990", Date(month=5, year=1990)),
             ("May 1990", Date(month=5, year=1990)),
         )
         for text, expected in cases:
             with self.subTest(text=text):
                 self.assertEqual(self.detector.extract_dates(text), (expected,))
+
+    def test_fill_short_year(self):
+        cases = (
+            ("12 May 25", Date(day=12, month=5, year=2025)),
+            ("12th May 2025", Date(day=12, month=5, year=2025)),
+            ("may 21", None),
+            ("21", None),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.detector.extract_dates(text), (expected,) if expected else ())
  
     def test_ordinal_formats_recognise_month_and_year_but_not_the_literal_day(self):
         # "1st"/"2nd" are baked into these two formats as literal text

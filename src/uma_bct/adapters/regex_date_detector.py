@@ -62,7 +62,6 @@ DEFAULT_DATE_FORMATS = (
     "2nd mon yy",
 
     "mon yyyy",
-    "mon yy",
 
     "yyyy",
 )
@@ -185,7 +184,7 @@ class RegexDateDetector:
                     add_to_dates("d", value)
 
             #If first year is short and of reasonable size, assume its in the 2000s
-            if len(dates[0]["y"])==2 and 0<int(dates[0]["y"])<30:
+            if dates[0]["d"]!="" and dates[0]["m"]!="" and len(dates[0]["y"])==2 and 0<int(dates[0]["y"])<30:
                 dates[0]["y"] = "20"+dates[0]["y"]
 
             if dates[1]["y"]!="" or dates[1]["m"]!="" or dates[1]["d"]!="":
