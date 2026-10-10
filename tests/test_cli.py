@@ -62,7 +62,7 @@ class FakeBatchPipeline:
         return make_result(BoxResult(box, make_transcription(box)))
 
 
-def arguments(root: Path, *, force=False):
+def arguments(root: Path, *, force=False, file_type="csv"):
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -71,7 +71,7 @@ def arguments(root: Path, *, force=False):
         min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,
         request_timeout=10.0,
         path_to_inputs=root / "inputs",
-        path_to_outputs=root / "outputs/catalogue.csv",
+        path_to_outputs=root / ("outputs/catalogue.xlsx" if file_type == "excel" else "outputs/catalogue.csv"),
         path_to_box_images=root / "outputs/crops",
         force=force,
         json=True,
@@ -83,7 +83,7 @@ class CliTest(unittest.TestCase):
         defaults = parse_args([])
         aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
-        self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
+        self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.xlsx"))
         self.assertEqual(defaults.min_detector_confidence, 0.6)
         self.assertEqual(defaults.min_transcription_confidence, 50)
         self.assertTrue(defaults.detect_missing_boxes)
@@ -350,10 +350,26 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(json.loads(stdout.getvalue())["status"], "interrupted")
                 self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_cli_rejects_xlsx_before_processing(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            main(["--path-to-outputs", "catalogue.xlsx"])
-        self.assertEqual(raised.exception.code, 2)
+    def test_selects_excel_and_csv_and_rejects_conflicting_options(self):
+        for options, expected in (
+            ([], "outputs/catalogue.xlsx"),
+            (["--file-type", "EXCEL"], "outputs/catalogue.xlsx"),
+            (["--file-type", "CSV"], "outputs/catalogue.csv"),
+            (["-o", "custom.csv"], "custom.csv"),
+            (["-o", "custom.XLSX"], "custom.XLSX"),
+        ):
+            with self.subTest(options=options):
+                self.assertEqual(parse_args(options).path_to_outputs, Path(expected))
+        for options in (
+            ["-o", "catalogue.pdf"],
+            ["-o", "catalogue.xlsx", "--file-type", "csv"],
+            ["-o", "catalogue.csv", "--file-type", "excel"],
+        ):
+            with self.subTest(options=options), patch("uma_bct.cli.run_batch") as run:
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                    main(options)
+                self.assertEqual(raised.exception.code, 2)
+                run.assert_not_called()
 
     def test_default_run_shows_a_readable_summary(self):
         with temporary_root() as root:
@@ -457,10 +473,10 @@ class CliTest(unittest.TestCase):
 
 
 class BatchRunnerTest(unittest.TestCase):
-    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False):
+    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False, file_type="csv"):
         """Keep JSON stdout separate from progress and warnings on stderr."""
 
-        args = arguments(root, force=force)
+        args = arguments(root, force=force, file_type=file_type)
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
@@ -825,6 +841,31 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertTrue(Path(summary["run_manifest"]).is_file())
             self.assertEqual(len(summary["previous_results"]), 2)
             self.assertIn("Manifest write failed", progress)
+
+    def test_excel_forced_publication_and_manifest_failure_restore_the_workbook(self):
+        with temporary_root() as root:
+            status, first, stderr = self.run_batch_and_capture_output(
+                root, FakeBatchPipeline(), [root / "shelf.jpg"], file_type="excel",
+            )
+            self.assertEqual(status, 0, stderr)
+            catalogue = Path(first["catalogue_output"])
+            manifest = Path(first["run_manifest"])
+            review = Path(first["review_output"])
+            previous = {path: path.read_bytes() for path in (catalogue, manifest, review)}
+            with patch("uma_bct.batch_runner.write_json_atomic", side_effect=manifest_disk_failure(manifest)):
+                status, failed, _ = self.run_batch_and_capture_output(
+                    root, FakeBatchPipeline(), [root / "shelf.jpg"], file_type="excel", force=True, preserve=True,
+                )
+            self.assertEqual(status, 1)
+            self.assertIsNone(failed["catalogue_output"])
+            for path, content in previous.items():
+                self.assertEqual(path.read_bytes(), content)
+            status, replaced, stderr = self.run_batch_and_capture_output(
+                root, FakeBatchPipeline(), [root / "shelf.jpg"], file_type="excel", force=True,
+            )
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(replaced["catalogue_output"], str(catalogue))
+            self.assertTrue(any(Path(path).suffix == ".xlsx" for path in replaced["previous_results"]))
 
     def test_manifest_interruption_restores_the_previous_csv(self):
         with temporary_root() as root:

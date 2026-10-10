@@ -3,8 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
+from zipfile import ZipFile
 
-from helpers import make_box, make_image, make_result, make_transcription
+from helpers import make_box, make_image, make_result, make_transcription, read_excel
 
 from uma_bct.atomic import rename_exclusive
 from uma_bct.catalogue import map_catalogue_record
@@ -427,9 +429,83 @@ class CsvExportTest(unittest.TestCase):
 
             self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
-    def test_csv_is_the_only_output_format(self):
-        with self.assertRaisesRegex(ValueError, "must end in .csv"):
-            export_catalogue([], "catalogue.xlsx")
+    def test_rejects_unsupported_output_formats(self):
+        with self.assertRaisesRegex(ValueError, "must end in .xlsx or .csv"):
+            export_catalogue([], "catalogue.pdf")
+
+
+class ExcelExportTest(unittest.TestCase):
+    def test_preserves_rows_literal_text_and_encoded_portable_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            output = root / "batch/Catalogue.xlsx"
+            crop = output.parent / "Box Images/é # 20% box.png"
+            crop.parent.mkdir(parents=True)
+            crop.write_bytes(b"synthetic crop")
+            boxes = [make_box(box_id=f"box:{unit}", crop_path=crop) for unit in (3, 1, 1)]
+            result = make_result(*(BoxResult(box, make_transcription(
+                box, unit=str(unit), handwritten=("=SUM(1,2)", "https://example.org"), confidence=49,
+            )) for box, unit in zip(boxes, (3, 1, 1), strict=True)))
+            records = export_catalogue([result], output, trusted_crop_links=True)
+            rows, links = read_excel(output)
+            self.assertEqual(rows[0], OUTPUT_COLUMNS)
+            self.assertEqual([row[1] for row in rows[1:]], ["0001", "0001", "0002", "0003"])
+            self.assertEqual(rows[1][2], "=SUM(1,2); https://example.org")
+            self.assertIn("Potential Duplicate", rows[1][5])
+            self.assertIn("Low confidence", rows[1][5])
+            self.assertEqual(rows[3][5], "Missing Box")
+            self.assertEqual(rows[3][6], "")
+            self.assertEqual(rows[1][6], crop.name)
+            self.assertEqual(records[0]["Cropped Box Image Link"], "Box Images/" + crop.name)
+            self.assertEqual(set(links), {"G2", "G3", "G5"})
+            self.assertIn("é", links["G2"])
+            self.assertNotIn("%C3", links["G2"])
+            with ZipFile(output) as workbook:
+                self.assertNotIn(b"<f>", workbook.read("xl/worksheets/sheet1.xml"))
+                self.assertIn(b' ySplit="1"', workbook.read("xl/worksheets/sheet1.xml"))
+            moved = root / "Moved Batch"
+            output.parent.rename(moved)
+            for target in read_excel(moved / output.name)[1].values():
+                self.assertTrue((moved / unquote(target.replace("\\", "/"))).is_file())
+
+    def test_quotes_in_link_names_are_encoded_without_creating_a_formula(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            box = make_box(crop_path=output.parent / 'crops/"quoted".png')
+            export_catalogue([make_result(BoxResult(box, make_transcription(box)))], output)
+            rows, links = read_excel(output)
+            self.assertEqual(rows[1][6], '"quoted".png')
+            self.assertIn("%22quoted%22.png", links["G2"])
+
+    def test_identical_exports_have_identical_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            box = make_box(crop_path=root / "crops/box.png")
+            results = [make_result(BoxResult(box, make_transcription(box)))]
+            first, second = root / "first.xlsx", root / "second.xlsx"
+            export_catalogue(results, first)
+            export_catalogue(results, second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_failed_workbook_preserves_existing_output_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            output.write_bytes(b"reviewer workbook")
+            with patch("uma_bct.export.xlsxwriter.Workbook.close", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    export_catalogue([], output)
+            self.assertEqual(output.read_bytes(), b"reviewer workbook")
+            self.assertEqual(list(output.parent.glob(".uma-bct-catalogue-*")), [])
+
+    def test_cell_limits_fail_without_publishing_truncated_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            box = make_box(crop_path=output.parent / "crops/box.png")
+            result = make_result(BoxResult(box, make_transcription(box, handwritten=("a" * 32768,))))
+            with self.assertRaisesRegex(ValueError, "Excel's cell or hyperlink limits"):
+                export_catalogue([result], output)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(output.parent.glob(".uma-bct-catalogue-*")), [])
 
 
 if __name__ == "__main__":

@@ -94,6 +94,7 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
             cells.append(f"<td>{content}</td>")
         rendered.append("<tr>" + "".join(cells) + "</tr>")
     headings = "".join(f'<th scope="col">{escape(column)}</th>' for column in OUTPUT_COLUMNS)
+    catalogue_format = "Excel" if catalogue_path.suffix.casefold() == ".xlsx" else "CSV"
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<meta name="referrer" content="no-referrer">'
@@ -102,9 +103,9 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
             f'<title>Archive box catalogue</title><style>{STYLE}</style></head><body><header>'
             '<h1>Archive box catalogue</h1>'
             '<p>Compare each transcription with its cropped photograph. Review flagged rows before importing the catalogue.</p>'
-            f'<p><a href="{escape(quote("./" + catalogue_path.name, safe="/"))}">Open catalogue CSV</a> '
+            f'<p><a href="{escape(quote("./" + catalogue_path.name, safe="/"))}">Open catalogue {catalogue_format}</a> '
             'to make corrections in your spreadsheet application.</p>'
-            '<p>This page shows the generated readings. Later CSV edits are preserved but do not update this page. '
+            f'<p>This page shows the generated readings. Later {catalogue_format} edits are preserved but do not update this page. '
             'Keep this file and the crop folder together when moving results.</p></header>'
             f'<main class="catalogue"><table><caption>{len(rows)} catalogue rows</caption>'
             f'<colgroup>{"<col>" * len(OUTPUT_COLUMNS)}</colgroup><thead><tr>{headings}</tr></thead>'

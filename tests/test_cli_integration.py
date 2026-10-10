@@ -6,7 +6,6 @@ verification, checkpoints, exports and exit codes use production code.
 from __future__ import annotations
 
 import base64
-import csv
 import json
 import os
 import signal
@@ -20,6 +19,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from helpers import read_excel
 from PIL import Image
 
 from uma_bct.adapters.ollama_client import DEFAULT_MODEL
@@ -135,10 +135,11 @@ class CliIntegrationTest(unittest.TestCase):
                 self.assertEqual(counts["first"], 1)
                 self.assertEqual(counts["second"], 1)
                 self.assertEqual(counts["third"], 1)
-                with Path(first["catalogue_output"]).open(newline="", encoding="utf-8") as stream:
-                    rows = list(csv.DictReader(stream))
-                self.assertEqual(rows[0]["Unit Number"], "0005")
-                self.assertIn("Verification discrepancy", rows[0]["Review Flags"])
+                self.assertEqual(Path(first["catalogue_output"]).suffix, ".xlsx")
+                rows, links = read_excel(Path(first["catalogue_output"]))
+                self.assertEqual(rows[1][1], "0005")
+                self.assertIn("Verification discrepancy", rows[1][5])
+                self.assertIn("G2", links)
                 self.assertTrue(Path(first["review_output"]).is_file())
                 second = self.run_cli(root, endpoint)
                 self.assertEqual(second["images_total"], 1)

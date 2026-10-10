@@ -49,6 +49,7 @@ PENDING_REVIEW_NAME = ".uma-bct-review-pending.html"
 BOX_IMAGES_DIRECTORY_NAME = "Box Images"
 WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
+PENDING_CATALOGUE_NAMES = frozenset({PENDING_CATALOGUE_NAME, ".uma-bct-catalogue-pending.xlsx"})
 MANAGED_SCHEMA_VERSION = 1
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
 ACTIVE_WINDOWS_GUARDS: set[str] = set()
@@ -68,6 +69,18 @@ class ManagedBatchSelectionError(ManagedBatchError):
     def __init__(self, batch_directory: Path, message: str) -> None:
         super().__init__(message)
         self.batch_directory = batch_directory
+
+
+def catalogue_file_name(value: dict[str, Any]) -> str:
+    # Checkpoints without a format predate Excel support and must stay CSV.
+    file_type = value.get("file_type", "csv")
+    if file_type not in {"excel", "csv"}:
+        raise ManagedBatchError("Saved catalogue format must be excel or csv.")
+    return "Catalogue.xlsx" if file_type == "excel" else CATALOGUE_FILE_NAME
+
+
+def pending_catalogue_name(value: dict[str, Any]) -> str:
+    return ".uma-bct-catalogue-pending" + Path(catalogue_file_name(value)).suffix
 
 
 class ManagedInterruption(KeyboardInterrupt):
@@ -556,6 +569,7 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "batch_directory": str(batch_directory),
         "configuration": semantic_configuration(arguments, request_timeout),
+        "file_type": getattr(arguments, "file_type", None) or "excel",
         "input_directory": str(arguments.path_to_inputs),
         "input_snapshot": snapshot_signature(snapshot),
         "inputs": inputs,
@@ -571,6 +585,7 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
 def validate_progress_shape(progress: dict[str, Any], batch_directory: Path) -> None:
     if progress.get("schema_version") != MANAGED_SCHEMA_VERSION:
         raise ManagedBatchError(f"Unsupported Run Progress schema in {batch_directory}")
+    catalogue_file_name(progress)
     stored_batch = progress.get("batch_directory")
     if not isinstance(stored_batch, str) or canonical_lock_name(Path(stored_batch)) != canonical_lock_name(batch_directory):
         raise ManagedBatchError(f"Run Progress names a different batch directory: {batch_directory}")
@@ -625,6 +640,14 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
     if unfinished:
         batch_directory, progress = unfinished[0]
         validate_progress_shape(progress, batch_directory)
+        for name in PENDING_CATALOGUE_NAMES:
+            if name != pending_catalogue_name(progress) and path_entry_exists(batch_directory / name):
+                raise ManagedBatchSelectionError(
+                    batch_directory, f"Unexpected pending catalogue format: {batch_directory / name}",
+                )
+        requested_format = getattr(arguments, "file_type", None)
+        if requested_format is not None and requested_format != progress.get("file_type", "csv"):
+            raise ManagedBatchSelectionError(batch_directory, "Cannot change catalogue format in an unfinished batch.")
         expected_snapshot = progress.get("input_snapshot")
         original_snapshot = batch_snapshot(expected_snapshot, snapshot) if isinstance(expected_snapshot, list) else []
         if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, original_snapshot):
@@ -916,8 +939,9 @@ def validate_batch_entries(batch_directory: Path) -> None:
         DETAILS_FILE_NAME,
         BOX_IMAGES_DIRECTORY_NAME,
         WORKING_DIRECTORY_NAME,
-        PENDING_CATALOGUE_NAME,
+        *PENDING_CATALOGUE_NAMES,
         CATALOGUE_FILE_NAME,
+        "Catalogue.xlsx",
         REVIEW_FILE_NAME,
         PENDING_REVIEW_NAME,
     }
@@ -948,8 +972,8 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     for path in batch_directory.iterdir():
         generated_temporary = path.name.startswith(".uma-bct-json-") and path.name.endswith(".tmp")
         generated_review = path.name.startswith(".uma-bct-review-") and path.name.endswith(".tmp")
-        generated_catalogue = path.name.startswith(".uma-bct-catalogue-") and path.name != PENDING_CATALOGUE_NAME
-        if path.name in {PENDING_CATALOGUE_NAME, PENDING_REVIEW_NAME} and not preserve_pending:
+        generated_catalogue = path.name.startswith(".uma-bct-catalogue-") and path.name not in PENDING_CATALOGUE_NAMES
+        if path.name in {*PENDING_CATALOGUE_NAMES, PENDING_REVIEW_NAME} and not preserve_pending:
             raise ManagedBatchError(f"Unexpected pending catalogue in managed batch: {path}")
         if not (generated_temporary or generated_catalogue or generated_review):
             continue
@@ -1434,10 +1458,10 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
     publication = details.get("publication")
     if not isinstance(record_count, int) or record_count < 0 or not isinstance(publication, dict):
         raise ManagedBatchError(f"Run Details has invalid catalogue publication metadata: {batch_directory}")
-    catalogue = batch_directory / CATALOGUE_FILE_NAME
-    pending = batch_directory / PENDING_CATALOGUE_NAME
-    if path_entry_exists(pending):
-        raise ManagedBatchError(f"Completed batch still contains a pending catalogue: {pending}")
+    catalogue = batch_directory / catalogue_file_name(details)
+    for name in PENDING_CATALOGUE_NAMES:
+        if path_entry_exists(batch_directory / name):
+            raise ManagedBatchError(f"Completed batch still contains a pending catalogue: {batch_directory / name}")
     if record_count == 0:
         for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
             if path_entry_exists(batch_directory / name):
@@ -1476,19 +1500,22 @@ def stage_catalogue(
     batch_directory: Path,
     results: list[ImageResult],
 ) -> tuple[Path, int, str]:
-    """Save the CSV and its digest in progress before its public name appears."""
+    """Save the catalogue and its digest before its public name appears."""
 
-    pending = batch_directory / PENDING_CATALOGUE_NAME
+    pending = batch_directory / pending_catalogue_name(progress)
+    for name in PENDING_CATALOGUE_NAMES:
+        if name != pending.name and path_entry_exists(batch_directory / name):
+            raise ManagedBatchError(f"Unexpected pending catalogue format: {batch_directory / name}")
     publication = progress.setdefault("publication", {})
-    publication.update(phase="staging", pending_csv=PENDING_CATALOGUE_NAME)
+    publication.update(phase="staging", pending_catalogue=pending.name)
     progress["phase"] = "staging"
     write_progress(batch_directory, progress)
 
-    # A restart may find a staged CSV. Rebuild from committed records and
+    # A restart may find a staged catalogue. Rebuild from committed records and
     # compare bytes rather than assuming the leftover file is trustworthy.
     if path_entry_exists(pending):
         check_path(pending, "Pending catalogue")
-        verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}.csv"
+        verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}{pending.suffix}"
         try:
             records = export_catalogue(
                 results,
@@ -1515,7 +1542,7 @@ def stage_catalogue(
             trusted_crop_links=True,
         )
     review_pending = batch_directory / PENDING_REVIEW_NAME
-    review_options = {"catalogue_path": batch_directory / CATALOGUE_FILE_NAME,
+    review_options = {"catalogue_path": batch_directory / catalogue_file_name(progress),
                       "minimum_confidence": arguments.min_transcription_confidence,
                       "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True)}
     expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
@@ -1532,18 +1559,18 @@ def stage_catalogue(
 
 
 def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) -> tuple[int, str]:
-    """Complete or verify the exact CSV publication saved in the checkpoint."""
+    """Complete or verify the exact catalogue publication saved in the checkpoint."""
 
     publication = progress.get("publication", {})
-    pending_name = publication.get("pending_csv")
+    pending_name = publication.get("pending_catalogue", publication.get("pending_csv"))
     digest = publication.get("sha256")
     record_count = publication.get("record_count")
     if not isinstance(pending_name, str) or not isinstance(digest, str) or not isinstance(record_count, int):
         raise ManagedBatchError(f"Publishing checkpoint is incomplete in {batch_directory}")
     pending = safe_relative_batch_path(batch_directory, pending_name, "Pending catalogue")
-    if pending.parent != batch_directory or not pending.name.startswith(".uma-bct-catalogue-"):
+    if pending.parent != batch_directory or pending.name != pending_catalogue_name(progress):
         raise ManagedBatchError(f"Pending catalogue path is invalid in {batch_directory}")
-    catalogue = batch_directory / CATALOGUE_FILE_NAME
+    catalogue = batch_directory / catalogue_file_name(progress)
     if path_entry_exists(catalogue):
         if file_digest(catalogue, "Published catalogue") != digest:
             raise ManagedBatchError(f"Published catalogue does not match its checkpoint: {catalogue}")
@@ -1610,7 +1637,7 @@ def details_payload(
 ) -> dict[str, Any]:
     results = all_results(progress, batch_directory)
     status = final_status(progress, record_count)
-    catalogue = batch_directory / CATALOGUE_FILE_NAME
+    catalogue = batch_directory / catalogue_file_name(progress)
     failures: list[dict[str, str]] = list(progress.get("run_failures", []))
     for item in progress["inputs"]:
         if item["state"] == "failed":
@@ -1630,6 +1657,7 @@ def details_payload(
         "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "batch_directory": str(batch_directory),
         "configuration": progress["configuration"],
+        "file_type": progress.get("file_type", "csv"),
         "verification": progress.get("verification", {"mode": "never", "decision": False}),
         "locations": {
             "input": progress["input_directory"],
@@ -1696,16 +1724,16 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
         else:
             pending, record_count, digest = stage_catalogue(arguments, progress, batch_directory, results)
             record_count, digest = publish_recorded_catalogue(progress, batch_directory)
-        progress["publication"].update(phase="published", catalogue=CATALOGUE_FILE_NAME)
-        progress["catalogue_output"] = str(batch_directory / CATALOGUE_FILE_NAME)
+        progress["publication"].update(phase="published", catalogue=catalogue_file_name(progress))
+        progress["catalogue_output"] = str(batch_directory / catalogue_file_name(progress))
         progress["catalogue_records"] = record_count
     else:
-        catalogue = batch_directory / CATALOGUE_FILE_NAME
-        pending = batch_directory / PENDING_CATALOGUE_NAME
-        if path_entry_exists(pending):
-            raise ManagedBatchError(f"A zero-row batch has an unexpected pending catalogue: {pending}")
-        if path_entry_exists(catalogue):
-            raise ManagedBatchError(f"A zero-row batch has an unexpected catalogue: {catalogue}")
+        for name in PENDING_CATALOGUE_NAMES:
+            if path_entry_exists(batch_directory / name):
+                raise ManagedBatchError(f"A zero-row batch has an unexpected pending catalogue: {batch_directory / name}")
+        for name in (CATALOGUE_FILE_NAME, "Catalogue.xlsx"):
+            if path_entry_exists(batch_directory / name):
+                raise ManagedBatchError(f"A zero-row batch has an unexpected catalogue: {batch_directory / name}")
         for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
             if path_entry_exists(batch_directory / name):
                 raise ManagedBatchError(f"A zero-row batch has unexpected review output: {batch_directory / name}")
@@ -1893,7 +1921,7 @@ def completed_history_summary(completed: list[tuple[Path, dict[str, Any]]],
         # Per-photo failures from removed or superseded inputs do not apply.
         # Run-level failures still apply to the contributing batch.
         value.pop("failures", None)
-        value["catalogue_output"] = str(batch / CATALOGUE_FILE_NAME) if details.get("catalogue_records") else None
+        value["catalogue_output"] = str(batch / catalogue_file_name(details)) if details.get("catalogue_records") else None
         item_summary = already_complete_summary(value, batch)
         item_summary["current_input_records"] = current_records
         summaries.append(item_summary)
@@ -1991,7 +2019,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
         batch_directory, progress, resumed, completed = select_batch(
             arguments, results_root, snapshot, request_timeout
         )
-        # A completed set can be reused only after its source, crop, and CSV
+        # A completed set can be reused only after its source, crop, and catalogue
         # evidence are checked again; a stale path is not enough to trust it.
         if completed is not None:
             summary = completed_history_summary(completed, snapshot)

@@ -190,13 +190,13 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
 
 def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
     manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
-    """Publish a staged CSV while retaining enough evidence to undo this run."""
+    """Publish a staged catalogue while retaining enough evidence to undo this run."""
 
     if not sum(len(result.records) for result in results):
         return state
     previous: tuple[Path, ...] = ()
     previous_catalogue: Path | None = None
-    staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}.csv")
+    staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}{output_path.suffix}")
     publication_started = False
     review_path = output_path.with_suffix(".review.html")
     review_staging = output_path.with_name(f".uma-bct-review-{uuid.uuid4().hex}.tmp")
@@ -207,7 +207,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
-        # Stage the entire CSV before backing up or replacing a previous run.
+        # Stage the entire catalogue before backing up or replacing a previous run.
         # A forced run can restore only files whose saved copies still match.
         records = export_catalogue(
             results,
@@ -221,7 +221,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
                       detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True))
         previous = backup_existing_results((output_path, manifest_path, review_path)) if arguments.force else ()
         state.previous_review = next((path for path in previous if path.suffix == ".html"), None)
-        previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
+        previous_catalogue = next((path for path in previous if path.suffix.casefold() == output_path.suffix.casefold()), None)
         previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
         replace_manifest = previous_manifest is not None
         state.previous_results = previous

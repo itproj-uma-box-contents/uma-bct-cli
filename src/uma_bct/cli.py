@@ -85,8 +85,12 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         "--path-to-output",
         dest="path_to_outputs",
         type=Path,
-        default=Path("outputs/catalogue.csv"),
-        help="catalogue CSV path (default: %(default)s)",
+        default=None,
+        help="catalogue .xlsx or .csv path (default: outputs/catalogue.xlsx)",
+    )
+    parser.add_argument(
+        "--file-type", type=str.casefold, choices=("excel", "csv"), default=None,
+        help="catalogue format (default: Excel, or the explicit output filename's extension)",
     )
     parser.add_argument(
         "-b",
@@ -176,7 +180,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_argument_parser().parse_args(argv)
+    parser = build_argument_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.command != "setup":
+        resolve_output_arguments(arguments, parser)
+    return arguments
+
+
+def resolve_output_arguments(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    suffix = ".csv" if arguments.file_type == "csv" else ".xlsx"
+    if arguments.path_to_outputs is None:
+        arguments.path_to_outputs = Path("outputs") / f"catalogue{suffix}"
+    else:
+        output_suffix = arguments.path_to_outputs.suffix.casefold()
+        if output_suffix not in {".csv", ".xlsx"}:
+            parser.error("output path must end in .xlsx or .csv")
+        if arguments.file_type is not None and output_suffix != suffix:
+            parser.error("--file-type conflicts with the output filename's extension")
 
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
@@ -315,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
+    resolve_output_arguments(arguments, parser)
     try:
         configured_mode(arguments)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -342,8 +363,6 @@ def main(argv: list[str] | None = None) -> int:
             return run_managed_batch(arguments, images, arguments.results_directory)
 
     output_path = arguments.path_to_outputs
-    if output_path.suffix.casefold() != ".csv":
-        parser.error("output path must end in .csv")
     crop_root = arguments.path_to_box_images or output_path.parent / "crops"
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)

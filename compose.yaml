@@ -60,7 +60,7 @@ services:
       - --path-to-inputs
       - /data/inputs
       - --path-to-outputs
-      - /data/outputs/catalogue.csv
+      - /data/outputs/catalogue.xlsx
       - --path-to-box-images
       - /data/outputs/crops
       - --model

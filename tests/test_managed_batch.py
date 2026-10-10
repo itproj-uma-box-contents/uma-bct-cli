@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from helpers import make_box, make_image, make_transcription
+from helpers import make_box, make_image, make_transcription, read_excel
 
 from uma_bct.atomic import open_stable_file, rename_new_file
 from uma_bct.constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
@@ -37,7 +37,8 @@ from uma_bct.managed_batch import (
 from uma_bct.pipeline import ImageResult
 
 
-def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True) -> argparse.Namespace:
+def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True,
+                      file_type: str | None = "csv") -> argparse.Namespace:
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -52,6 +53,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
         results_directory=root / "Results",
         reprocess=reprocess,
         detect_missing_boxes=detect_missing_boxes,
+        file_type=file_type,
         json=True,
     )
 
@@ -109,10 +111,12 @@ class ManagedBatchTest(unittest.TestCase):
         self, root: Path, pipeline: ManagedPipeline, *, reprocess: bool = False,
         detect_missing_boxes: bool = True, verification: str | None = None, patches=(),
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
+        file_type: str | None = "csv",
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
-        arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes)
+        arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes,
+                                      file_type=file_type)
         arguments.verification = verification
         arguments.min_transcription_confidence = min_transcription_confidence
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
@@ -138,6 +142,103 @@ class ManagedBatchTest(unittest.TestCase):
             root = Path(directory).resolve()
             self.prepare_inputs(root, *names)
             yield root
+
+    def test_default_excel_batch_and_completed_reuse_preserve_reviewer_edits(self):
+        with self.prepared_root("Shelf Photo.jpg") as root:
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(), file_type=None)
+            self.assertEqual(status, 0, stderr)
+            catalogue = Path(summary["catalogue_output"])
+            self.assertEqual(catalogue.name, "Catalogue.xlsx")
+            self.assertFalse((catalogue.parent / "Catalogue.csv").exists())
+            rows, links = read_excel(catalogue)
+            self.assertEqual(rows[0], OUTPUT_COLUMNS)
+            self.assertEqual(rows[1][1], "0004")
+            self.assertIn("Shelf%20Photo", links["G2"])
+            edited = catalogue.read_bytes() + b"reviewer edit"
+            catalogue.write_bytes(edited)
+            pipeline = ManagedPipeline()
+            status, reused, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type=None)
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(reused["catalogue_output"], str(catalogue))
+            self.assertTrue(reused["catalogue_modified"])
+            self.assertEqual(catalogue.read_bytes(), edited)
+
+    def test_staged_excel_resumes_with_matching_hash_without_model_work(self):
+        with self.prepared_root("01.jpg") as root:
+            status, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(), file_type=None,
+                patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
+            )
+            self.assertEqual(status, 130)
+            batch = Path(interrupted["batch_directory"])
+            pending = batch / ".uma-bct-catalogue-pending.xlsx"
+            expected = pending.read_bytes()
+            pipeline = ManagedPipeline()
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type=None)
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), expected)
+            self.assertFalse(pending.exists())
+
+    def test_explicit_format_change_blocks_resume_before_model_work(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg"), file_type="excel",
+            )
+            progress = Path(interrupted["batch_directory"]) / PROGRESS_FILE_NAME
+            saved = progress.read_bytes()
+            pipeline = ManagedPipeline()
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type="csv")
+            self.assertEqual(status, 2)
+            self.assertIn("Cannot change catalogue format", stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(progress.read_bytes(), saved)
+
+    def test_another_format_pending_file_blocks_resume_and_is_preserved(self):
+        for file_type, alternate in (("excel", "csv"), ("csv", "xlsx")):
+            with self.subTest(file_type=file_type), self.prepared_root("01.jpg") as root:
+                _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(), file_type=file_type,
+                    patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
+                )
+                batch = Path(interrupted["batch_directory"])
+                progress = batch / PROGRESS_FILE_NAME
+                saved = progress.read_bytes()
+                unexpected = batch / f".uma-bct-catalogue-pending.{alternate}"
+                unexpected.write_bytes(b"unknown file")
+                pipeline = ManagedPipeline()
+                status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type=None)
+                self.assertEqual(status, 2)
+                self.assertIn("Unexpected pending catalogue format", stderr)
+                self.assertEqual(pipeline.calls, [])
+                self.assertEqual(unexpected.read_bytes(), b"unknown file")
+                self.assertEqual(progress.read_bytes(), saved)
+                self.assertFalse((batch / DETAILS_FILE_NAME).exists())
+
+    def test_legacy_csv_publication_checkpoint_is_still_readable(self):
+        with self.prepared_root("01.jpg") as root:
+            def stop_publication(source, destination, *, existing_message):
+                if destination.name == CATALOGUE_FILE_NAME:
+                    raise KeyboardInterrupt
+                return rename_new_file(source, destination, existing_message=existing_message)
+
+            _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(),
+                patches=(patch("uma_bct.managed_batch.rename_new_file", side_effect=stop_publication),),
+            )
+            batch = Path(interrupted["batch_directory"])
+            progress_path = batch / PROGRESS_FILE_NAME
+            progress = read_json_file(progress_path, "Run progress")
+            progress.pop("file_type")
+            publication = progress["publication"]
+            publication["pending_csv"] = publication.pop("pending_catalogue")
+            progress_path.write_text(json.dumps(progress), encoding="utf-8")
+            pipeline = ManagedPipeline()
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type=None)
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(Path(summary["catalogue_output"]).name, CATALOGUE_FILE_NAME)
 
     def test_added_photo_during_run_is_deferred_and_only_it_runs_next_time(self):
         class AddingPipeline(ManagedPipeline):
@@ -536,13 +637,14 @@ class ManagedBatchTest(unittest.TestCase):
             progress = read_json_file(progress_path, "Run progress")
             progress["configuration"].pop("detect_missing_boxes")
             progress.pop("verification")
+            progress.pop("file_type")
             progress_path.write_text(json.dumps(progress), encoding="utf-8")
             crops = {path: path.read_bytes() for path in (batch / BOX_IMAGES_DIRECTORY_NAME).iterdir()}
 
             resumed = ManagedPipeline()
             resumed.transcriber = Mock()
             with patch.dict(os.environ, {"UMA_BCT_VERIFICATION": "always"}):
-                status, summary, _ = self.run_managed_batch_and_capture_output(root, resumed)
+                status, summary, _ = self.run_managed_batch_and_capture_output(root, resumed, file_type=None)
 
             self.assertEqual(status, 0)
             self.assertEqual(resumed.calls, ["02.jpg"])
@@ -550,6 +652,7 @@ class ManagedBatchTest(unittest.TestCase):
             resumed.transcriber.verify.assert_not_called()
             resumed.transcriber.resolve_discrepancy.assert_not_called()
             details = read_json_file(Path(summary["run_manifest"]), "Run details")
+            self.assertEqual(Path(summary["catalogue_output"]).suffix, ".csv")
             self.assertEqual(details["verification"], {"mode": "never", "decision": False, "complete": True})
             for path, content in crops.items():
                 self.assertEqual(path.read_bytes(), content)

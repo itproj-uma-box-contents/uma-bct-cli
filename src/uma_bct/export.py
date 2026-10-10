@@ -1,7 +1,7 @@
-"""Sort catalogue rows, flag duplicates, and stage a complete CSV for publication.
+"""Sort catalogue rows, flag duplicates, and stage a catalogue for publication.
 
 Missing-box rows are review suggestions between observed boxes with the same
-Unit Type. The final CSV is written beside its destination before replacement.
+Unit Type. The catalogue is written beside its destination before replacement.
 """
 
 from __future__ import annotations
@@ -12,8 +12,11 @@ import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
+from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
+
+import xlsxwriter
 
 from .atomic import rename_new_file
 from .catalogue import CatalogueRow, append_flag, map_catalogue_record, verification_flags
@@ -171,6 +174,35 @@ def catalogue_records(
     return records
 
 
+def _write_excel(path: Path, records: list[dict[str, str | int]]) -> None:
+    """Write literal cell values and relative links to the actual crop files."""
+    with xlsxwriter.Workbook(path, {
+        "in_memory": True, "strings_to_formulas": False, "strings_to_urls": False,
+    }) as workbook:
+        # Resume verifies file hashes, so workbook timestamps must stay fixed.
+        workbook.set_properties({"created": datetime(1980, 1, 1)})
+        sheet = workbook.add_worksheet("Catalogue")
+        text = workbook.add_format({"text_wrap": True, "valign": "top"})
+        heading = workbook.add_format({"bold": True, "text_wrap": True, "valign": "top"})
+        link = workbook.add_format({"font_color": "blue", "underline": True, "text_wrap": True, "valign": "top"})
+        for column, width in enumerate((42, 14, 52, 16, 20, 36, 40)):
+            sheet.set_column(column, column, width, text)
+        sheet.write_row(0, 0, OUTPUT_COLUMNS, heading)
+        sheet.freeze_panes(1, 0)
+        for row_number, record in enumerate(records, start=1):
+            for column_number, column in enumerate(OUTPUT_COLUMNS):
+                value = record[column]
+                if column == "Cropped Box Image Link" and value:
+                    reference = str(value)
+                    # Preserve Unicode; escape literal % before URL anchors.
+                    target = "external:./" + reference.replace("%", "%25").replace("#", "%23")
+                    status = sheet.write_url(row_number, column_number, target, link, Path(reference).name)
+                else:
+                    status = sheet.write(row_number, column_number, value)
+                if status != 0:
+                    raise ValueError("Catalogue exceeds Excel's cell or hyperlink limits.")
+
+
 def export_catalogue(
     results: Iterable[ImageResult],
     output_path: str | Path,
@@ -180,15 +212,17 @@ def export_catalogue(
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
 ) -> list[dict[str, str | int]]:
-    """Safely write the UTF-8 CSV and return its rows."""
+    """Safely write an Excel workbook or UTF-8 CSV and return its rows."""
 
     destination = Path(output_path)
-    if destination.suffix.casefold() != ".csv":
-        raise ValueError("Catalogue output must end in .csv.")
+    if destination.suffix.casefold() not in {".xlsx", ".csv"}:
+        raise ValueError("Catalogue output must end in .xlsx or .csv.")
+    excel = destination.suffix.casefold() == ".xlsx"
 
     records = catalogue_records(
         results, minimum_confidence=minimum_confidence, catalogue_path=destination,
-        detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links,
+        detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links and not excel,
+        spreadsheet_safe=not excel,
     )
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
@@ -196,7 +230,7 @@ def export_catalogue(
     destination.parent.mkdir(parents=True, exist_ok=True)
     check_path(destination, "Catalogue output")
     temporary_path: Path | None = None
-    # A sibling temporary file keeps readers from seeing a half-written CSV.
+    # A sibling temporary file keeps readers from seeing a half-written export.
     # Recheck the destination after writing because another process may have
     # changed the output path while rows were being built.
     try:
@@ -206,15 +240,21 @@ def export_catalogue(
             newline="",
             dir=destination.parent,
             prefix=".uma-bct-catalogue-",
-            suffix=".csv",
+            suffix=destination.suffix,
             delete=False,
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
-            writer = csv.DictWriter(temporary_file, fieldnames=OUTPUT_COLUMNS)
-            writer.writeheader()
-            writer.writerows(records)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
+            if not excel:
+                writer = csv.DictWriter(temporary_file, fieldnames=OUTPUT_COLUMNS)
+                writer.writeheader()
+                writer.writerows(records)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+        if excel:
+            # Close the temporary handle first; Windows prevents reopening it.
+            _write_excel(temporary_path, records)
+            with temporary_path.open("r+b") as workbook_file:
+                os.fsync(workbook_file.fileno())
         check_path(destination, "Catalogue output")
         if destination.exists() and not replace_existing:
             raise FileExistsError(f"Catalogue output already exists: {destination}")

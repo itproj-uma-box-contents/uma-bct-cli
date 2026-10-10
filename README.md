@@ -67,7 +67,7 @@ Archive Box Transcription/
   Add Photos Here/
   Results/
     Batch 2026-09-11 14-30-05/
-      Catalogue.csv
+      Catalogue.xlsx
       Review.html
       Run Details.json
       Box Images/
@@ -85,7 +85,7 @@ If the current photos span several completed batches, the report lists all relev
 results and includes failures from earlier batches. Recorded catalogue row counts
 refer to the original published files, which can also contain photos since removed
 from the input folder; the report separately counts transcribed boxes for current
-photos. Later CSV edits are not recounted.
+photos. Later spreadsheet edits are not recounted.
 Do not remove, rename, or edit an original photo while its batch is unfinished;
 if that happens, the CLI preserves progress and explains which inputs to restore.
 
@@ -93,17 +93,25 @@ An unfinished batch also requires its original processing options. If it was
 started with the former 80% transcription review threshold, resume it with
 `--min-transcription-confidence 80`; the current default is 50%.
 
-You may edit a completed `Catalogue.csv` or save corrected copies and notes beside
+You may edit a completed `Catalogue.xlsx` or save corrected copies and notes beside
 it. Later launches preserve those files and report a changed catalogue. Keep the
 run details and crop files intact: they record which photographs were processed.
 
-A partial terminal batch publishes `Catalogue.csv` when it has at least one
+A partial terminal batch publishes `Catalogue.xlsx` when it has at least one
 usable row. A batch with no usable rows publishes only failed `Run Details.json`.
 Leaving an already completed photo set in place does not repeat model work.
 Advanced direct-CLI users may pass `--reprocess` with `--results-directory` to
 create a separate new batch intentionally.
 
-The CSV columns are:
+Excel is the default output. Advanced CLI users can select CSV with
+`--file-type csv`, or explicitly pass `-o catalogue.csv`. Use `--file-type excel`
+to select Excel explicitly. Format names are case-insensitive; a format flag and
+an explicit filename must agree. Direct runs default to `outputs/catalogue.xlsx`.
+Existing CSV batches are preserved, and unfinished batches keep their original
+format when resumed. Choosing a different format does not convert completed
+batches; use `--reprocess` to create a new managed batch if needed.
+
+Both formats use these columns:
 
 ```text
 Unit Type
@@ -120,7 +128,7 @@ Cropped Box Image Link
 `Unit Type` contains all printed text visible on the box label in reading
 order, except for the unit-number phrase. Printed names, headings, logos,
 labels such as `Creator:`, and record identifiers are included. Visual line
-breaks and repeated whitespace are converted to single spaces in the CSV cell.
+breaks and repeated whitespace are converted to single spaces in the catalogue cell.
 
 `Unit Number` contains only the detected box or unit number, normalized to four
 digits. The tool recognizes `Unit`, `Box`, `Box No.`, `Box Number`, and `No.`
@@ -180,7 +188,7 @@ Advanced CLI users can disable this behavior with
 
 ### Review results and open crops
 
-Both the CSV and HTML add `Low confidence` to scores below 50% by default;
+The catalogue and HTML add `Low confidence` to scores below 50% by default;
 a score of exactly 50% does not receive that flag. Set
 `--min-transcription-confidence INTEGER` (or `-c INTEGER`) to choose a review
 threshold from 0 to 100. This flags rows for review and keeps every transcription
@@ -190,11 +198,18 @@ OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
 Open `Review.html` in your browser for a compact, read-only catalogue with wrapped
 text and clickable **View crop** links. It works offline and requires no server.
 Keep the HTML file and `Box Images` folder together when moving a batch. Direct
-CLI runs create `<catalogue-name>.review.html` beside their CSV instead.
+CLI runs create `<catalogue-name>.review.html` beside their catalogue instead.
 
-Use this page with Apple Numbers: Numbers does not support the private local-file
-links used by the CSV. CSV also cannot save column widths or text wrapping. The
-CSV's controlled relative `HYPERLINK` formulas remain available for compatible
+Excel workbooks contain clickable crop filenames in `Cropped Box Image Link`.
+Each link opens the image file using your system's associated application in
+desktop Excel or LibreOffice. Keep the workbook and crop folder together when
+moving results. For browser viewing, use the **View crop** links in `Review.html`.
+Use the review page if your spreadsheet application cannot open a local path,
+including paths with special characters such as `#`.
+
+Use the review page with Apple Numbers, which does not support these private
+local-file links. CSV cannot save column widths or text wrapping; managed CSV
+batches retain their controlled relative `HYPERLINK` formulas for compatible
 Excel and LibreOffice imports. Google Sheets cannot open private local crop files.
 The HTML shows generated readings, so later spreadsheet edits do not update it.
 
@@ -230,7 +245,7 @@ only when the effective setting is `always`. Verification improves the opportuni
 to find discrepancies; measured accuracy gains require human-reviewed references.
 
 Before importing the catalogue, review each row against its crop and source
-photo. The CSV is sorted by `Unit Type` and `Unit Number`:
+photo. The catalogue is sorted by `Unit Type` and `Unit Number`:
 
 - Compare every row with its `Cropped Box Image Link` evidence.
 - Check every non-empty `Review Flags` value and the
@@ -272,8 +287,8 @@ direct runs exit cleanly (130 for Ctrl+C); use managed batches for resumable wor
 still go to stderr. The `--human` flag remains accepted for older commands.
 
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
-Without it, every existing direct-CLI default, alias, and Docker workflow stays
-available.
+Without it, direct output paths and existing aliases remain available. The bundled
+Docker workflow also produces Excel by default.
 
 Current limitations:
 

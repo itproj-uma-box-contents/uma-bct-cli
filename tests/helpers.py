@@ -1,9 +1,36 @@
 from __future__ import annotations
 
 from pathlib import Path
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 from uma_bct.domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from uma_bct.pipeline import ImageResult
+
+
+def read_excel(path: Path) -> tuple[list[list[str]], dict[str, str]]:
+    """Read catalogue cells and link targets without another Excel dependency."""
+    namespace = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(path) as workbook:
+        strings = ElementTree.fromstring(workbook.read("xl/sharedStrings.xml"))
+        shared = ["".join(item.itertext()) for item in strings]
+        sheet = ElementTree.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+        rows = []
+        for row in sheet.findall("m:sheetData/m:row", namespace):
+            values = {cell.attrib["r"].rstrip("0123456789"): cell for cell in row}
+            cells = []
+            for column in "ABCDEFG":
+                cell = values.get(column)
+                value = "" if cell is None else cell.findtext("m:v", default="", namespaces=namespace)
+                cells.append(shared[int(value)] if cell is not None and cell.get("t") == "s" else value)
+            rows.append(cells)
+        relationships = {}
+        name = "xl/worksheets/_rels/sheet1.xml.rels"
+        if name in workbook.namelist():
+            relationships = {item.get("Id"): item.get("Target") for item in ElementTree.fromstring(workbook.read(name))}
+        links = {item.get("ref"): relationships[item.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")]
+                 for item in sheet.findall("m:hyperlinks/m:hyperlink", namespace)}
+    return rows, links
 
 
 def make_image(path: Path | None = None) -> InputImage:

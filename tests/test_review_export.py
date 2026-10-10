@@ -66,3 +66,10 @@ class ReviewExportTest(unittest.TestCase):
                 export_review([], path, catalogue_path=root / 'Catalogue.csv')
             self.assertEqual(path.read_text(), 'reviewer file')
             self.assertEqual(list(root.glob('.uma-bct-review-*')), [])
+
+    def test_excel_review_links_to_the_workbook_and_uses_excel_wording(self):
+        text = render_review([], Path("Catalogue.xlsx"))
+        self.assertIn('href="./Catalogue.xlsx"', text)
+        self.assertIn("Open catalogue Excel", text)
+        self.assertIn("Later Excel edits", text)
+        self.assertNotIn("CSV", text)
