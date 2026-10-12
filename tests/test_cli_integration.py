@@ -106,9 +106,10 @@ def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool
 
 
 class CliIntegrationTest(unittest.TestCase):
-    def command(self, root):
+    def command(self, root, *, optional_features=True):
+        options = ["--file-type", "excel", "--html-review", "--verification", "always"] if optional_features else []
         return [sys.executable, "-m", "uma_bct", "-i", str(root / "inputs"),
-                "--results-directory", str(root / "results"), "--verification", "always", "--json"]
+                "--results-directory", str(root / "results"), *options, "--json"]
 
     def environment(self, endpoint):
         return dict(os.environ, OLLAMA_HOST=endpoint, OLLAMA_NO_CLOUD="1", PYTHONPATH=str(ROOT / "src"))
@@ -123,6 +124,24 @@ class CliIntegrationTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         return json.loads(result.stdout)
+
+    def test_default_cli_has_one_reading_csv_and_no_html(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.prepare(root)
+            with scripted_ollama() as (endpoint, counts, _ready, _release):
+                environment = self.environment(endpoint)
+                environment["UMA_BCT_VERIFICATION"] = "always"
+                result = subprocess.run(self.command(root, optional_features=False), cwd=root, env=environment,
+                                        capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(Path(summary["catalogue_output"]).suffix, ".csv")
+            self.assertIsNone(summary["review_output"])
+            self.assertEqual(counts["detection"], 1)
+            self.assertEqual(counts["first"], 1)
+            self.assertEqual(counts["second"], 0)
+            self.assertEqual(counts["third"], 0)
 
     def test_real_cli_defers_additions_and_checks_only_disputed_crops(self):
         with tempfile.TemporaryDirectory() as directory:

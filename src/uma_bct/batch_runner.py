@@ -97,6 +97,8 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
+        "html_review": bool(getattr(arguments, "html_review", False)),
+        "verification": configured_mode(arguments),
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
         "output": str(arguments.path_to_outputs),
@@ -202,10 +204,12 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
     publication_started = False
     review_path = output_path.with_suffix(".review.html")
     review_staging = output_path.with_name(f".uma-bct-review-{uuid.uuid4().hex}.tmp")
+    html_review = bool(getattr(arguments, "html_review", False))
+    output_paths = (output_path, manifest_path) + ((review_path,) if html_review else ())
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
-            for path in (output_path, manifest_path, review_path):
+            for path in output_paths:
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
@@ -218,10 +222,11 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
-        export_review(results, review_staging, catalogue_path=output_path,
-                      minimum_confidence=arguments.min_transcription_confidence,
-                      detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True))
-        previous = backup_existing_results((output_path, manifest_path, review_path)) if arguments.force else ()
+        if html_review:
+            export_review(results, review_staging, catalogue_path=output_path,
+                          minimum_confidence=arguments.min_transcription_confidence,
+                          detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True))
+        previous = backup_existing_results(output_paths) if arguments.force else ()
         state.previous_review = next((path for path in previous if path.suffix == ".html"), None)
         previous_catalogue = next((path for path in previous if path.suffix.casefold() == output_path.suffix.casefold()), None)
         previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
@@ -240,13 +245,14 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         else:
             rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
         staging = None
-        state.review_digest = regular_file_sha256(review_staging, "Staged review output")
-        state.review_output = review_path
-        state.wrote_review = True
-        if state.previous_review is not None:
-            replace_backed_file(review_staging, review_path, state.previous_review, "Review output")
-        else:
-            rename_new_file(review_staging, review_path, existing_message=f"Review output already exists: {review_path}")
+        if html_review:
+            state.review_digest = regular_file_sha256(review_staging, "Staged review output")
+            state.review_output = review_path
+            state.wrote_review = True
+            if state.previous_review is not None:
+                replace_backed_file(review_staging, review_path, state.previous_review, "Review output")
+            else:
+                rename_new_file(review_staging, review_path, existing_message=f"Review output already exists: {review_path}")
         return state
 
     except BaseException as error:

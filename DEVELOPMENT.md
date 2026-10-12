@@ -65,7 +65,9 @@ uv run uma-bct
 ```
 
 The defaults are `inputs/`, `outputs/catalogue.csv`, and
-`outputs/crops/`. CSV remains the import catalogue format; each new run also exports an offline HTML review page. Existing input,
+`outputs/crops/`. Use `--file-type excel` for Excel, `--html-review` for an
+offline HTML review page, and `--verification always` for the optional second
+reading within the same run. These features require explicit CLI options. Existing input,
 output, crop, detector, model, confidence, timeout, and force options remain
 available through `--help`. The legacy `--min-confidence` option and its
 explicit `--min-detector-confidence` alias set the OpenCV threshold from 0 to
@@ -260,7 +262,8 @@ contributing results; singular paths remain populated for one contributing batch
 `catalogue_records` and `catalogue_record_counts` retain recorded publication row
 counts. `current_input_records` counts saved physical-box rows for only current
 photos, without inferred missing-box rows or recounting later CSV edits.
-Saved verification settings contain no photographs or transcriptions.
+New runs select verification only through the CLI; old saved preferences and
+`UMA_BCT_VERIFICATION` do not enable it. Unfinished batches retain their recorded mode.
 
 Prepare reference drafts locally from a run manifest:
 

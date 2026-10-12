@@ -86,12 +86,13 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         dest="path_to_outputs",
         type=Path,
         default=None,
-        help="catalogue .xlsx or .csv path (default: outputs/catalogue.xlsx)",
+        help="catalogue .xlsx or .csv path (default: outputs/catalogue.csv)",
     )
     parser.add_argument(
         "--file-type", type=str.casefold, choices=("excel", "csv"), default=None,
-        help="catalogue format (default: Excel, or the explicit output filename's extension)",
+        help="catalogue format (default: CSV, or the explicit output filename's extension)",
     )
+    parser.add_argument("--html-review", action="store_true", help="also write an offline HTML review with crop-image links")
     parser.add_argument(
         "-b",
         "--path-to-box-images",
@@ -111,7 +112,7 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
 
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--verification", choices=MODES, default=None,
-                        help="second reading: ask, always, or never (default: saved preference or ask)")
+                        help="accuracy check with a second reading: ask, always, or never (default: never)")
     parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
@@ -191,7 +192,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def resolve_output_arguments(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    suffix = ".csv" if arguments.file_type == "csv" else ".xlsx"
+    suffix = ".xlsx" if arguments.file_type == "excel" else ".csv"
     if arguments.path_to_outputs is None:
         arguments.path_to_outputs = Path("outputs") / f"catalogue{suffix}"
     else:
@@ -372,21 +373,24 @@ def main(argv: list[str] | None = None) -> int:
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
     review_path = output_path.with_suffix(".review.html")
+    output_paths = (output_path, run_manifest) + ((review_path,) if arguments.html_review else ())
     # Check every output before reading photos or starting the model.
     try:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")
-        validate_output_target(review_path, directory=False, purpose="Review output")
+        if arguments.html_review:
+            validate_output_target(review_path, directory=False, purpose="Review output")
         validate_output_target(crop_root, directory=True, purpose="Review-crop root")
         validate_output_layout(output_path, run_manifest, crop_root)
-        validate_output_layout(review_path, run_manifest, crop_root)
+        if arguments.html_review:
+            validate_output_layout(review_path, run_manifest, crop_root)
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))
     if not images:
         parser.error(f"no supported images found in {arguments.path_to_inputs}")
 
-    existing = next((path for path in (output_path, run_manifest, review_path) if path.exists()), None)
+    existing = next((path for path in output_paths if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
     try:

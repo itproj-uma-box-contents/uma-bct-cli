@@ -62,7 +62,7 @@ class FakeBatchPipeline:
         return make_result(BoxResult(box, make_transcription(box)))
 
 
-def arguments(root: Path, *, force=False, file_type="csv"):
+def arguments(root: Path, *, force=False, file_type="csv", html_review=True):
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -75,6 +75,7 @@ def arguments(root: Path, *, force=False, file_type="csv"):
         path_to_outputs=root / ("outputs/catalogue.xlsx" if file_type == "excel" else "outputs/catalogue.csv"),
         path_to_box_images=root / "outputs/crops",
         force=force,
+        html_review=html_review,
         json=True,
     )
 
@@ -84,7 +85,8 @@ class CliTest(unittest.TestCase):
         defaults = parse_args([])
         aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
-        self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.xlsx"))
+        self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
+        self.assertFalse(defaults.html_review)
         self.assertEqual(defaults.min_detector_confidence, 0.6)
         self.assertEqual(defaults.min_transcription_confidence, 50)
         self.assertTrue(defaults.detect_missing_boxes)
@@ -353,7 +355,7 @@ class CliTest(unittest.TestCase):
 
     def test_selects_excel_and_csv_and_rejects_conflicting_options(self):
         for options, expected in (
-            ([], "outputs/catalogue.xlsx"),
+            ([], "outputs/catalogue.csv"),
             (["--file-type", "EXCEL"], "outputs/catalogue.xlsx"),
             (["--file-type", "CSV"], "outputs/catalogue.csv"),
             (["-o", "custom.csv"], "custom.csv"),
@@ -361,6 +363,7 @@ class CliTest(unittest.TestCase):
         ):
             with self.subTest(options=options):
                 self.assertEqual(parse_args(options).path_to_outputs, Path(expected))
+        self.assertTrue(parse_args(["--html-review"]).html_review)
         for options in (
             ["-o", "catalogue.pdf"],
             ["-o", "catalogue.xlsx", "--file-type", "csv"],
@@ -474,10 +477,11 @@ class CliTest(unittest.TestCase):
 
 
 class BatchRunnerTest(unittest.TestCase):
-    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False, file_type="csv"):
+    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False, file_type="csv",
+                                     html_review=True):
         """Keep JSON stdout separate from progress and warnings on stderr."""
 
-        args = arguments(root, force=force, file_type=file_type)
+        args = arguments(root, force=force, file_type=file_type, html_review=html_review)
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
@@ -694,6 +698,20 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(catalogue.read_text(), "old catalogue")
             self.assertEqual(review.read_text(), "previous review")
             self.assertNotIn("review_output", summary)
+
+    def test_html_is_optional_and_a_forced_csv_run_preserves_existing_review(self):
+        with temporary_root() as root:
+            outputs, catalogue, _ = self.prepare_outputs(root)
+            review = outputs / "catalogue.review.html"
+            review.write_text("reviewer snapshot", encoding="utf-8")
+            with patch("uma_bct.batch_runner.export_review", side_effect=AssertionError("HTML was not requested")):
+                status, summary, stderr = self.run_batch_and_capture_output(
+                    root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True, html_review=False,
+                )
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(catalogue.exists())
+            self.assertNotIn("review_output", summary)
+            self.assertEqual(review.read_text(encoding="utf-8"), "reviewer snapshot")
 
     def assert_edited_html_manifest_failure(self, *, force):
         with temporary_root() as root:

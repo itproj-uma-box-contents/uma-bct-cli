@@ -26,7 +26,7 @@ do not copy it wholesale.
 Input/output validation -> model preflight -> box detection
   -> review crops -> transcription -> optional verification
   -> catalogue mapping -> sorting, flags, and missing-box suggestions
-  -> atomic catalogue, offline HTML review, and run details
+  -> atomic catalogue, optional offline HTML review, and run details
 ```
 
 - Qwen detection is primary; OpenCV is an experimental fallback. Use one
@@ -40,7 +40,8 @@ Input/output validation -> model preflight -> box detection
   outcome. Preserve `complete`, `partial`, and `failed` status. Publish usable
   rows from partial batches; zero-row batches publish failed run details only.
   Preserve completed batches and reviewer edits on later launches.
-- Excel is the default; CSV remains supported. Keep relative crop links portable
+- CSV is the default; Excel and HTML review require explicit CLI options.
+  Keep relative crop links portable
   when a batch moves. Spreadsheet edits do not update the HTML snapshot.
 - With `--json`, stdout contains one JSON summary; progress and warnings go to
   stderr. Unattended and JSON runs must never prompt.

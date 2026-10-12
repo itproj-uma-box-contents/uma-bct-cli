@@ -67,8 +67,7 @@ Archive Box Transcription/
   Add Photos Here/
   Results/
     Batch 2026-09-11 14-30-05/
-      Catalogue.xlsx
-      Review.html
+      Catalogue.csv
       Run Details.json
       Box Images/
         PXL_230150462 - Box 01.png
@@ -93,21 +92,28 @@ An unfinished batch also requires its original processing options. If it was
 started with the former 80% transcription review threshold, resume it with
 `--min-transcription-confidence 80`; the current default is 50%.
 
-You may edit a completed `Catalogue.xlsx` or save corrected copies and notes beside
+You may edit a completed catalogue or save corrected copies and notes beside
 it. Later launches preserve those files and report a changed catalogue. Keep the
 run details and crop files intact: they record which photographs were processed.
 
-A partial terminal batch publishes `Catalogue.xlsx` when it has at least one
+A partial terminal batch publishes its selected catalogue format when it has at least one
 usable row. A batch with no usable rows publishes only failed `Run Details.json`.
 Leaving an already completed photo set in place does not repeat model work.
 Advanced direct-CLI users may pass `--reprocess` with `--results-directory` to
 create a separate new batch intentionally.
 
-Excel is the default output. Advanced CLI users can select CSV with
-`--file-type csv`, or explicitly pass `-o catalogue.csv`. Use `--file-type excel`
-to select Excel explicitly. Format names are case-insensitive; a format flag and
-an explicit filename must agree. Direct runs default to `outputs/catalogue.xlsx`.
-Existing CSV batches are preserved, and unfinished batches keep their original
+CSV is the default output. Use `--file-type excel` or explicitly pass
+`-o catalogue.xlsx` to select Excel. `--file-type csv` selects CSV explicitly.
+Format names are case-insensitive; a format flag and an explicit filename must
+agree. Direct runs default to `outputs/catalogue.csv`. Add `--html-review` to
+generate the optional HTML page with crop-image links; otherwise no review page
+is generated. For example, to enable all three optional features:
+
+```bash
+uma-bct --file-type excel --html-review --verification always
+```
+
+Existing catalogues are preserved, and unfinished batches keep their original
 format when resumed. Choosing a different format does not convert completed
 batches; use `--reprocess` to create a new managed batch if needed.
 
@@ -208,7 +214,7 @@ threshold from 0 to 100. This flags rows for review and keeps every transcriptio
 in the catalogue. The separate `--min-detector-confidence` option controls the
 OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
 
-Open `Review.html` in your browser for a compact, read-only catalogue with wrapped
+With `--html-review`, open `Review.html` for a compact, read-only catalogue with wrapped
 text and clickable **View crop** links. It works offline and requires no server.
 Keep the HTML file and `Box Images` folder together when moving a batch. Direct
 CLI runs create `<catalogue-name>.review.html` beside their catalogue instead.
@@ -216,11 +222,11 @@ CLI runs create `<catalogue-name>.review.html` beside their catalogue instead.
 Excel workbooks contain clickable crop filenames in `Cropped Box Image Link`.
 Each link opens the image file using your system's associated application in
 desktop Excel or LibreOffice. Keep the workbook and crop folder together when
-moving results. For browser viewing, use the **View crop** links in `Review.html`.
-Use the review page if your spreadsheet application cannot open a local path,
+moving results. For browser viewing, enable `--html-review` and use the **View crop** links in `Review.html`.
+Enable the review page if your spreadsheet application cannot open a local path,
 including paths with special characters such as `#`.
 
-Use the review page with Apple Numbers, which does not support these private
+Use `--html-review` with Apple Numbers, which does not support these private
 local-file links. CSV cannot save column widths or text wrapping; managed CSV
 batches retain their controlled relative `HYPERLINK` formulas for compatible
 Excel and LibreOffice imports. Google Sheets cannot open private local crop files.
@@ -228,9 +234,10 @@ The HTML shows generated readings, so later spreadsheet edits do not update it.
 
 ### Optional transcription verification
 
-After the first pass, interactive runs ask whether to check the crops again:
-choose **y** for this run, **a** to always verify managed batches, or Enter to finish.
-Verification adds a second reading using the same Qwen model. The model receives
+Verification is disabled by default. Use `--verification always` to add a
+second reading of the same images within the same run using the same Qwen model.
+Use `--verification ask` to request an interactive choice after the first pass:
+choose **y** for this run or Enter to finish. The model receives
 a distinct checking prompt without seeing the first answer. Only crops with
 substantive differences receive a third request. Detection is not repeated.
 
@@ -245,16 +252,16 @@ alternatives. Managed runs checkpoint completed readings; restart the launcher t
 resume an interrupted check. A failed verification request preserves the first
 reading and produces a partial result with a review flag.
 
-Advanced users can select `--verification always`, `--verification never`, or
-`--verification ask`. Precedence is the CLI option, `UMA_BCT_VERIFICATION`, the
-managed Results folder's `.uma-bct-settings.json`, then `ask`. Edit that small JSON
-file to set the saved preference back to `ask` or `never`. An unfinished batch
-keeps its recorded mode; finish it before changing the mode. Older unfinished
+Users can select `--verification always`, `--verification never`, or
+`--verification ask`. Only the CLI option enables verification for a new run;
+`UMA_BCT_VERIFICATION` and saved `.uma-bct-settings.json` preferences do not enable it.
+An unfinished batch keeps its recorded verification and HTML choices; finish it
+before changing those options. Older unfinished
 batches continue without verification. Already completed batches are reused;
 use `--reprocess` to intentionally start another complete run.
 
 `--json`, redirected stdin/stderr, and unattended runs never prompt. They verify
-only when the effective setting is `always`. Verification improves the opportunity
+only when verification was requested with `always`. Verification improves the opportunity
 to find discrepancies; measured accuracy gains require human-reviewed references.
 
 Before importing the catalogue, review each row against its crop and source

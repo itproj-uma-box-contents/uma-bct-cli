@@ -50,7 +50,7 @@ from uma_bct.util.date_util import Date, DateRange
 
 
 def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True,
-                      file_type: str | None = "csv") -> argparse.Namespace:
+                      file_type: str | None = "csv", html_review: bool = True) -> argparse.Namespace:
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -67,6 +67,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
         reprocess=reprocess,
         detect_missing_boxes=detect_missing_boxes,
         file_type=file_type,
+        html_review=html_review,
         json=True,
     )
 
@@ -127,11 +128,12 @@ class ManagedBatchTest(unittest.TestCase):
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         file_type: str | None = "csv",
         date_detector: str = "none",
+        html_review: bool = True,
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes,
-                                      file_type=file_type)
+                                      file_type=file_type, html_review=html_review)
         arguments.verification = verification
         arguments.date_detector = date_detector
         arguments.min_transcription_confidence = min_transcription_confidence
@@ -159,9 +161,9 @@ class ManagedBatchTest(unittest.TestCase):
             self.prepare_inputs(root, *names)
             yield root
 
-    def test_default_excel_batch_and_completed_reuse_preserve_reviewer_edits(self):
+    def test_opt_in_excel_batch_and_completed_reuse_preserve_reviewer_edits(self):
         with self.prepared_root("Shelf Photo.jpg") as root:
-            status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(), file_type=None)
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(), file_type="excel")
             self.assertEqual(status, 0, stderr)
             catalogue = Path(summary["catalogue_output"])
             self.assertEqual(catalogue.name, "Catalogue.xlsx")
@@ -183,7 +185,7 @@ class ManagedBatchTest(unittest.TestCase):
     def test_staged_excel_resumes_with_matching_hash_without_model_work(self):
         with self.prepared_root("01.jpg") as root:
             status, interrupted, _ = self.run_managed_batch_and_capture_output(
-                root, ManagedPipeline(), file_type=None,
+                root, ManagedPipeline(), file_type="excel",
                 patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
             )
             self.assertEqual(status, 130)
@@ -196,6 +198,34 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(pipeline.calls, [])
             self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), expected)
             self.assertFalse(pending.exists())
+
+    def test_new_batch_defaults_to_csv_without_html_or_verification(self):
+        with self.prepared_root("01.jpg") as root:
+            pipeline = ManagedPipeline()
+            pipeline.transcriber = Mock()
+            with patch("uma_bct.managed_batch.export_review", side_effect=AssertionError("HTML was not requested")):
+                status, summary, stderr = self.run_managed_batch_and_capture_output(
+                    root, pipeline, file_type=None, html_review=False,
+                )
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(Path(summary["catalogue_output"]).name, "Catalogue.csv")
+            self.assertIsNone(summary["review_output"])
+            self.assertFalse((Path(summary["batch_directory"]) / "Review.html").exists())
+            pipeline.transcriber.verify.assert_not_called()
+
+    def test_html_cannot_be_added_to_an_unfinished_batch_without_requesting_it_initially(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg"), html_review=False,
+            )
+            progress_path = Path(interrupted["batch_directory"]) / PROGRESS_FILE_NAME
+            saved = progress_path.read_bytes()
+            pipeline = ManagedPipeline()
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, html_review=True)
+            self.assertEqual(status, 2)
+            self.assertIn("Cannot change HTML review output", stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(progress_path.read_bytes(), saved)
 
     def test_explicit_format_change_blocks_resume_before_model_work(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
@@ -247,6 +277,7 @@ class ManagedBatchTest(unittest.TestCase):
             progress_path = batch / PROGRESS_FILE_NAME
             progress = read_json_file(progress_path, "Run progress")
             progress.pop("file_type")
+            progress.pop("html_review")
             progress["configuration"].pop("date_detector")
             for item in progress["inputs"]:
                 item["result"].pop("date_detector")

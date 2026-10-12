@@ -6,8 +6,6 @@ answer or an uncertain deletion. Existing catalogue validation remains final.
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import re
 import sys
 import unicodedata
@@ -18,35 +16,21 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from .atomic import open_stable_file
 from .catalogue import map_catalogue_record
 from .constants import AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTION_MISMATCH_FLAG
 from .domain import BoxTranscription
 from .identity import collect_unit_evidence, identifier_evidence_details, normalise_unit_claim
 from .pipeline import ImageResult, warning_text
 from .ports import DateDetector
-from .run_artifacts import write_json_atomic
 from .util.date_util import deserialize_dates
 
-SETTINGS_NAME = ".uma-bct-settings.json"
 MODES = ("ask", "always", "never")
 FIELDS = ("typed_lines", "record_identifiers", "unit_number", "handwritten_lines", "auxiliary_annotations")
 GROUPS = (FIELDS[:3], (FIELDS[3],), (FIELDS[4],))
 
 
 def configured_mode(arguments: argparse.Namespace) -> str:
-    value = getattr(arguments, "verification", None) or os.getenv("UMA_BCT_VERIFICATION")
-    root = getattr(arguments, "results_directory", None)
-    if value is None and root is not None:
-        path = Path(root) / SETTINGS_NAME
-        try:
-            with open_stable_file(path, "Verification settings") as (source, metadata):
-                if metadata.st_size > 4096:
-                    raise ValueError("Verification settings are too large.")
-                value = json.loads(source.read())["verification"]
-        except FileNotFoundError:
-            pass
-    value = value or "ask"
+    value = getattr(arguments, "verification", None) or "never"
     if value not in MODES:
         raise ValueError("Verification must be ask, always, or never.")
     return value
@@ -60,17 +44,13 @@ def choose_verification(arguments: argparse.Namespace, mode: str, *, has_records
     if getattr(arguments, "json", False) or not sys.stdin.isatty() or not sys.stderr.isatty():
         return False
     print("\nFirst pass finished. Check each crop again? This adds model processing time.", file=sys.stderr)
-    managed = getattr(arguments, "results_directory", None)
-    choices = "[y] once, [a] always, [N] finish" if managed else "[y] once, [N] finish"
+    choices = "[y] once, [N] finish"
     while True:
         print(f"Verify transcriptions? {choices}: ", end="", file=sys.stderr, flush=True)
         answer = sys.stdin.readline().strip().casefold()
         if answer in {"", "n", "no"}:
             return False
         if answer in {"y", "yes"}:
-            return True
-        if answer in {"a", "always"} and managed:
-            write_json_atomic(Path(managed) / SETTINGS_NAME, {"verification": "always"})
             return True
 
 

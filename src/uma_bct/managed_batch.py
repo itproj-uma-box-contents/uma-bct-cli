@@ -571,7 +571,8 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "batch_directory": str(batch_directory),
         "configuration": semantic_configuration(arguments, request_timeout),
-        "file_type": getattr(arguments, "file_type", None) or "excel",
+        "file_type": getattr(arguments, "file_type", None) or "csv",
+        "html_review": bool(getattr(arguments, "html_review", False)),
         "input_directory": str(arguments.path_to_inputs),
         "input_snapshot": snapshot_signature(snapshot),
         "inputs": inputs,
@@ -650,6 +651,8 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         requested_format = getattr(arguments, "file_type", None)
         if requested_format is not None and requested_format != progress.get("file_type", "csv"):
             raise ManagedBatchSelectionError(batch_directory, "Cannot change catalogue format in an unfinished batch.")
+        if getattr(arguments, "html_review", False) and not progress.get("html_review", True):
+            raise ManagedBatchSelectionError(batch_directory, "Cannot change HTML review output in an unfinished batch.")
         expected_snapshot = progress.get("input_snapshot")
         original_snapshot = batch_snapshot(expected_snapshot, snapshot) if isinstance(expected_snapshot, list) else []
         if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, original_snapshot):
@@ -1567,22 +1570,25 @@ def stage_catalogue(
         )
     publication["output_columns"] = list(columns)
     review_pending = batch_directory / PENDING_REVIEW_NAME
-    review_options = {"catalogue_path": batch_directory / catalogue_file_name(progress),
-                      "minimum_confidence": arguments.min_transcription_confidence,
-                      "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
-                      "output_columns": columns}
-    expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
-    if not path_entry_exists(review_pending):
-        export_review(results, review_pending, **review_options)
-    actual_review = file_digest(review_pending, "Pending review")
-    if actual_review != expected_review and len(columns) > 7:
-        # Earlier date layouts must still match every committed row and link.
-        expected_review = hashlib.sha256(
-            render_review(results, **review_options, legacy_date_layout=True).encode("utf-8")
-        ).hexdigest()
-    if actual_review != expected_review:
-        raise ManagedBatchError(f"Pending review does not match committed results: {review_pending}")
-    publication["review"] = {"sha256": expected_review}
+    if progress.get("html_review", True):
+        review_options = {"catalogue_path": batch_directory / catalogue_file_name(progress),
+                          "minimum_confidence": arguments.min_transcription_confidence,
+                          "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
+                          "output_columns": columns}
+        expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
+        if not path_entry_exists(review_pending):
+            export_review(results, review_pending, **review_options)
+        actual_review = file_digest(review_pending, "Pending review")
+        if actual_review != expected_review and len(columns) > 7:
+            # Earlier date layouts must still match every committed row and link.
+            expected_review = hashlib.sha256(
+                render_review(results, **review_options, legacy_date_layout=True).encode("utf-8")
+            ).hexdigest()
+        if actual_review != expected_review:
+            raise ManagedBatchError(f"Pending review does not match committed results: {review_pending}")
+        publication["review"] = {"sha256": expected_review}
+    elif publication.get("review") is not None or path_entry_exists(review_pending):
+        raise ManagedBatchError(f"Unexpected pending review when HTML output was not requested: {review_pending}")
     digest = file_digest(pending, "Pending catalogue")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
@@ -1690,6 +1696,7 @@ def details_payload(
         "batch_directory": str(batch_directory),
         "configuration": progress["configuration"],
         "file_type": progress.get("file_type", "csv"),
+        "html_review": progress.get("html_review", True),
         "verification": progress.get("verification", {"mode": "never", "decision": False}),
         "locations": {
             "input": progress["input_directory"],

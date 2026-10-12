@@ -334,16 +334,21 @@ class VerificationTest(unittest.TestCase):
             stream.readline.assert_not_called()
             self.assertTrue(choose_verification(argparse.Namespace(json=True), "always", has_records=True))
 
-    def test_settings_precedence_and_interactive_always(self):
+    def test_verification_requires_a_cli_option_even_with_saved_or_environment_preferences(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             args = argparse.Namespace(results_directory=Path(directory), verification=None, json=False)
-            self.assertEqual(configured_mode(args), "ask")
+            self.assertEqual(configured_mode(args), "never")
+            settings = Path(directory) / ".uma-bct-settings.json"
+            settings.write_text('{"verification": "always"}', encoding="utf-8")
+            with patch.dict(os.environ, {"UMA_BCT_VERIFICATION": "always"}):
+                self.assertEqual(configured_mode(args), "never")
+                args.verification = "always"
+                self.assertEqual(configured_mode(args), "always")
+                args.verification = "never"
+                self.assertEqual(configured_mode(args), "never")
+            args.verification = "ask"
             with patch("sys.stdin") as stdin, patch("sys.stderr") as stderr:
                 stdin.isatty.return_value = stderr.isatty.return_value = True
-                stdin.readline.return_value = "a\n"
+                stdin.readline.return_value = "y\n"
                 self.assertTrue(choose_verification(args, "ask", has_records=True))
-            self.assertEqual(configured_mode(args), "always")
-            with patch.dict(os.environ, {"UMA_BCT_VERIFICATION": "never"}):
-                self.assertEqual(configured_mode(args), "never")
-                args.verification = "ask"
-                self.assertEqual(configured_mode(args), "ask")
+            self.assertEqual(settings.read_text(encoding="utf-8"), '{"verification": "always"}')
