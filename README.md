@@ -252,8 +252,11 @@ of `1.0` is a placeholder for accepted geometry, not a measured probability of
 correct detection. `--min-detector-confidence` filters OpenCV proposals only.
 Thin fragments and empty or unreadable crop responses still require review.
 
-Gemini-specific prompts request one rectangle per substantially visible physical
+Hosted-model prompts request one rectangle per substantially visible physical
 box front and exclude shelves, side panels, labels, and thin edge fragments.
+Their edge rules omit narrow, textless box fragments; the local Qwen prompts
+retain their original wording. OpenAI and Anthropic use X-first coordinates,
+while Gemini uses Y-first coordinates with the same hosted selection rules.
 Transcription can return `{"boxes": []}` for a non-box crop; this produces a
 processing warning without a catalogue row. A genuine box with unreadable text
 retains its row for review. These prompts do not impose a fixed box count or

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .adapters import HostedVisionModel, OllamaVisionModel, OpenCVBoxDetector, QwenBoxDetector, QwenTextTranscriber
 from .adapters.ollama_client import DEFAULT_REQUEST_TIMEOUT_SECONDS
-from .adapters.qwen_transcriber import GEMINI_FULL_IMAGE_QUESTION, gemini_crop_question
+from .adapters.qwen_transcriber import HOSTED_FULL_IMAGE_QUESTION, hosted_crop_question
 from .imaging import OpenCVBoxCropper
 from .model_config import HostedModelConfig
 from .pipeline import BoxTranscriptionPipeline
@@ -47,13 +47,16 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
     )
     model_metadata = model_client.preflight()
     print_selected_model(model_metadata, fallback_model=hosted_model.model if hosted_model is not None else model_name)
-    if detector_name == "qwen" and hosted_model is not None and hosted_model.provider == "gemini":
-        detector = QwenBoxDetector(model_client, coordinate_order="yxyx")
+    if detector_name == "qwen" and hosted_model is not None:
+        detector = QwenBoxDetector(
+            model_client, coordinate_order="yxyx" if hosted_model.provider == "gemini" else "xyxy",
+            prompt_profile="hosted",
+        )
     else:
         detector = detector_factory(model_client)
-    if transcriber_name == "qwen" and hosted_model is not None and hosted_model.provider == "gemini":
+    if transcriber_name == "qwen" and hosted_model is not None:
         transcriber = QwenTextTranscriber(
-            model_client, crop_prompt=gemini_crop_question, full_image_prompt=GEMINI_FULL_IMAGE_QUESTION
+            model_client, crop_prompt=hosted_crop_question, full_image_prompt=HOSTED_FULL_IMAGE_QUESTION
         )
     else:
         transcriber = transcriber_factory(model_client)

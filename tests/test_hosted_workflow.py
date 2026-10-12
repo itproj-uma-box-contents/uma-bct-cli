@@ -10,9 +10,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from helpers import make_box
 from PIL import Image
 
-from uma_bct.adapters.qwen_transcriber import GEMINI_FULL_IMAGE_QUESTION, crop_question, gemini_crop_question
+from uma_bct.adapters.qwen_transcriber import HOSTED_FULL_IMAGE_QUESTION, QUESTION, crop_question, hosted_crop_question
 from uma_bct.bootstrap import build_pipeline
 from uma_bct.cli import parse_args
 from uma_bct.export import export_catalogue
@@ -40,6 +41,35 @@ class HostedWorkflowTest(unittest.TestCase):
             "api_base": "https://api.anthropic.com",
         }
 
+    def test_local_pipeline_keeps_qwen_prompts(self):
+        model = Mock()
+        model.preflight.return_value = {"backend": "ollama", "model": "qwen-local"}
+        with patch("uma_bct.bootstrap.OllamaVisionModel", return_value=model), contextlib.redirect_stderr(io.StringIO()):
+            pipeline = build_pipeline(
+                detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                work_directory=Path("unused"), minimum_detector_confidence=0.6,
+            )
+        self.assertEqual(pipeline.detector.prompt_profile, "qwen")
+        self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
+        self.assertIs(pipeline.transcriber.crop_prompt, crop_question)
+        self.assertEqual(pipeline.transcriber.full_image_prompt, QUESTION)
+        self.assertNotIn("Physical-box checks:", pipeline.transcriber.crop_prompt(make_box()))
+
+    def test_openai_uses_hosted_prompts_with_x_first_coordinates(self):
+        config = HostedModelConfig(model="openai/gpt-test", api_key="secret-test-key")
+        model = Mock()
+        model.preflight.return_value = {"backend": "hosted", "model": config.model}
+        with patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), contextlib.redirect_stderr(io.StringIO()):
+            pipeline = build_pipeline(
+                detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                work_directory=Path("unused"), minimum_detector_confidence=0.6, hosted_model=config,
+            )
+        self.assertEqual(pipeline.detector.prompt_profile, "hosted")
+        self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
+        self.assertIs(pipeline.transcriber.crop_prompt, hosted_crop_question)
+        self.assertEqual(pipeline.transcriber.full_image_prompt, HOSTED_FULL_IMAGE_QUESTION)
+        self.assertIn("Physical-box checks:", pipeline.transcriber.crop_prompt(make_box()))
+
     def test_one_pipeline_client_serves_detector_and_transcriber(self):
         model = Mock()
         model.preflight.return_value = self.metadata
@@ -57,7 +87,9 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertIs(pipeline.transcriber.client, model)
         self.assertEqual(pipeline.model_metadata, self.metadata)
         self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
-        self.assertIs(pipeline.transcriber.crop_prompt, crop_question)
+        self.assertEqual(pipeline.detector.prompt_profile, "hosted")
+        self.assertIs(pipeline.transcriber.crop_prompt, hosted_crop_question)
+        self.assertEqual(pipeline.transcriber.full_image_prompt, HOSTED_FULL_IMAGE_QUESTION)
 
     def test_gemini_pipeline_selects_y_first_grounding_without_ollama(self):
         config = HostedModelConfig(model="gemini/gemini-3.5-flash-lite", api_key="secret-test-key")
@@ -74,10 +106,11 @@ class HostedWorkflowTest(unittest.TestCase):
             )
         ollama.assert_not_called()
         self.assertEqual(pipeline.detector.coordinate_order, "yxyx")
+        self.assertEqual(pipeline.detector.prompt_profile, "hosted")
         self.assertIs(pipeline.detector.client, model)
         self.assertIs(pipeline.transcriber.client, model)
-        self.assertIs(pipeline.transcriber.crop_prompt, gemini_crop_question)
-        self.assertEqual(pipeline.transcriber.full_image_prompt, GEMINI_FULL_IMAGE_QUESTION)
+        self.assertIs(pipeline.transcriber.crop_prompt, hosted_crop_question)
+        self.assertEqual(pipeline.transcriber.full_image_prompt, HOSTED_FULL_IMAGE_QUESTION)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn(f"Selected model: {config.model} (hosted)", stderr.getvalue())
         self.assertNotIn(config.api_key, stderr.getvalue())
@@ -121,7 +154,7 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertTrue(rows[0]["Cropped Box Image Link"])
         self.assertTrue(any("returned no boxes" in warning for warning in result.warnings))
         self.assertEqual(
-            model.query.call_args_list[1].args[1], gemini_crop_question(result.records[0].box)
+            model.query.call_args_list[1].args[1], hosted_crop_question(result.records[0].box)
         )
         self.assertEqual(result.records[0].transcription.confidence, 0)
         self.assertTrue(result.records[0].transcription.needs_review)

@@ -22,6 +22,8 @@ from uma_bct.adapters.qwen_detector import (
     GEMINI_GROUNDING_SCHEMA,
     GROUNDING_QUESTION,
     GROUNDING_SCHEMA,
+    HOSTED_GROUNDING_QUESTION,
+    HOSTED_GROUNDING_SCHEMA,
     QwenBoxDetector,
     validate_grounding_proposals,
 )
@@ -120,10 +122,27 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(regions[0].bounding_box.as_xywh(), (20, 60, 80, 180))
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
         self.assertIs(client.calls[0][2], GROUNDING_SCHEMA)
+        self.assertEqual(client.calls[0][1], GROUNDING_QUESTION)
+        self.assertNotIn("at least about half of its face width", client.calls[0][1])
+
+    def test_hosted_x_first_detector_uses_stricter_prompt_without_gemini_coordinates(self):
+        client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}]})
+        detector = QwenBoxDetector(client, prompt_profile="hosted")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            detector.detect(make_image())
+        prompt = client.calls[0][1]
+        self.assertEqual(prompt, HOSTED_GROUNDING_QUESTION)
+        self.assertIn("at least about half of its face width", prompt)
+        self.assertIn("[x1, y1, x2, y2]", prompt)
+        self.assertNotIn("[ymin, xmin, ymax, xmax]", prompt)
+        self.assertIs(client.calls[0][2], HOSTED_GROUNDING_SCHEMA)
 
     def test_gemini_detector_converts_y_first_coordinates_on_a_non_square_image(self):
         client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]})
-        detector = QwenBoxDetector(client, coordinate_order="yxyx")
+        detector = QwenBoxDetector(client, coordinate_order="yxyx", prompt_profile="hosted")
         with patch(
             "uma_bct.adapters.qwen_detector.sanitized_detection_image",
             return_value=contextlib.nullcontext(Path("clean.png")),
@@ -133,6 +152,7 @@ class QwenAdapterTest(unittest.TestCase):
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
         self.assertIn("[ymin, xmin, ymax, xmax]", client.calls[0][1])
         self.assertNotIn("[x1, y1, x2, y2]", client.calls[0][1])
+        self.assertIn("at least about half of its face width", client.calls[0][1])
         self.assertIs(client.calls[0][2], GEMINI_GROUNDING_SCHEMA)
         self.assertNotIn("description", GROUNDING_SCHEMA["properties"]["boxes"]["items"]["properties"]["bbox_2d"])
 
@@ -142,7 +162,7 @@ class QwenAdapterTest(unittest.TestCase):
             {"bbox_2d": [0, 330, 1000, 660]},
             {"bbox_2d": [0, 660, 1000, 1000]},
         ]})
-        detector = QwenBoxDetector(client, coordinate_order="yxyx")
+        detector = QwenBoxDetector(client, coordinate_order="yxyx", prompt_profile="hosted")
         with patch(
             "uma_bct.adapters.qwen_detector.sanitized_detection_image",
             return_value=contextlib.nullcontext(Path("clean.png")),
@@ -316,6 +336,7 @@ class QwenAdapterTest(unittest.TestCase):
         prompt = crop_question(make_box())
         for field in ("record_identifiers", "unit", "typed", "handwritten"):
             self.assertIn(field, prompt)
+        self.assertNotIn("Physical-box checks:", prompt)
 
     def test_qwen_prompts_require_one_boxes_envelope(self):
         for prompt in (GROUNDING_QUESTION, QUESTION, crop_question(make_box())):

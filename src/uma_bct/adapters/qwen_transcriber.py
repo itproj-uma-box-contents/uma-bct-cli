@@ -154,12 +154,16 @@ def validate_transcription_result(value: Any) -> list[BoxRecord]:
     return [validate_record(item, index) for index, item in enumerate(records, 1)]
 
 
-def crop_question(box: Box) -> str:
+def crop_context(box: Box) -> str:
     x, y, width, height = box.bounding_box.as_xywh()
     return f"""This is a clean crop from a photo of archive boxes.
 
 Original photo: {box.source_image.width} x {box.source_image.height} pixels.
-Crop: x={x}, y={y}, width={width}, height={height}; centre={box.position}.
+Crop: x={x}, y={y}, width={width}, height={height}; centre={box.position}."""
+
+
+def crop_question(box: Box) -> str:
+    return f"""{crop_context(box)}
 
 Report the central archive box. Report multiple boxes only when multiple complete
 front faces occupy comparable central areas; ignore fragments at crop edges.
@@ -168,31 +172,35 @@ front faces occupy comparable central areas; ignore fragments at crop edges.
 {RULES}"""
 
 
-GEMINI_PHYSICAL_BOX_RULES = """Physical-box checks:
+HOSTED_PHYSICAL_BOX_RULES = """Physical-box checks:
 - Report only substantially visible archive-box front faces. A side panel, lid,
-  shelf, gap, shadow, loose label, or thin edge fragment is not a separate box.
+  shelf, gap, shadow, or loose label is not a separate box. A narrow edge strip
+  with no label area or handwriting is a fragment.
 - If no qualifying front face is visible, return {"boxes": []}. Never create an
   empty placeholder record for a non-box region or an edge fragment.
-- If a real qualifying front face is visible but its text is unreadable or
-  absent, preserve its record with blank fields and [] lists as appropriate.
-- Never invent identifiers, unit numbers, handwriting, or missing boxes to
-  complete a sequence. Missing-number suggestions are handled after transcription.
+- A blank record (blank fields, [] lists) is allowed ONLY for a complete front
+  face that is fully visible and genuinely has no text. A face that is cut off
+  by the image or crop edge and shows no label or handwriting is a fragment,
+  not a blank box.
+- For a face cut off at the edge, keep it only if its label or handwriting is
+  at least partly visible; transcribe just what is visible and do not invent
+  missing text.
+- Never invent missing boxes to complete a sequence. Missing-number suggestions
+  are handled after transcription.
 - Do not copy text from a neighbouring face into the target box's record."""
 
-GEMINI_FULL_IMAGE_QUESTION = f"{QUESTION}\n\n{GEMINI_PHYSICAL_BOX_RULES}"
+HOSTED_FULL_IMAGE_QUESTION = f"{QUESTION}\n\n{HOSTED_PHYSICAL_BOX_RULES}"
 
 
-def gemini_crop_question(box: Box) -> str:
-    return f"""Inspect only the supplied archive-box crop. The original photo is not supplied.
-Target position in the original photo: {box.position}.
+def hosted_crop_question(box: Box) -> str:
+    return f"""{crop_context(box)}
 
-Report the substantially visible front face occupying the central area of this
-crop. Ignore neighbouring side panels and front-face fragments near the edges.
-Return multiple records only if multiple substantial front faces occupy comparable
-central areas. Each physical front face must appear at most once.
-{GEMINI_PHYSICAL_BOX_RULES}
+Report the central archive box IF one is present. Report multiple boxes only
+when multiple qualifying front faces occupy comparable central areas.
 
 {FIELDS}
+
+{HOSTED_PHYSICAL_BOX_RULES}
 
 {RULES}"""
 
