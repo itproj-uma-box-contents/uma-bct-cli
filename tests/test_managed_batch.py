@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import os
@@ -325,6 +326,43 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertIn("processing configuration changed", stderr)
             self.assertEqual(pipeline.calls, [])
             self.assertEqual((batch / PROGRESS_FILE_NAME).read_bytes(), original_progress)
+
+    def test_staged_date_review_recovers_earlier_widths_and_rejects_tampering(self):
+        for columns in (DATE_OUTPUT_COLUMNS, OUTPUT_COLUMNS):
+            for tampered in (False, True):
+                with self.subTest(columns=columns, tampered=tampered), self.prepared_root("01.jpg") as root:
+                    _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                        root, ManagedPipeline(),
+                        patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
+                    )
+                    batch = Path(interrupted["batch_directory"])
+                    progress_path = batch / PROGRESS_FILE_NAME
+                    progress = read_json_file(progress_path, "Run progress")
+                    progress["publication"]["output_columns"] = columns
+                    results = [deserialize_result(item["result"], batch) for item in progress["inputs"]]
+                    pending = batch / progress["publication"]["pending_catalogue"]
+                    export_catalogue(results, pending, output_columns=columns, trusted_crop_links=True)
+                    review_pending = batch / ".uma-bct-review-pending.html"
+                    export_review(results, review_pending, catalogue_path=batch / "Catalogue.csv",
+                                  output_columns=columns, legacy_date_layout=True)
+                    original_bytes = review_pending.read_bytes()
+                    if tampered:
+                        review_pending.write_bytes(original_bytes.replace(b"Archive box catalogue", b"Archive box catalogs", 1))
+                    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+                    model = Mock(side_effect=AssertionError("must not load"))
+                    status, summary, stderr = self.run_managed_batch_and_capture_output(
+                        root, ManagedPipeline(), patches=(patch("uma_bct.managed_batch.build_pipeline", model),),
+                    )
+                    model.assert_not_called()
+                    if tampered:
+                        self.assertEqual(status, 2)
+                        self.assertIn("Pending review does not match committed results", stderr)
+                        self.assertFalse((batch / "Review.html").exists())
+                    else:
+                        self.assertEqual(status, 0, stderr)
+                        self.assertEqual(Path(summary["review_output"]).read_bytes(), original_bytes)
+                        details = read_json_file(Path(summary["run_manifest"]), "Run details")
+                        self.assertEqual(details["publication"]["review"]["sha256"], hashlib.sha256(original_bytes).hexdigest())
 
     def test_added_photo_during_run_is_deferred_and_only_it_runs_next_time(self):
         class AddingPipeline(ManagedPipeline):

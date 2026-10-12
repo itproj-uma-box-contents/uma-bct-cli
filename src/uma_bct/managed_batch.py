@@ -1574,7 +1574,13 @@ def stage_catalogue(
     expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
     if not path_entry_exists(review_pending):
         export_review(results, review_pending, **review_options)
-    if file_digest(review_pending, "Pending review") != expected_review:
+    actual_review = file_digest(review_pending, "Pending review")
+    if actual_review != expected_review and len(columns) > 7:
+        # Earlier date layouts must still match every committed row and link.
+        expected_review = hashlib.sha256(
+            render_review(results, **review_options, legacy_date_layout=True).encode("utf-8")
+        ).hexdigest()
+    if actual_review != expected_review:
         raise ManagedBatchError(f"Pending review does not match committed results: {review_pending}")
     publication["review"] = {"sha256": expected_review}
     digest = file_digest(pending, "Pending catalogue")

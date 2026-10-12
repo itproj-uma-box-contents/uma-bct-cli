@@ -42,12 +42,21 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: .5r
 @media print { body { padding: 0; } .catalogue { overflow: visible; } table { min-width: 0; } }
 """
 
-DATE_STYLE = """
+LEGACY_DATE_STYLE = """
 table { min-width: 1250px; }
 col:nth-child(1) { width: 20%; } col:nth-child(2) { width: 6%; }
 col:nth-child(3) { width: 22%; } col:nth-child(4) { width: 5%; }
 col:nth-child(5) { width: 7%; } col:nth-child(6) { width: 12%; } col:nth-child(7) { width: 7%; }
 col:nth-child(8) { width: 9%; } col:nth-child(9) { width: 6%; } col:nth-child(10) { width: 6%; }
+@media print { table { min-width: 0; } }
+"""
+
+DATE_STYLE = """
+table { min-width: 1250px; }
+col:nth-child(1) { width: 16%; } col:nth-child(2) { width: 7%; }
+col:nth-child(3) { width: 18%; } col:nth-child(4) { width: 6%; }
+col:nth-child(5) { width: 10%; } col:nth-child(6) { width: 12%; } col:nth-child(7) { width: 8%; }
+col:nth-child(8) { width: 9%; } col:nth-child(9) { width: 7%; } col:nth-child(10) { width: 7%; }
 @media print { table { min-width: 0; } }
 """
 
@@ -83,7 +92,8 @@ def comparison(audit: dict[str, object] | None) -> str:
 
 def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
                   minimum_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
-                  detect_missing_boxes: bool = True, output_columns: Sequence[str] = OUTPUT_COLUMNS) -> str:
+                  detect_missing_boxes: bool = True, output_columns: Sequence[str] = OUTPUT_COLUMNS,
+                  legacy_date_layout: bool = False) -> str:
     results = list(results)
     rows = catalogue_records(results, catalogue_path=catalogue_path, minimum_confidence=minimum_confidence,
                              detect_missing_boxes=detect_missing_boxes, spreadsheet_safe=False)
@@ -103,7 +113,8 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
             cells.append(f"<td>{content}</td>")
         rendered.append("<tr>" + "".join(cells) + "</tr>")
     headings = "".join(f'<th scope="col">{escape(column)}</th>' for column in output_columns)
-    style = STYLE + (DATE_STYLE if len(output_columns) > 7 else "")
+    date_style = LEGACY_DATE_STYLE if legacy_date_layout else DATE_STYLE
+    style = STYLE + (date_style if len(output_columns) > 7 else "")
     catalogue_format = "Excel" if catalogue_path.suffix.casefold() == ".xlsx" else "CSV"
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -124,10 +135,11 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
 
 def export_review(results: Iterable[ImageResult], destination: Path, *, catalogue_path: Path,
                   minimum_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, detect_missing_boxes: bool = True,
-                  output_columns: Sequence[str] = OUTPUT_COLUMNS) -> None:
+                  output_columns: Sequence[str] = OUTPUT_COLUMNS, legacy_date_layout: bool = False) -> None:
     """Stage one complete HTML file without clobbering an existing destination."""
     content = render_review(results, catalogue_path, minimum_confidence=minimum_confidence,
-                            detect_missing_boxes=detect_missing_boxes, output_columns=output_columns)
+                            detect_missing_boxes=detect_missing_boxes, output_columns=output_columns,
+                            legacy_date_layout=legacy_date_layout)
     check_path(destination, "Review output")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
