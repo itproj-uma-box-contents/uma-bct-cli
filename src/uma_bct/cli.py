@@ -153,6 +153,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         prog="uma-bct",
         description="Detect and transcribe UMA archive boxes using local components.",
         epilog=("Shortest workflow: run 'uma-bct setup', add photos to inputs/, then run 'uma-bct'."),
+        allow_abbrev=False,
     )
     add_path_arguments(parser)
     add_processing_arguments(parser)

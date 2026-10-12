@@ -51,6 +51,8 @@ class HostedModelConfigTest(unittest.TestCase):
         for model, argv, expected in (
             ("", [], "UMA_BCT_API_MODEL"),
             ("gemini/example", ["--model", "local"], "--model selects local Ollama"),
+            ("gemini/example", ["--mod", "local"], "invalid choice: 'local'"),
+            ("gemini/example", ["--mod=local"], "unrecognized arguments: --mod=local"),
             ("openrouter/example", [], "currently support"),
         ):
             with self.subTest(model=model), patch.dict(
