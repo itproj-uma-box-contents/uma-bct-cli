@@ -106,6 +106,9 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
 
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--hosted", action="store_true", help="use a hosted model configured by UMA_BCT_API_KEY and UMA_BCT_API_MODEL"
+    )
+    parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
     parser.add_argument(
@@ -168,6 +171,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
+    setup.add_argument("--hosted", action="store_true", help="check the configured hosted model instead of local Ollama")
     setup.add_argument("--path-to-inputs", type=Path, default=None, help="directory to prepare for input photos")
     setup.add_argument("--results-directory", type=Path, default=None, help="directory to prepare for managed results")
     return parser
@@ -297,11 +301,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     arguments = parser.parse_args(raw_arguments)
-    try:
-        hosted_model = hosted_model_from_environment()
-    except ValueError as error:
-        parser.error(str(error))
-    if hosted_model is not None:
+    hosted_model = None
+    if arguments.hosted:
+        try:
+            hosted_model = hosted_model_from_environment()
+        except ValueError as error:
+            parser.error(str(error))
+        if hosted_model is None:
+            parser.error("UMA_BCT_API_KEY is required with --hosted.")
         from .adapters.hosted_client import HostedVisionModel
 
         try:

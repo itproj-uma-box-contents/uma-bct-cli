@@ -186,9 +186,9 @@ photo. The CSV is sorted by `Unit Type` and `Unit Number`:
 
 ### Hosted model opt-in
 
-Set `UMA_BCT_API_KEY` and `UMA_BCT_API_MODEL` in the process environment to
-send sanitized detection and crop PNGs to a hosted vision model. A nonempty key
-is the explicit privacy opt-in: image pixels leave the workstation over HTTPS.
+Set `UMA_BCT_API_KEY` and `UMA_BCT_API_MODEL` in the process environment and
+pass `--hosted` to use a hosted vision model. The flag is the explicit privacy
+opt-in: sanitized detection and crop PNGs leave the workstation over HTTPS.
 Original photo files and EXIF metadata are not sent. Only direct OpenAI
 (`openai/`), Claude (`anthropic/`), and Gemini (`gemini/`) API origins are
 accepted. Confirm your organisation permits this disclosure and review the
@@ -196,10 +196,13 @@ chosen provider's data handling and charges before adding private photos.
 Never put a key in command arguments, a committed file, or a shell history line.
 
 For a direct CLI install, use `uv sync --locked --extra hosted` (or install
-`uma-bct-cli[hosted]`), then set the environment variables. For the supplied
-launcher, its verified dependencies already include the hosted client; set
-these variables in the launcher's environment before starting it. For example,
-in Bash:
+`uma-bct-cli[hosted]`), then set the environment variables and run
+`uv run --locked uma-bct --hosted --json --force`. The `uma-bct --hosted`
+flag selects the model; without it, local Qwen runs even when API variables
+are set.
+For the supplied launcher, its verified dependencies already include the hosted
+client; setting the key in the launcher's environment makes it pass `--hosted`
+to the CLI. For example, in Bash:
 
 ```bash
 export UMA_BCT_API_MODEL=anthropic/your-vision-model
@@ -213,8 +216,9 @@ sh run-uma-bct.sh
 On Windows PowerShell, set `$env:UMA_BCT_API_MODEL` and
 `$env:UMA_BCT_API_KEY` in the same terminal before running
 `./run-uma-bct.ps1`. An empty key keeps the local Qwen workflow even when a
-hosted model name is set. A nonempty key requires a provider-qualified model;
-`--model` remains a local Ollama option. Hosted setup checks the installed
+hosted model name is set. In direct CLI use, `--hosted` requires a nonempty key
+and a provider-qualified model; `--model` remains a local Ollama option.
+Hosted setup checks the installed
 client without making a paid API call, and the launcher does not start Ollama.
 The first image request verifies the key and model with the provider.
 
@@ -318,7 +322,7 @@ read -r -s UMA_BCT_API_KEY
 printf '\n'
 export UMA_BCT_API_KEY
 
-uv run --locked --extra hosted python - "$test_root" <<'PY'
+uv run --locked python - "$test_root" <<'PY'
 from pathlib import Path
 import sys
 from PIL import Image, ImageDraw, ImageFont
@@ -334,7 +338,7 @@ draw.text((280, 425), "Unit 4", font=font, fill="black")
 image.save(root / "synthetic-box.png")
 PY
 
-uv run --locked --extra hosted uma-bct --json \
+uv run --locked uma-bct --hosted --json \
   --path-to-inputs "$test_root/synthetic-box.png" \
   --path-to-outputs "$test_root/catalogue.csv" \
   --path-to-box-images "$test_root/crops"
@@ -360,7 +364,7 @@ uv sync --locked --extra hosted
 $env:UMA_BCT_API_MODEL = 'gemini/gemini-3.5-flash-lite'
 $secret = Read-Host 'Gemini API key' -AsSecureString
 $env:UMA_BCT_API_KEY = [System.Net.NetworkCredential]::new('', $secret).Password
-uv run --locked --extra hosted uma-bct --json `
+uv run --locked uma-bct --hosted --json `
   --path-to-inputs 'C:\path\to\invented-box.png' `
   --path-to-outputs 'C:\path\to\gemini-test.csv'
 ```
@@ -413,7 +417,7 @@ when inspecting raw transcription rows separately from gap suggestions.
 
 After a successful direct request, rerun the full CLI on one invented image and
 inspect the JSON summary and CSV. The `qwen` detector/transcriber names refer to
-the shared components; a configured hosted backend sends both stages
+the shared components; a selected hosted backend sends both stages
 to Gemini without contacting Ollama. Do not enable LiteLLM debug dumps for
 private photographs or keys. When finished:
 

@@ -694,6 +694,7 @@ try {
             $SetupLog = Join-Path $Runtime "setup.json"
             $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
                 " --results-directory " + (Quote-NativeArgument $Outputs)
+            if ($HostedMode) { $SetupArguments += " --hosted" }
             $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
             if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
@@ -715,6 +716,7 @@ try {
         # launcher opens Results only after that foreground run returns.
         $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
+        if ($HostedMode) { $Arguments += " --hosted" }
         $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location

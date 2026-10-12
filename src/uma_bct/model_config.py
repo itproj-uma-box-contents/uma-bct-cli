@@ -38,7 +38,7 @@ def selected_model_metadata(arguments: Any) -> dict[str, str]:
 
 
 def hosted_model_from_environment(environ: Mapping[str, str] | None = None) -> HostedModelConfig | None:
-    """An empty key selects local Qwen; a key requires a provider-qualified model."""
+    """Read hosted credentials when the CLI explicitly selects hosted mode."""
 
     values = os.environ if environ is None else environ
     api_key = values.get(API_KEY_ENVIRONMENT_VARIABLE, "").strip()

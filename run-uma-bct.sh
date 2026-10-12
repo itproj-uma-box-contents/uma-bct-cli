@@ -664,8 +664,10 @@ export UV_NO_CONFIG=1
 export OLLAMA_NO_CLOUD=1
 unset UMA_BCT_ALLOW_REMOTE_OLLAMA UMA_BCT_ALLOW_CONTAINER_OLLAMA 2>/dev/null || true
 HOSTED_MODE=0
+HOSTED_OPTION=
 if [ -n "$(printf '%s' "${UMA_BCT_API_KEY:-}" | tr -d '[:space:]')" ]; then
     HOSTED_MODE=1
+    HOSTED_OPTION=--hosted
     [ -n "$(printf '%s' "${UMA_BCT_API_MODEL:-}" | tr -d '[:space:]')" ] || \
         fail "UMA_BCT_API_MODEL is required when UMA_BCT_API_KEY is set."
 fi
@@ -715,7 +717,7 @@ if [ "$private_data_present" -eq 0 ]; then
     else
         printf 'Checking the application and model. The first model download is large...\n'
     fi
-    "$APP_CLI" setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" >"$RUNTIME/setup.json" &
+    "$APP_CLI" setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION >"$RUNTIME/setup.json" &
     APP_PID=$!
     if ! wait "$APP_PID"; then
         APP_PID=""
@@ -737,7 +739,7 @@ has_input_images || fail "No supported photos were found in $INPUTS"
 set +e
 # Leave the CLI attached to this terminal so progress stays on stderr and its
 # final readable report appears here before the Results folder opens.
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" &
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION &
 APP_PID=$!
 wait "$APP_PID"
 status=$?
