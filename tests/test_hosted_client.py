@@ -170,26 +170,33 @@ class HostedVisionModelTest(unittest.TestCase):
             self.assertIn(f"HTTP {status}", str(raised.exception))
             self.assertNotIn("secret-test-key", str(raised.exception))
 
-    def test_gemini_logprobs_rejection_still_transcribes_and_flags_review(self):
+    def test_hosted_logprobs_rejection_still_transcribes_and_flags_review(self):
         content = json.dumps({"boxes": [{
             "position": "left", "record_identifiers": ["1960.0009"], "unit": "4",
             "typed": ["1960.0009", "Unit 4"], "handwritten": [], "auxiliary_annotations": [],
         }]})
-        for message in ("Logprobs is not supported for this model.", "Logprobs is not enabled for this model."):
-            sdk = self.sdk(content, params=("response_format", "logprobs"))
-            sdk.completion.side_effect = [ProviderError(400, message), sdk.completion.return_value]
-            client = HostedVisionModel(HostedModelConfig(model="gemini/example", api_key="secret"))
-            box = make_box(image=make_image(self.image_path), crop_path=self.image_path)
-            with self.subTest(message=message), patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
-                record = QwenTextTranscriber(client).transcribe(box)[0]
-            self.assertEqual(record.unit_number, "4")
-            self.assertEqual(record.confidence, 0)
-            self.assertTrue(record.needs_review)
-            self.assertEqual(sdk.completion.call_count, 2)
-            first, second = (call.kwargs for call in sdk.completion.call_args_list)
-            self.assertTrue(first["logprobs"])
-            self.assertNotIn("logprobs", second)
-            self.assertEqual({key: value for key, value in first.items() if key != "logprobs"}, second)
+        for provider in PROVIDER_API_BASES:
+            for message in (
+                "Logprobs is not supported for this model.",
+                "Logprobs is not enabled for this model.",
+                "Unsupported parameter: 'logprobs' is not supported with this model.",
+            ):
+                sdk = self.sdk(content, params=("response_format", "logprobs"))
+                sdk.completion.side_effect = [ProviderError(400, message), sdk.completion.return_value]
+                client = HostedVisionModel(HostedModelConfig(model=f"{provider}/example", api_key="secret"))
+                box = make_box(image=make_image(self.image_path), crop_path=self.image_path)
+                with self.subTest(provider=provider, message=message), patch(
+                    "uma_bct.adapters.hosted_client._load_litellm", return_value=sdk
+                ):
+                    record = QwenTextTranscriber(client).transcribe(box)[0]
+                self.assertEqual(record.unit_number, "4")
+                self.assertEqual(record.confidence, 0)
+                self.assertTrue(record.needs_review)
+                self.assertEqual(sdk.completion.call_count, 2)
+                first, second = (call.kwargs for call in sdk.completion.call_args_list)
+                self.assertTrue(first["logprobs"])
+                self.assertNotIn("logprobs", second)
+                self.assertEqual({key: value for key, value in first.items() if key != "logprobs"}, second)
 
     def test_rejected_logprobs_retry_is_not_repeated(self):
         sdk = self.sdk(params=("response_format", "logprobs"))

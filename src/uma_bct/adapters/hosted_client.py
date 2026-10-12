@@ -51,7 +51,9 @@ def _logprobs_rejected(error: Exception) -> bool:
     """Inspect only to recognize an optional capability rejection; never log it."""
 
     return _http_status(error) == 400 and re.search(
-        r"logprobs\s+(?:is|are)\s+not\s+(?:supported|enabled)", str(error), re.IGNORECASE
+        r"\blogprobs\b.{0,80}\bnot\s+(?:supported|enabled)\b"
+        r"|\bunsupported\s+parameter\b.{0,80}\blogprobs\b",
+        str(error), re.IGNORECASE,
     ) is not None
 
 
@@ -211,7 +213,7 @@ class HostedVisionModel:
             except Exception as error:
                 # SDK capability lists describe parameter translation, not
                 # necessarily support by the selected model or account.
-                if self.config.provider == "gemini" and "logprobs" in arguments and _logprobs_rejected(error):
+                if "logprobs" in arguments and _logprobs_rejected(error):
                     arguments.pop("logprobs")
                     continue
                 if _http_status(error) in TRANSIENT_HTTP_STATUSES and server_retries < MAX_SERVER_RETRIES:
