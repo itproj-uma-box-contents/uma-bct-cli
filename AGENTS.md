@@ -26,7 +26,7 @@ do not copy it wholesale.
 Input/output validation -> model preflight -> box detection
   -> review crops -> transcription -> optional verification
   -> catalogue mapping -> sorting, flags, and missing-box suggestions
-  -> atomic catalogue, optional offline HTML review, and run details
+  -> atomic catalogue and run details
 ```
 
 - Qwen detection is primary; OpenCV is an experimental fallback. Use one
@@ -40,9 +40,9 @@ Input/output validation -> model preflight -> box detection
   outcome. Preserve `complete`, `partial`, and `failed` status. Publish usable
   rows from partial batches; zero-row batches publish failed run details only.
   Preserve completed batches and reviewer edits on later launches.
-- CSV is the default; Excel and HTML review require explicit CLI options.
-  Keep relative crop links portable
-  when a batch moves. Spreadsheet edits do not update the HTML snapshot.
+- CSV is the default; Excel requires an explicit CLI option.
+  Keep relative crop links portable when a batch moves. Legacy HTML metadata
+  must not block catalogue recovery or reuse; new runs do not generate HTML.
 - With `--json`, stdout contains one JSON summary; progress and warnings go to
   stderr. Unattended and JSON runs must never prompt.
 
@@ -77,7 +77,7 @@ Input/output validation -> model preflight -> box detection
 - Review every source photo for missed boxes and false detections, then every
   catalogue row against its crop. Unflagged rows and model agreement still need
   human review.
-- Keep catalogue and HTML flags consistent, including identity problems,
+- Keep catalogue flags consistent, including identity problems,
   transcription mismatches, fallbacks, duplicates, and verification outcomes.
 - `Low confidence` means strictly below 50% by default; exactly 50% is not low.
   `--min-transcription-confidence` accepts 0–100 and flags rather than removes
@@ -129,7 +129,7 @@ calls or model installation. Match checks to the change. For documentation-only
 edits, check content, links, and the diff. Behaviour changes need regression tests:
 
 - Catalogue/review: field mapping, flags, confidence boundaries, duplicate and
-  missing-box rows, Excel/CSV parity, formula/HTML safety, and portable crop links.
+  missing-box rows, Excel/CSV parity, formula safety, and portable crop links.
 - Pipeline/batches: per-photo failures, bounded recovery, verification disputes
   and deletions, interruption/resume, legacy checkpoints, source/crop integrity,
   model/options consistency, locks, publication recovery, and zero-row batches.
@@ -140,7 +140,7 @@ Before delivery, run the full suite and the
 [build/privacy checks](DEVELOPMENT.md#build-the-client-deliverables), including
 `uv build --no-build-isolation`. Install wheel and sdist outside the checkout;
 smoke-test `uma-bct --help`, `uma-bct --version`, and `python -m uma_bct --help`.
-Validate the CI platform matrix and synthetic browser/spreadsheet crop links,
+Validate the CI platform matrix and synthetic spreadsheet crop links,
 including moved batches and Unicode, spaces, `#`, and `%` filenames.
 Generate `client-constraints.txt` from `uv.lock`; never edit it by hand. Deliver
 `archive-box-transcription.zip`; publishing releases is deferred.

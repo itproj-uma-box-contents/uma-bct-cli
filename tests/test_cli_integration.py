@@ -107,7 +107,7 @@ def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool
 
 class CliIntegrationTest(unittest.TestCase):
     def command(self, root, *, optional_features=True):
-        options = ["--file-type", "excel", "--html-review", "--verification", "always"] if optional_features else []
+        options = ["--file-type", "excel", "--verification", "always"] if optional_features else []
         return [sys.executable, "-m", "uma_bct", "-i", str(root / "inputs"),
                 "--results-directory", str(root / "results"), *options, "--json"]
 
@@ -137,7 +137,7 @@ class CliIntegrationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             summary = json.loads(result.stdout)
             self.assertEqual(Path(summary["catalogue_output"]).suffix, ".csv")
-            self.assertIsNone(summary["review_output"])
+            self.assertNotIn("review_output", summary)
             self.assertEqual(counts["detection"], 1)
             self.assertEqual(counts["first"], 1)
             self.assertEqual(counts["second"], 0)
@@ -159,7 +159,7 @@ class CliIntegrationTest(unittest.TestCase):
                 self.assertEqual(rows[1][1], "0005")
                 self.assertIn("Verification discrepancy", rows[1][5])
                 self.assertIn("G2", links)
-                self.assertTrue(Path(first["review_output"]).is_file())
+                self.assertFalse((Path(first["batch_directory"]) / "Review.html").exists())
                 second = self.run_cli(root, endpoint)
                 self.assertEqual(second["images_total"], 1)
                 self.assertNotEqual(first["batch_directory"], second["batch_directory"])

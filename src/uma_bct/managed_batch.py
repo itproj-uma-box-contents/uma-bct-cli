@@ -36,7 +36,6 @@ from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
-from .review_export import export_review, render_review
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
 from .util.date_util import deserialize_dates
@@ -45,8 +44,6 @@ from .verification import choose_verification, configured_mode, verify_image
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
 CATALOGUE_FILE_NAME = "Catalogue.csv"
-REVIEW_FILE_NAME = "Review.html"
-PENDING_REVIEW_NAME = ".uma-bct-review-pending.html"
 BOX_IMAGES_DIRECTORY_NAME = "Box Images"
 WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
@@ -572,7 +569,6 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "batch_directory": str(batch_directory),
         "configuration": semantic_configuration(arguments, request_timeout),
         "file_type": getattr(arguments, "file_type", None) or "csv",
-        "html_review": bool(getattr(arguments, "html_review", False)),
         "input_directory": str(arguments.path_to_inputs),
         "input_snapshot": snapshot_signature(snapshot),
         "inputs": inputs,
@@ -651,8 +647,6 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         requested_format = getattr(arguments, "file_type", None)
         if requested_format is not None and requested_format != progress.get("file_type", "csv"):
             raise ManagedBatchSelectionError(batch_directory, "Cannot change catalogue format in an unfinished batch.")
-        if getattr(arguments, "html_review", False) and not progress.get("html_review", True):
-            raise ManagedBatchSelectionError(batch_directory, "Cannot change HTML review output in an unfinished batch.")
         expected_snapshot = progress.get("input_snapshot")
         original_snapshot = batch_snapshot(expected_snapshot, snapshot) if isinstance(expected_snapshot, list) else []
         if not isinstance(expected_snapshot, list) or not same_snapshot(expected_snapshot, original_snapshot):
@@ -955,8 +949,6 @@ def validate_batch_entries(batch_directory: Path) -> None:
         *PENDING_CATALOGUE_NAMES,
         CATALOGUE_FILE_NAME,
         "Catalogue.xlsx",
-        REVIEW_FILE_NAME,
-        PENDING_REVIEW_NAME,
     }
     # Reviewers may save corrected catalogues or notes beside our outputs.
     # Only application-owned paths participate in recovery and publication.
@@ -986,7 +978,7 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
         generated_temporary = path.name.startswith(".uma-bct-json-") and path.name.endswith(".tmp")
         generated_review = path.name.startswith(".uma-bct-review-") and path.name.endswith(".tmp")
         generated_catalogue = path.name.startswith(".uma-bct-catalogue-") and path.name not in PENDING_CATALOGUE_NAMES
-        if path.name in {*PENDING_CATALOGUE_NAMES, PENDING_REVIEW_NAME} and not preserve_pending:
+        if path.name in PENDING_CATALOGUE_NAMES and not preserve_pending:
             raise ManagedBatchError(f"Unexpected pending catalogue in managed batch: {path}")
         if not (generated_temporary or generated_catalogue or generated_review):
             continue
@@ -999,6 +991,9 @@ def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
 
     # A terminal photo is trusted only with matching crop hashes and result
     # paths. Its work directory can then be removed without touching evidence.
+    progress.pop("html_review", None)
+    progress.get("publication", {}).pop("review", None)
+    progress.pop("review_output", None)
     reused = 0
     committed_paths: set[Path] = set()
     for item in progress["inputs"]:
@@ -1481,9 +1476,6 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         if path_entry_exists(batch_directory / name):
             raise ManagedBatchError(f"Completed batch still contains a pending catalogue: {batch_directory / name}")
     if record_count == 0:
-        for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
-            if path_entry_exists(batch_directory / name):
-                raise ManagedBatchError(f"Zero-row batch unexpectedly contains review output: {batch_directory / name}")
         if path_entry_exists(catalogue):
             raise ManagedBatchError(f"Zero-row completed batch unexpectedly contains a catalogue: {catalogue}")
         if publication.get("phase") != "not_published" or publication.get("record_count") != 0:
@@ -1497,9 +1489,6 @@ def validate_completed_catalogue(details: dict[str, Any], batch_directory: Path)
         or not isinstance(digest, str)
     ):
         raise ManagedBatchError(f"Published catalogue metadata is invalid in {batch_directory}")
-    if review := publication.get("review"):
-        if file_digest(batch_directory / REVIEW_FILE_NAME, "Published review") != review.get("sha256"):
-            raise ManagedBatchError(f"Published review changed after completion: {batch_directory / REVIEW_FILE_NAME}")
     actual = fingerprint_file(catalogue, "Published catalogue")
     if actual["size"] == 0:
         raise ManagedBatchError(f"Published catalogue is empty: {catalogue}")
@@ -1569,26 +1558,6 @@ def stage_catalogue(
             output_columns=columns,
         )
     publication["output_columns"] = list(columns)
-    review_pending = batch_directory / PENDING_REVIEW_NAME
-    if progress.get("html_review", True):
-        review_options = {"catalogue_path": batch_directory / catalogue_file_name(progress),
-                          "minimum_confidence": arguments.min_transcription_confidence,
-                          "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
-                          "output_columns": columns}
-        expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
-        if not path_entry_exists(review_pending):
-            export_review(results, review_pending, **review_options)
-        actual_review = file_digest(review_pending, "Pending review")
-        if actual_review != expected_review and len(columns) > 7:
-            # Earlier date layouts must still match every committed row and link.
-            expected_review = hashlib.sha256(
-                render_review(results, **review_options, legacy_date_layout=True).encode("utf-8")
-            ).hexdigest()
-        if actual_review != expected_review:
-            raise ManagedBatchError(f"Pending review does not match committed results: {review_pending}")
-        publication["review"] = {"sha256": expected_review}
-    elif publication.get("review") is not None or path_entry_exists(review_pending):
-        raise ManagedBatchError(f"Unexpected pending review when HTML output was not requested: {review_pending}")
     digest = file_digest(pending, "Pending catalogue")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
@@ -1622,24 +1591,6 @@ def publish_recorded_catalogue(progress: dict[str, Any], batch_directory: Path) 
         rename_new_file(pending, catalogue, existing_message=f"Catalogue already exists: {catalogue}")
     if file_digest(catalogue, "Published catalogue") != digest:
         raise ManagedBatchError(f"Published catalogue changed during publication: {catalogue}")
-    review = publication.get("review")
-    if review is not None:
-        pending_review = batch_directory / PENDING_REVIEW_NAME
-        destination = batch_directory / REVIEW_FILE_NAME
-        expected = review["sha256"]
-        if path_entry_exists(destination):
-            if file_digest(destination, "Published review") != expected:
-                raise ManagedBatchError(f"Published review does not match its checkpoint: {destination}")
-            if path_entry_exists(pending_review):
-                if file_digest(pending_review, "Pending review") != expected:
-                    raise ManagedBatchError(f"Pending review changed: {pending_review}")
-                pending_review.unlink()
-        else:
-            if file_digest(pending_review, "Pending review") != expected:
-                raise ManagedBatchError(f"Pending review changed: {pending_review}")
-            rename_new_file(pending_review, destination, existing_message=f"Review already exists: {destination}")
-        if file_digest(destination, "Published review") != expected:
-            raise ManagedBatchError(f"Published review changed: {destination}")
     return record_count, digest
 
 
@@ -1696,7 +1647,6 @@ def details_payload(
         "batch_directory": str(batch_directory),
         "configuration": progress["configuration"],
         "file_type": progress.get("file_type", "csv"),
-        "html_review": progress.get("html_review", True),
         "verification": progress.get("verification", {"mode": "never", "decision": False}),
         "locations": {
             "input": progress["input_directory"],
@@ -1715,7 +1665,6 @@ def details_payload(
         "images": [result.to_dict() for result in results],
         "failures": failures,
         "failure_count": len(failures),
-        "review_output": str(batch_directory / REVIEW_FILE_NAME) if progress["publication"].get("review") else None,
         "catalogue_output": str(catalogue) if record_count else None,
         "catalogue_records": record_count,
         "run_manifest": str(batch_directory / DETAILS_FILE_NAME),
@@ -1773,9 +1722,6 @@ def finalize_batch(arguments: argparse.Namespace, progress: dict[str, Any],
         for name in (CATALOGUE_FILE_NAME, "Catalogue.xlsx"):
             if path_entry_exists(batch_directory / name):
                 raise ManagedBatchError(f"A zero-row batch has an unexpected catalogue: {batch_directory / name}")
-        for name in (REVIEW_FILE_NAME, PENDING_REVIEW_NAME):
-            if path_entry_exists(batch_directory / name):
-                raise ManagedBatchError(f"A zero-row batch has unexpected review output: {batch_directory / name}")
         progress["publication"] = {"phase": "not_published", "record_count": 0}
         progress["catalogue_output"] = None
         progress["catalogue_records"] = 0
@@ -1891,8 +1837,6 @@ def managed_public_summary(value: dict[str, Any], *, batch_directory: Path | Non
         "images_complete": states.count("complete"),
         "images_partial": states.count("partial"),
         "images_failed": states.count("failed"),
-        "review_output": (str(batch_directory / REVIEW_FILE_NAME) if batch_directory
-                          and value.get("publication", {}).get("review") and trust_catalogue_output else None),
         "catalogue_output": catalogue_output,
         "catalogue_records": record_count,
         "failure_count": counted_failures,
@@ -1980,7 +1924,6 @@ def completed_history_summary(completed: list[tuple[Path, dict[str, Any]]],
     summary["catalogue_record_counts"] = {
         item["catalogue_output"]: item["catalogue_records"] for item in summaries if item["catalogue_output"]
     }
-    summary["review_outputs"] = [item["review_output"] for item in summaries if item["review_output"]]
     summary["batch_directories"] = [item["batch_directory"] for item in summaries]
     summary["run_manifests"] = [item["run_manifest"] for item in summaries]
     if len(summaries) > 1:
@@ -1990,7 +1933,7 @@ def completed_history_summary(completed: list[tuple[Path, dict[str, Any]]],
         summary["status"] = ("failed" if not summary["current_input_records"] else
                              "partial" if any(item["status"] != "complete" for item in summaries) else "complete")
         summary["catalogue_modified"] = any(item["catalogue_modified"] for item in summaries)
-        for field in ("catalogue_output", "review_output", "batch_directory", "run_manifest"):
+        for field in ("catalogue_output", "batch_directory", "run_manifest"):
             summary[field] = None
         if len({item["model"] for item in summaries}) > 1:
             summary["model"] = None

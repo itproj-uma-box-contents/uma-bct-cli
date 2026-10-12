@@ -92,7 +92,6 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         "--file-type", type=str.casefold, choices=("excel", "csv"), default=None,
         help="catalogue format (default: CSV, or the explicit output filename's extension)",
     )
-    parser.add_argument("--html-review", action="store_true", help="also write an offline HTML review with crop-image links")
     parser.add_argument(
         "-b",
         "--path-to-box-images",
@@ -372,18 +371,13 @@ def main(argv: list[str] | None = None) -> int:
     crop_root = arguments.path_to_box_images or output_path.parent / "crops"
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
-    review_path = output_path.with_suffix(".review.html")
-    output_paths = (output_path, run_manifest) + ((review_path,) if arguments.html_review else ())
+    output_paths = (output_path, run_manifest)
     # Check every output before reading photos or starting the model.
     try:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
         validate_output_target(run_manifest, directory=False, purpose="Run manifest")
-        if arguments.html_review:
-            validate_output_target(review_path, directory=False, purpose="Review output")
         validate_output_target(crop_root, directory=True, purpose="Review-crop root")
         validate_output_layout(output_path, run_manifest, crop_root)
-        if arguments.html_review:
-            validate_output_layout(review_path, run_manifest, crop_root)
         images = discover_images(arguments.path_to_inputs)
     except ValueError as error:
         parser.error(str(error))

@@ -62,7 +62,6 @@ class TerminalProgressTest(unittest.TestCase):
             "catalogue_records": 2, "current_input_records": 1, "catalogue_output": None,
             "catalogue_outputs": ["/results/second/Catalogue.csv"],
             "batch_directories": ["/results/second", "/results/first"],
-            "review_outputs": ["/results/second/Review.html"],
             "run_manifests": ["/results/second/Run Details.json", "/results/first/Run Details.json"],
         }
         report = human_summary(summary, elapsed_seconds=1)
@@ -71,15 +70,15 @@ class TerminalProgressTest(unittest.TestCase):
         self.assertIn("Catalogue: 2 recorded rows", report)
         self.assertIn("Transcribed boxes in current photos: 1", report)
         self.assertNotIn("Catalogue: not created", report)
-        for path in (*summary["catalogue_outputs"], *summary["review_outputs"], *summary["run_manifests"]):
+        for path in (*summary["catalogue_outputs"], *summary["run_manifests"]):
             self.assertIn(path, report)
 
     def test_recovery_report_lists_only_retained_recovery_files(self):
         summary = {"status": "partial", "catalogue_output": None, "catalogue_records": 0,
-                   "recovery_path": "/results/old-review.html",
-                   "recovery_paths": ["/results/old-review.html"]}
+                   "recovery_path": "/results/old-catalogue.csv",
+                   "recovery_paths": ["/results/old-catalogue.csv"]}
         report = human_summary(summary, elapsed_seconds=1)
-        self.assertIn("Recovery file: /results/old-review.html", report)
+        self.assertIn("Recovery file: /results/old-catalogue.csv", report)
         self.assertEqual(report.count("Recovery file:"), 1)
         self.assertIn("Catalogue: not created", report)
 

@@ -1,7 +1,6 @@
 import argparse
 import contextlib
 import csv
-import hashlib
 import io
 import json
 import os
@@ -45,12 +44,11 @@ from uma_bct.managed_batch import (
     serialize_result,
 )
 from uma_bct.pipeline import ImageResult
-from uma_bct.review_export import export_review
 from uma_bct.util.date_util import Date, DateRange
 
 
 def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True,
-                      file_type: str | None = "csv", html_review: bool = True) -> argparse.Namespace:
+                      file_type: str | None = "csv") -> argparse.Namespace:
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -67,7 +65,6 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
         reprocess=reprocess,
         detect_missing_boxes=detect_missing_boxes,
         file_type=file_type,
-        html_review=html_review,
         json=True,
     )
 
@@ -128,12 +125,11 @@ class ManagedBatchTest(unittest.TestCase):
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         file_type: str | None = "csv",
         date_detector: str = "none",
-        html_review: bool = True,
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes,
-                                      file_type=file_type, html_review=html_review)
+                                      file_type=file_type)
         arguments.verification = verification
         arguments.date_detector = date_detector
         arguments.min_transcription_confidence = min_transcription_confidence
@@ -186,7 +182,7 @@ class ManagedBatchTest(unittest.TestCase):
         with self.prepared_root("01.jpg") as root:
             status, interrupted, _ = self.run_managed_batch_and_capture_output(
                 root, ManagedPipeline(), file_type="excel",
-                patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
+                patches=(patch("uma_bct.managed_batch.file_digest", side_effect=KeyboardInterrupt),),
             )
             self.assertEqual(status, 130)
             batch = Path(interrupted["batch_directory"])
@@ -203,29 +199,15 @@ class ManagedBatchTest(unittest.TestCase):
         with self.prepared_root("01.jpg") as root:
             pipeline = ManagedPipeline()
             pipeline.transcriber = Mock()
-            with patch("uma_bct.managed_batch.export_review", side_effect=AssertionError("HTML was not requested")):
-                status, summary, stderr = self.run_managed_batch_and_capture_output(
-                    root, pipeline, file_type=None, html_review=False,
-                )
+            status, summary, stderr = self.run_managed_batch_and_capture_output(
+                root, pipeline, file_type=None,
+            )
             self.assertEqual(status, 0, stderr)
             self.assertEqual(Path(summary["catalogue_output"]).name, "Catalogue.csv")
-            self.assertIsNone(summary["review_output"])
+            self.assertNotIn("review_output", summary)
             self.assertFalse((Path(summary["batch_directory"]) / "Review.html").exists())
             pipeline.transcriber.verify.assert_not_called()
 
-    def test_html_cannot_be_added_to_an_unfinished_batch_without_requesting_it_initially(self):
-        with self.prepared_root("01.jpg", "02.jpg") as root:
-            _, interrupted, _ = self.run_managed_batch_and_capture_output(
-                root, ManagedPipeline(interrupt_name="02.jpg"), html_review=False,
-            )
-            progress_path = Path(interrupted["batch_directory"]) / PROGRESS_FILE_NAME
-            saved = progress_path.read_bytes()
-            pipeline = ManagedPipeline()
-            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, html_review=True)
-            self.assertEqual(status, 2)
-            self.assertIn("Cannot change HTML review output", stderr)
-            self.assertEqual(pipeline.calls, [])
-            self.assertEqual(progress_path.read_bytes(), saved)
 
     def test_explicit_format_change_blocks_resume_before_model_work(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
@@ -246,7 +228,7 @@ class ManagedBatchTest(unittest.TestCase):
             with self.subTest(file_type=file_type), self.prepared_root("01.jpg") as root:
                 _, interrupted, _ = self.run_managed_batch_and_capture_output(
                     root, ManagedPipeline(), file_type=file_type,
-                    patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
+                    patches=(patch("uma_bct.managed_batch.file_digest", side_effect=KeyboardInterrupt),),
                 )
                 batch = Path(interrupted["batch_directory"])
                 progress = batch / PROGRESS_FILE_NAME
@@ -277,7 +259,7 @@ class ManagedBatchTest(unittest.TestCase):
             progress_path = batch / PROGRESS_FILE_NAME
             progress = read_json_file(progress_path, "Run progress")
             progress.pop("file_type")
-            progress.pop("html_review")
+            progress.pop("html_review", None)
             progress["configuration"].pop("date_detector")
             for item in progress["inputs"]:
                 item["result"].pop("date_detector")
@@ -303,7 +285,7 @@ class ManagedBatchTest(unittest.TestCase):
 
                 _, interrupted, _ = self.run_managed_batch_and_capture_output(
                     root, ManagedPipeline(), file_type=file_type,
-                    patches=(patch("uma_bct.managed_batch.export_review", side_effect=stop_review),),
+                    patches=(patch("uma_bct.managed_batch.file_digest", side_effect=stop_review),),
                 )
                 batch = Path(interrupted["batch_directory"])
                 progress_path = batch / PROGRESS_FILE_NAME
@@ -323,12 +305,6 @@ class ManagedBatchTest(unittest.TestCase):
                 pending = batch / progress["publication"]["pending_catalogue"]
                 export_catalogue(results, pending, output_columns=columns, trusted_crop_links=True)
                 catalogue_bytes = pending.read_bytes()
-                review_bytes = None
-                if date_detector == "none":
-                    review = batch / ".uma-bct-review-pending.html"
-                    suffix = "xlsx" if file_type == "excel" else "csv"
-                    export_review(results, review, catalogue_path=batch / f"Catalogue.{suffix}", output_columns=columns)
-                    review_bytes = review.read_bytes()
                 # An omitted CLI option keeps the original extraction method on resume.
                 arguments = managed_arguments(root, file_type=file_type)
                 arguments.date_detector = "regex"
@@ -340,8 +316,6 @@ class ManagedBatchTest(unittest.TestCase):
                 self.assertEqual(status, 0, stderr.getvalue())
                 summary = json.loads(stdout.getvalue())
                 self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), catalogue_bytes)
-                if review_bytes is not None:
-                    self.assertEqual(Path(summary["review_output"]).read_bytes(), review_bytes)
                 self.assertEqual(arguments.date_detector, date_detector)
 
     def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
@@ -358,42 +332,6 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(pipeline.calls, [])
             self.assertEqual((batch / PROGRESS_FILE_NAME).read_bytes(), original_progress)
 
-    def test_staged_date_review_recovers_earlier_widths_and_rejects_tampering(self):
-        for columns in (DATE_OUTPUT_COLUMNS, OUTPUT_COLUMNS):
-            for tampered in (False, True):
-                with self.subTest(columns=columns, tampered=tampered), self.prepared_root("01.jpg") as root:
-                    _, interrupted, _ = self.run_managed_batch_and_capture_output(
-                        root, ManagedPipeline(),
-                        patches=(patch("uma_bct.managed_batch.export_review", side_effect=KeyboardInterrupt),),
-                    )
-                    batch = Path(interrupted["batch_directory"])
-                    progress_path = batch / PROGRESS_FILE_NAME
-                    progress = read_json_file(progress_path, "Run progress")
-                    progress["publication"]["output_columns"] = columns
-                    results = [deserialize_result(item["result"], batch) for item in progress["inputs"]]
-                    pending = batch / progress["publication"]["pending_catalogue"]
-                    export_catalogue(results, pending, output_columns=columns, trusted_crop_links=True)
-                    review_pending = batch / ".uma-bct-review-pending.html"
-                    export_review(results, review_pending, catalogue_path=batch / "Catalogue.csv",
-                                  output_columns=columns, legacy_date_layout=True)
-                    original_bytes = review_pending.read_bytes()
-                    if tampered:
-                        review_pending.write_bytes(original_bytes.replace(b"Archive box catalogue", b"Archive box catalogs", 1))
-                    progress_path.write_text(json.dumps(progress), encoding="utf-8")
-                    model = Mock(side_effect=AssertionError("must not load"))
-                    status, summary, stderr = self.run_managed_batch_and_capture_output(
-                        root, ManagedPipeline(), patches=(patch("uma_bct.managed_batch.build_pipeline", model),),
-                    )
-                    model.assert_not_called()
-                    if tampered:
-                        self.assertEqual(status, 2)
-                        self.assertIn("Pending review does not match committed results", stderr)
-                        self.assertFalse((batch / "Review.html").exists())
-                    else:
-                        self.assertEqual(status, 0, stderr)
-                        self.assertEqual(Path(summary["review_output"]).read_bytes(), original_bytes)
-                        details = read_json_file(Path(summary["run_manifest"]), "Run details")
-                        self.assertEqual(details["publication"]["review"]["sha256"], hashlib.sha256(original_bytes).hexdigest())
 
     def test_added_photo_during_run_is_deferred_and_only_it_runs_next_time(self):
         class AddingPipeline(ManagedPipeline):
@@ -476,7 +414,7 @@ class ManagedBatchTest(unittest.TestCase):
                         expected.append(second["catalogue_output"])
                         self.assertIsNone(summary["catalogue_output"])
                         self.assertIsNone(summary["run_manifest"])
-                        self.assertEqual(len(summary["review_outputs"]), 2)
+                        self.assertNotIn("review_outputs", summary)
                     else:
                         self.assertEqual(summary["catalogue_output"], first["catalogue_output"])
                         self.assertEqual(summary["batch_directory"], first["batch_directory"])
@@ -571,7 +509,7 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(resumed.calls, [])
             self.assertEqual(resumed.transcriber.verify.call_count, 1)
-            self.assertTrue(progress_path.with_name("Review.html").is_file())
+            self.assertFalse(progress_path.with_name("Review.html").exists())
 
     def test_cached_verification_readings_finalize_without_model_preflight(self):
         from uma_bct.managed_batch import write_progress
@@ -618,7 +556,7 @@ class ManagedBatchTest(unittest.TestCase):
                 self.assertEqual(len(details["endpoint_history"]), 1)
                 audit = details["inputs"][0]["result"]["records"][0]["verification"]
                 self.assertEqual(audit["status"], "complete")
-                self.assertTrue((batch / "Review.html").is_file())
+                self.assertFalse((batch / "Review.html").exists())
                 with (batch / CATALOGUE_FILE_NAME).open(newline="", encoding="utf-8") as source:
                     row = next(csv.DictReader(source))
                 self.assertEqual(row["Description"], "; ".join(handwriting))
@@ -648,28 +586,6 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(audit["status"], "pending")
             self.assertFalse((batch / DETAILS_FILE_NAME).exists())
 
-    def test_html_publication_interruption_finishes_without_model_work(self):
-        from uma_bct.atomic import rename_new_file
-
-        def interrupt_html(source, destination, **kwargs):
-            if destination.name == "Review.html":
-                raise KeyboardInterrupt
-            return rename_new_file(source, destination, **kwargs)
-
-        with self.prepared_root("01.jpg") as root:
-            with patch("uma_bct.managed_batch.rename_new_file", side_effect=interrupt_html):
-                status, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
-            self.assertEqual(status, 130)
-            batch = Path(summary["batch_directory"])
-            self.assertTrue((batch / "Catalogue.csv").is_file())
-            self.assertFalse((batch / "Review.html").exists())
-            args = managed_arguments(root)
-            with patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("no inference needed")), \
-                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                status = run_managed_batch(args, sorted(args.path_to_inputs.glob("*.jpg")), args.results_directory)
-            self.assertEqual(status, 0)
-            self.assertTrue((batch / "Review.html").is_file())
-            self.assertFalse((batch / "Run Progress.json").exists())
 
     def test_added_photo_is_not_read_at_publication(self):
         class AddingPipeline(ManagedPipeline):
@@ -689,7 +605,7 @@ class ManagedBatchTest(unittest.TestCase):
             status, _, _ = self.run_managed_batch_and_capture_output(root, AddingPipeline())
             self.assertEqual(status, 0)
 
-    def test_zero_row_batch_preserves_and_rejects_unknown_html(self):
+    def test_zero_row_batch_preserves_unrelated_html(self):
         class FailedPipeline(ManagedPipeline):
             def process(self, path):
                 (self.work_directory.parents[1] / "Review.html").write_text("unexpected review")
@@ -697,10 +613,10 @@ class ManagedBatchTest(unittest.TestCase):
 
         with self.prepared_root("01.jpg") as root:
             status, summary, _ = self.run_managed_batch_and_capture_output(root, FailedPipeline(failed_names=("01.jpg",)))
-            self.assertEqual(status, 2)
+            self.assertEqual(status, 1)
             batch = Path(summary["batch_directory"])
             self.assertEqual((batch / "Review.html").read_text(), "unexpected review")
-            self.assertFalse((batch / "Run Details.json").exists())
+            self.assertTrue((batch / "Run Details.json").exists())
 
     def test_managed_catalogue_honours_missing_box_option(self):
         class GapPipeline(ManagedPipeline):
@@ -1566,6 +1482,58 @@ class ManagedBatchTest(unittest.TestCase):
 
         for result in results:
             self.assertEqual(result, deserialize_result(serialize_result(result, batch_dir), batch_dir))
+
+
+    def test_legacy_html_metadata_does_not_block_offline_publication(self):
+        for phase in ("staging", "publishing", "finalizing"):
+            with self.subTest(phase=phase), self.prepared_root("01.jpg") as root:
+                def interrupt(path, progress, phase=phase):
+                    from uma_bct.managed_batch import write_progress
+                    write_progress(path, progress)
+                    if progress.get("phase") == phase:
+                        raise KeyboardInterrupt
+
+                _, summary, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(), patches=(patch("uma_bct.managed_batch.write_progress", side_effect=interrupt),),
+                )
+                batch = Path(summary["batch_directory"])
+                progress_path = batch / PROGRESS_FILE_NAME
+                progress = json.loads(progress_path.read_text())
+                progress["html_review"] = True
+                progress["publication"]["review"] = {"sha256": "former-html-digest"}
+                progress["review_output"] = str(batch / "Review.html")
+                progress_path.write_text(json.dumps(progress))
+                with patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("must remain offline")):
+                    status, resumed, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+                self.assertEqual(status, 0, stderr)
+                self.assertNotIn("review_output", resumed)
+                self.assertFalse((batch / "Review.html").exists())
+                details = json.loads((batch / DETAILS_FILE_NAME).read_text())
+                self.assertNotIn("review", details["publication"])
+                self.assertNotIn("html_review", details)
+
+    def test_completed_legacy_html_batch_preserves_metadata_and_reviewer_edits(self):
+        with self.prepared_root("01.jpg") as root:
+            _, summary, _ = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            batch = Path(summary["batch_directory"])
+            details_path = batch / DETAILS_FILE_NAME
+            details = json.loads(details_path.read_text())
+            details["html_review"] = True
+            details["publication"]["review"] = {"sha256": "former-html-digest"}
+            details["review_output"] = str(batch / "Review.html")
+            details_path.write_text(json.dumps(details))
+            original = details_path.read_bytes()
+            catalogue = Path(summary["catalogue_output"])
+            catalogue.write_text("reviewer corrected catalogue")
+            with patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("must remain offline")):
+                status, saved, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(saved["already_complete"])
+            self.assertTrue(saved["catalogue_modified"])
+            self.assertNotIn("review_output", saved)
+            self.assertNotIn("review_outputs", saved)
+            self.assertEqual(details_path.read_bytes(), original)
+            self.assertEqual(catalogue.read_text(), "reviewer corrected catalogue")
 
 
 if __name__ == "__main__":

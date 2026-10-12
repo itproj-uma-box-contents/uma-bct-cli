@@ -65,8 +65,8 @@ uv run uma-bct
 ```
 
 The defaults are `inputs/`, `outputs/catalogue.csv`, and
-`outputs/crops/`. Use `--file-type excel` for Excel, `--html-review` for an
-offline HTML review page, and `--verification always` for the optional second
+`outputs/crops/`. Use `--file-type excel` for Excel and
+`--verification always` for the optional second
 reading within the same run. These features require explicit CLI options. Existing input,
 output, crop, detector, model, confidence, timeout, and force options remain
 available through `--help`. The legacy `--min-confidence` option and its
@@ -77,6 +77,11 @@ Interactive progress is refreshed in place on stderr; captured stderr gets
 short milestones. Transcription runs end with a readable report by default;
 `--json` selects one JSON object for scripts. Setup keeps its existing JSON
 result. The CLI requests an idle-sleep inhibitor while setup or a run is active.
+Power-control failures do not change transcription status. Stderr includes the
+failing operation, available native error details, and Linux helper error output
+and exit codes. Linux readiness waits and helper cleanup are bounded; unexpected
+helper exit is reported while processing continues. No administrator prompt or
+persistent diagnostic file is added.
 
 The additive managed workflow is selected with `--results-directory`. It owns
 readable `Batch YYYY-MM-DD HH-MM-SS` folders, checkpoints each source photo,
@@ -234,10 +239,10 @@ exit-code propagation, and owned-process cleanup without using a real model.
 Managed-batch changes require interruption/resume, input and crop integrity,
 publication recovery, formula-safety, naming-collision, and zero-row tests.
 
-Before release, open synthetic HTML reviews in browsers on macOS, Windows, and
-Linux. Confirm crop links with Unicode, spaces, `#`, and `%`, including after
-moving the batch folder. Test CSV imports in Excel and LibreOffice separately;
-Numbers users should use HTML for local crop links. Never upload private photos
+Before release, confirm synthetic spreadsheet crop links on macOS, Windows, and
+Linux with Unicode, spaces, `#`, and `%`, including after moving the batch folder.
+Test CSV imports in Excel and LibreOffice separately; Numbers users should open
+the named crops directly from `Box Images`. Never upload private photos
 for browser tests or run model inference on hosted CI.
 
 ## Verification and local accuracy references
@@ -250,14 +255,16 @@ first reading and flags partial processing. Application version/model identity
 checks still protect resumed inference. Publication-only recovery does not load
 Ollama. Cached second and third readings also reconcile without loading a model;
 model identity is checked lazily before a missing reading. Existing records without
-verification or HTML fields remain readable.
+verification fields remain readable. Legacy HTML metadata is tolerated but no
+longer creates publication or integrity requirements.
+New runs do not generate HTML outputs; completed manifests are preserved.
 
 Managed history uses source directory, filename, and content fingerprint; it does
 not deduplicate separate filenames by pixel content. The active snapshot excludes
 later additions. Completed CSV edits and reviewer files are preserved, while
 application-owned manifests, crops, and in-progress publications remain validated.
 Already-completed summaries aggregate the newest applicable outcomes for each
-current input. `catalogue_outputs`, `review_outputs`, and `run_manifests` list all
+current input. `catalogue_outputs` and `run_manifests` list all
 contributing results; singular paths remain populated for one contributing batch.
 `catalogue_records` and `catalogue_record_counts` retain recorded publication row
 counts. `current_input_records` counts saved physical-box rows for only current

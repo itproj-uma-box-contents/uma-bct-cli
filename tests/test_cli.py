@@ -62,7 +62,7 @@ class FakeBatchPipeline:
         return make_result(BoxResult(box, make_transcription(box)))
 
 
-def arguments(root: Path, *, force=False, file_type="csv", html_review=True):
+def arguments(root: Path, *, force=False, file_type="csv"):
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
@@ -75,7 +75,6 @@ def arguments(root: Path, *, force=False, file_type="csv", html_review=True):
         path_to_outputs=root / ("outputs/catalogue.xlsx" if file_type == "excel" else "outputs/catalogue.csv"),
         path_to_box_images=root / "outputs/crops",
         force=force,
-        html_review=html_review,
         json=True,
     )
 
@@ -86,7 +85,7 @@ class CliTest(unittest.TestCase):
         aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
-        self.assertFalse(defaults.html_review)
+        self.assertFalse(hasattr(defaults, "html_review"))
         self.assertEqual(defaults.min_detector_confidence, 0.6)
         self.assertEqual(defaults.min_transcription_confidence, 50)
         self.assertTrue(defaults.detect_missing_boxes)
@@ -363,8 +362,8 @@ class CliTest(unittest.TestCase):
         ):
             with self.subTest(options=options):
                 self.assertEqual(parse_args(options).path_to_outputs, Path(expected))
-        self.assertTrue(parse_args(["--html-review"]).html_review)
         for options in (
+            ["--html-review"],
             ["-o", "catalogue.pdf"],
             ["-o", "catalogue.xlsx", "--file-type", "csv"],
             ["-o", "catalogue.csv", "--file-type", "excel"],
@@ -477,11 +476,10 @@ class CliTest(unittest.TestCase):
 
 
 class BatchRunnerTest(unittest.TestCase):
-    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False, file_type="csv",
-                                     html_review=True):
+    def run_batch_and_capture_output(self, root, pipeline, images, *, force=False, preserve=False, file_type="csv"):
         """Keep JSON stdout separate from progress and warnings on stderr."""
 
-        args = arguments(root, force=force, file_type=file_type, html_review=html_review)
+        args = arguments(root, force=force, file_type=file_type)
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
@@ -686,7 +684,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertTrue(lock_path.exists())
             pipeline_builder.assert_not_called()
 
-    def test_manifest_failure_restores_previous_html_as_well_as_csv(self):
+    def test_manifest_failure_preserves_legacy_html_and_restores_csv(self):
         with temporary_root() as root:
             outputs, catalogue, manifest = self.prepare_outputs(root)
             review = outputs / "catalogue.review.html"
@@ -699,71 +697,21 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(review.read_text(), "previous review")
             self.assertNotIn("review_output", summary)
 
-    def test_html_is_optional_and_a_forced_csv_run_preserves_existing_review(self):
+    def test_forced_csv_run_preserves_existing_legacy_html(self):
         with temporary_root() as root:
             outputs, catalogue, _ = self.prepare_outputs(root)
             review = outputs / "catalogue.review.html"
             review.write_text("reviewer snapshot", encoding="utf-8")
-            with patch("uma_bct.batch_runner.export_review", side_effect=AssertionError("HTML was not requested")):
-                status, summary, stderr = self.run_batch_and_capture_output(
-                    root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True, html_review=False,
-                )
+            status, summary, stderr = self.run_batch_and_capture_output(
+                root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True,
+            )
             self.assertEqual(status, 0, stderr)
             self.assertTrue(catalogue.exists())
             self.assertNotIn("review_output", summary)
             self.assertEqual(review.read_text(encoding="utf-8"), "reviewer snapshot")
 
-    def assert_edited_html_manifest_failure(self, *, force):
-        with temporary_root() as root:
-            catalogue = root / "outputs/catalogue.csv"
-            manifest = catalogue.with_suffix(".run.json")
-            review = catalogue.with_suffix(".review.html")
-            if force:
-                self.prepare_outputs(root)
-                review.write_text("previous review", encoding="utf-8")
 
-            def edit_review_and_fail(destination, value, *, replace_existing=True):
-                if destination == manifest or destination.name.startswith(".uma-bct-json-publish-"):
-                    review.write_text("late reviewer edit", encoding="utf-8")
-                    raise OSError("manifest disk failure")
-                return write_json_atomic(destination, value, replace_existing=replace_existing)
-
-            with patch("uma_bct.batch_runner.write_json_atomic", side_effect=edit_review_and_fail):
-                status, summary, _ = self.run_batch_and_capture_output(
-                    root, FakeBatchPipeline(), [root / "shelf.jpg"], force=force, preserve=force,
-                )
-
-            self.assertEqual(status, 1)
-            self.assertEqual(summary["status"], "partial")
-            self.assertIsNone(summary["catalogue_output"])
-            self.assertEqual(summary["catalogue_records"], 0)
-            self.assertEqual(review.read_text(), "late reviewer edit")
-            if force:
-                self.assertEqual(catalogue.read_text(), "old catalogue")
-                self.assertEqual(manifest.read_text(), "old manifest")
-                backups = [Path(path) for path in summary["previous_results"]]
-                recovery = next(path for path in backups if path.suffix == ".html")
-                self.assertEqual(recovery.read_text(), "previous review")
-                self.assertEqual(next(path for path in backups if path.suffix == ".csv").read_text(), "old catalogue")
-                self.assertEqual(next(path for path in backups if path.suffix == ".json").read_text(), "old manifest")
-            else:
-                self.assertFalse(catalogue.exists())
-                self.assertFalse(manifest.exists())
-                recovery = review
-            self.assertEqual(summary["recovery_path"], str(recovery))
-            self.assertEqual(summary["recovery_paths"], [str(recovery)])
-            saved = json.loads(Path(summary["run_manifest"]).read_text())
-            for key in ("catalogue_output", "catalogue_records", "review_output", "recovery_path", "recovery_paths"):
-                self.assertEqual(saved[key], summary[key])
-            self.assertEqual(list(catalogue.parent.glob(".uma-bct-*")), [])
-
-    def test_fresh_manifest_failure_with_edited_html_clears_removed_csv(self):
-        self.assert_edited_html_manifest_failure(force=False)
-
-    def test_forced_manifest_failure_with_edited_html_clears_restored_csv(self):
-        self.assert_edited_html_manifest_failure(force=True)
-
-    def test_manifest_failure_with_edited_csv_clears_rolled_back_html(self):
+    def test_manifest_failure_preserves_edited_csv_and_legacy_html(self):
         with temporary_root() as root:
             outputs, catalogue, manifest = self.prepare_outputs(root)
             review = catalogue.with_suffix(".review.html")
@@ -790,60 +738,9 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(recovery.read_text(), "old catalogue")
             self.assertEqual(summary["recovery_paths"], [str(recovery)])
             saved = json.loads(Path(summary["run_manifest"]).read_text())
-            self.assertIsNone(saved["review_output"])
+            self.assertNotIn("review_output", saved)
             self.assertEqual(list(outputs.glob(".uma-bct-*")), [])
 
-    def test_failed_html_publication_persists_failure_manifest(self):
-        with temporary_root() as root:
-            outputs, catalogue, manifest = self.prepare_outputs(root)
-            review = catalogue.with_suffix(".review.html")
-            review.write_text("previous review", encoding="utf-8")
-
-            def fail_review(staging, destination, backup, purpose):
-                if purpose == "Review output":
-                    raise OSError("HTML publication failure")
-                return replace_backed_file(staging, destination, backup, purpose)
-
-            with (
-                patch("uma_bct.batch_runner.replace_backed_file", side_effect=fail_review),
-                patch("uma_bct.batch_runner.write_json_atomic", wraps=write_json_atomic) as writer,
-            ):
-                status, summary, _ = self.run_batch_and_capture_output(
-                    root, FakeBatchPipeline(), [root / "shelf.jpg"], force=True, preserve=True,
-                )
-
-            self.assertEqual(status, 1)
-            self.assertEqual(catalogue.read_text(), "old catalogue")
-            self.assertEqual(manifest.read_text(), "old manifest")
-            self.assertEqual(review.read_text(), "previous review")
-            self.assertIsNone(summary["catalogue_output"])
-            self.assertEqual(summary["catalogue_records"], 0)
-            self.assertNotIn("review_output", summary)
-            failed_manifest = Path(summary["run_manifest"])
-            self.assertIn(".failed-", failed_manifest.name)
-            saved = json.loads(failed_manifest.read_text())
-            self.assertEqual(saved["status"], "failed")
-            self.assertEqual(saved["failures"], [{"stage": "export", "error": "HTML publication failure"}])
-            self.assertEqual(len(summary["previous_results"]), 3)
-            self.assertTrue(all(Path(path).is_file() for path in summary["previous_results"]))
-            writes = [call for call in writer.call_args_list if call.args[0] == failed_manifest]
-            self.assertEqual(len(writes), 1)
-            self.assertFalse(writes[0].kwargs["replace_existing"])
-            self.assertEqual(list(outputs.glob(".uma-bct-*")), [])
-
-    def test_html_staging_failure_leaves_all_previous_outputs_intact(self):
-        with temporary_root() as root:
-            outputs, catalogue, manifest = self.prepare_outputs(root)
-            review = outputs / "catalogue.review.html"
-            review.write_text("previous review", encoding="utf-8")
-            with patch("uma_bct.batch_runner.export_review", side_effect=OSError("disk full")):
-                status, summary, _ = self.run_batch_and_capture_output(root, FakeBatchPipeline(), [root / "shelf.jpg"],
-                                                                      force=True, preserve=True)
-            self.assertEqual(status, 1)
-            self.assertEqual(catalogue.read_text(), "old catalogue")
-            self.assertEqual(manifest.read_text(), "old manifest")
-            self.assertEqual(review.read_text(), "previous review")
-            self.assertIsNone(summary["catalogue_output"])
 
     def test_manifest_failure_restores_old_csv_and_writes_a_failed_run_manifest(self):
         with temporary_root() as root:
@@ -869,8 +766,7 @@ class BatchRunnerTest(unittest.TestCase):
             self.assertEqual(status, 0, stderr)
             catalogue = Path(first["catalogue_output"])
             manifest = Path(first["run_manifest"])
-            review = Path(first["review_output"])
-            previous = {path: path.read_bytes() for path in (catalogue, manifest, review)}
+            previous = {path: path.read_bytes() for path in (catalogue, manifest)}
             with patch("uma_bct.batch_runner.write_json_atomic", side_effect=manifest_disk_failure(manifest)):
                 status, failed, _ = self.run_batch_and_capture_output(
                     root, FakeBatchPipeline(), [root / "shelf.jpg"], file_type="excel", force=True, preserve=True,

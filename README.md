@@ -28,8 +28,13 @@ report appears.
 
 During model setup and photo processing, the CLI requests protection against
 automatic idle sleep and releases it when the CLI exits. macOS confirms the
-request before work starts. If the computer rejects it, the terminal warns you
-and the run continues. Keep the laptop lid open: manual sleep or low battery
+request before work starts. If the computer rejects it, the terminal shows the
+failing operation and the available operating-system error, and the run continues.
+On Linux, helper error output and exit codes explain problems such as denied
+permissions, a missing system bus, or an unavailable `systemd-inhibit`. A helper
+that exits during processing also produces a warning. Windows reports a native
+error when supplied, or states that no extended error was provided. These
+diagnostics go to stderr and remain visible in captured terminal logs. Keep the laptop lid open: manual sleep or low battery
 can still interrupt work. Some screen saver or lock policies may still turn
 off the display while processing continues. If a warning appears, adjust the
 computer's power settings before a long batch.
@@ -105,12 +110,11 @@ create a separate new batch intentionally.
 CSV is the default output. Use `--file-type excel` or explicitly pass
 `-o catalogue.xlsx` to select Excel. `--file-type csv` selects CSV explicitly.
 Format names are case-insensitive; a format flag and an explicit filename must
-agree. Direct runs default to `outputs/catalogue.csv`. Add `--html-review` to
-generate the optional HTML page with crop-image links; otherwise no review page
-is generated. For example, to enable all three optional features:
+agree. Direct runs default to `outputs/catalogue.csv`. For example, to select
+Excel and enable verification:
 
 ```bash
-uma-bct --file-type excel --html-review --verification always
+uma-bct --file-type excel --verification always
 ```
 
 Existing catalogues are preserved, and unfinished batches keep their original
@@ -207,30 +211,21 @@ Advanced CLI users can disable this behavior with
 
 ### Review results and open crops
 
-The catalogue and HTML add `Low confidence` to scores below 50% by default;
+The catalogue adds `Low confidence` to scores below 50% by default;
 a score of exactly 50% does not receive that flag. Set
 `--min-transcription-confidence INTEGER` (or `-c INTEGER`) to choose a review
 threshold from 0 to 100. This flags rows for review and keeps every transcription
 in the catalogue. The separate `--min-detector-confidence` option controls the
 OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
 
-With `--html-review`, open `Review.html` for a compact, read-only catalogue with wrapped
-text and clickable **View crop** links. It works offline and requires no server.
-Keep the HTML file and `Box Images` folder together when moving a batch. Direct
-CLI runs create `<catalogue-name>.review.html` beside their catalogue instead.
-
 Excel workbooks contain clickable crop filenames in `Cropped Box Image Link`.
 Each link opens the image file using your system's associated application in
 desktop Excel or LibreOffice. Keep the workbook and crop folder together when
-moving results. For browser viewing, enable `--html-review` and use the **View crop** links in `Review.html`.
-Enable the review page if your spreadsheet application cannot open a local path,
-including paths with special characters such as `#`.
-
-Use `--html-review` with Apple Numbers, which does not support these private
-local-file links. CSV cannot save column widths or text wrapping; managed CSV
-batches retain their controlled relative `HYPERLINK` formulas for compatible
-Excel and LibreOffice imports. Google Sheets cannot open private local crop files.
-The HTML shows generated readings, so later spreadsheet edits do not update it.
+moving results. If your spreadsheet application cannot open a local link, open
+the named crop directly from the batch's `Box Images` folder. Apple Numbers and
+Google Sheets cannot open these private local-file links. CSV cannot save column
+widths or text wrapping; managed CSV batches retain their controlled relative
+`HYPERLINK` formulas for compatible Excel and LibreOffice imports.
 
 ### Optional transcription verification
 
@@ -247,16 +242,16 @@ keep the original text and receive review flags. Printed text, identifiers, and
 unit number are reconciled together, including handwritten identity claims. Every row still needs human review:
 agreement between model readings does not prove correctness or raise confidence.
 
-The review page's **Compare readings** sections and run details preserve the
-alternatives. Managed runs checkpoint completed readings; restart the launcher to
-resume an interrupted check. A failed verification request preserves the first
+Run details preserve the original and comparison readings. Managed runs checkpoint
+completed readings; restart the launcher to resume an interrupted check. A failed
+verification request preserves the first
 reading and produces a partial result with a review flag.
 
 Users can select `--verification always`, `--verification never`, or
 `--verification ask`. Only the CLI option enables verification for a new run;
 `UMA_BCT_VERIFICATION` and saved `.uma-bct-settings.json` preferences do not enable it.
-An unfinished batch keeps its recorded verification and HTML choices; finish it
-before changing those options. Older unfinished
+An unfinished batch keeps its recorded verification choice; finish it
+before changing that option. Older unfinished
 batches continue without verification. Already completed batches are reused;
 use `--reprocess` to intentionally start another complete run.
 

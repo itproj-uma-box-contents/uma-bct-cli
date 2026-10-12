@@ -24,7 +24,6 @@ from .bootstrap import build_pipeline
 from .export import export_catalogue
 from .path_safety import check_path
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
-from .review_export import export_review
 from .run_artifacts import (
     CatalogueLock,
     backup_existing_results,
@@ -51,10 +50,6 @@ class ExportState:
     catalogue_digest: str | None = None
     replace_manifest: bool = False
     wrote_catalogue: bool = False
-    review_output: Path | None = None
-    review_digest: str | None = None
-    previous_review: Path | None = None
-    wrote_review: bool = False
     recovery_paths: tuple[Path, ...] = ()
 
 
@@ -97,7 +92,6 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
-        "html_review": bool(getattr(arguments, "html_review", False)),
         "verification": configured_mode(arguments),
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
@@ -148,8 +142,6 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
         "run_manifest": summary["run_manifest"],
         "previous_results": summary["previous_results"],
     }
-    if summary.get("review_output"):
-        result["review_output"] = summary["review_output"]
     if recovery_path := summary.get("recovery_path"):
         result["recovery_path"] = recovery_path
     if recovery_paths := summary.get("recovery_paths"):
@@ -202,10 +194,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
     previous_catalogue: Path | None = None
     staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}{output_path.suffix}")
     publication_started = False
-    review_path = output_path.with_suffix(".review.html")
-    review_staging = output_path.with_name(f".uma-bct-review-{uuid.uuid4().hex}.tmp")
-    html_review = bool(getattr(arguments, "html_review", False))
-    output_paths = (output_path, manifest_path) + ((review_path,) if html_review else ())
+    output_paths = (output_path, manifest_path)
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
@@ -222,12 +211,7 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
-        if html_review:
-            export_review(results, review_staging, catalogue_path=output_path,
-                          minimum_confidence=arguments.min_transcription_confidence,
-                          detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True))
         previous = backup_existing_results(output_paths) if arguments.force else ()
-        state.previous_review = next((path for path in previous if path.suffix == ".html"), None)
         previous_catalogue = next((path for path in previous if path.suffix.casefold() == output_path.suffix.casefold()), None)
         previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
         replace_manifest = previous_manifest is not None
@@ -245,23 +229,12 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         else:
             rename_new_file(staging, output_path, existing_message=f"Catalogue output already exists: {output_path}")
         staging = None
-        if html_review:
-            state.review_digest = regular_file_sha256(review_staging, "Staged review output")
-            state.review_output = review_path
-            state.wrote_review = True
-            if state.previous_review is not None:
-                replace_backed_file(review_staging, review_path, state.previous_review, "Review output")
-            else:
-                rename_new_file(review_staging, review_path, existing_message=f"Review output already exists: {review_path}")
         return state
 
     except BaseException as error:
         # A rename can succeed just before an exception or interruption. Treat
         # an absent staging file as uncertain publication and attempt rollback.
         published_or_uncertain = publication_started and (staging is None or not staging.exists())
-        if review_staging.exists():
-            state.review_output = None
-            state.wrote_review = False
         if published_or_uncertain:
             try:
                 rollback_exported_catalogue(output_path, state)
@@ -283,7 +256,6 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         return state
 
     finally:
-        review_staging.unlink(missing_ok=True)
         if staging is not None:
             staging.unlink(missing_ok=True)
 
@@ -302,31 +274,16 @@ def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[
 
 
 def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
-    errors = []
-    recovery_paths = []
-    artifacts = (
-        (state.wrote_review, state.review_output, state.review_digest, state.previous_review, "review"),
-        (state.wrote_catalogue, output_path, state.catalogue_digest, state.previous_catalogue, "catalogue"),
-    )
-    for written, path, digest, previous, purpose in artifacts:
-        if written and path is not None and digest is not None:
-            try:
-                rollback_owned_file(path, digest, previous, purpose)
-            except Exception as error:
-                errors.append(error)
-                recovery_paths.append(previous or path)
-            else:
-                if purpose == "review":
-                    state.review_output = None
-                    state.wrote_review = False
-                else:
-                    state.catalogue_output = None
-                    state.record_count = 0
-                    state.wrote_catalogue = False
-    # Keep the catalogue first for callers using the original single-path field.
-    state.recovery_paths = tuple(reversed(recovery_paths))
-    if errors:
-        raise RuntimeError("; ".join(warning_text(error) for error in errors))
+    if state.wrote_catalogue and state.catalogue_digest is not None:
+        try:
+            rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
+        except Exception:
+            state.recovery_paths = (state.previous_catalogue or output_path,)
+            raise
+        state.catalogue_output = None
+        state.record_count = 0
+        state.wrote_catalogue = False
+    state.recovery_paths = ()
 
 
 def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
@@ -409,7 +366,6 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
     else:
         summary["status"] = "failed"
     summary["catalogue_output"] = export_state.catalogue_output
-    summary["review_output"] = str(export_state.review_output) if export_state.review_output else None
     summary["catalogue_records"] = export_state.record_count
 
     recovery_manifest = failed_manifest_path(output_path)
@@ -459,7 +415,6 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
             "model": model_metadata,
             "images": [result.to_dict() for result in results],
             "failures": failures,
-            "review_output": str(export_state.review_output) if export_state.review_output else None,
             "catalogue_output": export_state.catalogue_output,
             "catalogue_records": export_state.record_count,
             "run_manifest": str(manifest),
@@ -475,7 +430,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
         else:
             manifest_written = write_manifest(manifest, summary, failures, replace_existing=False)
     except BaseException:
-        if export_state.wrote_catalogue or export_state.wrote_review:
+        if export_state.wrote_catalogue:
             try:
                 rollback_exported_catalogue(output_path, export_state)
             except Exception as error:
@@ -494,7 +449,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
                     file=sys.stderr,
                 )
         raise
-    if not manifest_written and (export_state.wrote_catalogue or export_state.wrote_review):
+    if not manifest_written and (export_state.wrote_catalogue):
         recover_manifest_failure(output_path, summary, export_state, failures)
     return summary, pipeline is not None
 

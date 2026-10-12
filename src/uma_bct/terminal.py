@@ -198,8 +198,6 @@ def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted:
         lines.append(f"Results: {terminal_text(catalogue)}")
     if not catalogue:
         lines.extend(f"Catalogue file: {terminal_text(path)}" for path in catalogues)
-    reviews = summary.get("review_outputs") or ([summary["review_output"]] if summary.get("review_output") else [])
-    lines.extend(f"Review page: {terminal_text(path)}" for path in reviews)
     manifests = summary.get("run_manifests") or ([summary["run_manifest"]] if summary.get("run_manifest") else [])
     for details in manifests:
         kind = "Progress" if Path(details).name == "Run Progress.json" else "Run details"
