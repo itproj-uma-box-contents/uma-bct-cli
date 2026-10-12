@@ -30,6 +30,7 @@ from .identity import (
     normalise_unit_claim,
     unit_type_text,
 )
+from .util.date_util import get_earliest_date, get_latest_date
 
 SPREADSHEET_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
 
@@ -228,6 +229,9 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,
+        "Dates": "; ".join(date.to_string() for date in transcription.dates) if transcription.dates else "No Dates",
+        "Earliest Date": get_earliest_date(transcription.dates).to_string(),
+        "Latest Date": get_latest_date(transcription.dates).to_string(),
     }
     if not spreadsheet_safe:
         # HTML escapes at its own boundary; do not display CSV's protective apostrophe.

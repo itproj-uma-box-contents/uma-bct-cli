@@ -16,8 +16,15 @@ from unittest.mock import Mock, patch
 from helpers import make_box, make_image, make_transcription, read_excel
 
 from uma_bct.atomic import open_stable_file, rename_new_file
-from uma_bct.constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
+from uma_bct.constants import (
+    DATE_OUTPUT_COLUMNS,
+    DEFAULT_MIN_DETECTOR_CONFIDENCE,
+    DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
+    LEGACY_OUTPUT_COLUMNS,
+    OUTPUT_COLUMNS,
+)
 from uma_bct.domain import BoxResult
+from uma_bct.export import export_catalogue
 from uma_bct.managed_batch import (
     BOX_IMAGES_DIRECTORY_NAME,
     CATALOGUE_FILE_NAME,
@@ -27,14 +34,18 @@ from uma_bct.managed_batch import (
     ResultsRootLock,
     allocate_source_names,
     create_batch_directory,
+    deserialize_result,
     fingerprint_file,
     publish_reserved_crop,
     read_json_file,
     restore_unlinked_crop_content,
     run_managed_batch,
     sanitize_source_name,
+    serialize_result,
 )
 from uma_bct.pipeline import ImageResult
+from uma_bct.review_export import export_review
+from uma_bct.util.date_util import Date, DateRange
 
 
 def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_boxes: bool = True,
@@ -42,6 +53,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
+        date_detector="none",
         model="qwen-test",
         min_transcription_confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,
@@ -83,7 +95,7 @@ class ManagedPipeline:
         image = make_image(path)
         if path.name in self.failed_names:
             return ImageResult(
-                image, "qwen", "qwen", ("qwen",), "qwen", "failed", (), (), self.model_metadata
+                image, "qwen", "qwen", ("qwen",), "qwen", "failed", (), (), self.model_metadata, date_detector="none"
             )
         crop = self.work_directory / path.stem / ("full_image.png" if self.full_image else "box_001.png")
         crop.parent.mkdir(parents=True)
@@ -100,6 +112,7 @@ class ManagedPipeline:
             (BoxResult(box, make_transcription(box)),),
             (),
             self.model_metadata,
+            date_detector="none",
         )
 
 
@@ -112,12 +125,14 @@ class ManagedBatchTest(unittest.TestCase):
         detect_missing_boxes: bool = True, verification: str | None = None, patches=(),
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         file_type: str | None = "csv",
+        date_detector: str = "none",
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes,
                                       file_type=file_type)
         arguments.verification = verification
+        arguments.date_detector = date_detector
         arguments.min_transcription_confidence = min_transcription_confidence
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -231,6 +246,11 @@ class ManagedBatchTest(unittest.TestCase):
             progress_path = batch / PROGRESS_FILE_NAME
             progress = read_json_file(progress_path, "Run progress")
             progress.pop("file_type")
+            progress["configuration"].pop("date_detector")
+            for item in progress["inputs"]:
+                item["result"].pop("date_detector")
+                for record in item["result"]["records"]:
+                    record["transcription"].pop("dates")
             publication = progress["publication"]
             publication["pending_csv"] = publication.pop("pending_catalogue")
             progress_path.write_text(json.dumps(progress), encoding="utf-8")
@@ -239,6 +259,72 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(status, 0, stderr)
             self.assertEqual(pipeline.calls, [])
             self.assertEqual(Path(summary["catalogue_output"]).name, CATALOGUE_FILE_NAME)
+
+    def test_legacy_staging_preserves_both_historical_catalogue_layouts(self):
+        for columns, date_detector, file_type in (
+            (LEGACY_OUTPUT_COLUMNS, "none", "csv"), (LEGACY_OUTPUT_COLUMNS, "none", "excel"),
+            (DATE_OUTPUT_COLUMNS, "regex", "csv"),
+        ):
+            with self.subTest(columns=columns, file_type=file_type), self.prepared_root("01.jpg") as root:
+                def stop_review(*args, **kwargs):
+                    raise KeyboardInterrupt
+
+                _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(), file_type=file_type,
+                    patches=(patch("uma_bct.managed_batch.export_review", side_effect=stop_review),),
+                )
+                batch = Path(interrupted["batch_directory"])
+                progress_path = batch / PROGRESS_FILE_NAME
+                progress = read_json_file(progress_path, "Run progress")
+                progress["configuration"].pop("date_detector")
+                progress["publication"].pop("output_columns", None)
+                result = progress["inputs"][0]["result"]
+                if date_detector == "none":
+                    result.pop("date_detector")
+                    for record in result["records"]:
+                        record["transcription"].pop("dates")
+                else:
+                    result["date_detector"] = date_detector
+                    result["records"][0]["transcription"]["dates"] = [{"year": 1950, "month": None, "day": None}]
+                progress_path.write_text(json.dumps(progress), encoding="utf-8")
+                results = [deserialize_result(result, batch)]
+                pending = batch / progress["publication"]["pending_catalogue"]
+                export_catalogue(results, pending, output_columns=columns, trusted_crop_links=True)
+                catalogue_bytes = pending.read_bytes()
+                review_bytes = None
+                if date_detector == "none":
+                    review = batch / ".uma-bct-review-pending.html"
+                    suffix = "xlsx" if file_type == "excel" else "csv"
+                    export_review(results, review, catalogue_path=batch / f"Catalogue.{suffix}", output_columns=columns)
+                    review_bytes = review.read_bytes()
+                # An omitted CLI option keeps the original extraction method on resume.
+                arguments = managed_arguments(root, file_type=file_type)
+                arguments.date_detector = "regex"
+                arguments.date_detector_explicit = False
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr),
+                      patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("must not load"))):
+                    status = run_managed_batch(arguments, list(arguments.path_to_inputs.glob("*.jpg")), arguments.results_directory)
+                self.assertEqual(status, 0, stderr.getvalue())
+                summary = json.loads(stdout.getvalue())
+                self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), catalogue_bytes)
+                if review_bytes is not None:
+                    self.assertEqual(Path(summary["review_output"]).read_bytes(), review_bytes)
+                self.assertEqual(arguments.date_detector, date_detector)
+
+    def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg")
+            )
+            batch = Path(interrupted["batch_directory"])
+            original_progress = (batch / PROGRESS_FILE_NAME).read_bytes()
+            pipeline = ManagedPipeline()
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, date_detector="regex")
+            self.assertEqual(status, 2)
+            self.assertIn("processing configuration changed", stderr)
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual((batch / PROGRESS_FILE_NAME).read_bytes(), original_progress)
 
     def test_added_photo_during_run_is_deferred_and_only_it_runs_next_time(self):
         class AddingPipeline(ManagedPipeline):
@@ -636,6 +722,12 @@ class ManagedBatchTest(unittest.TestCase):
             progress_path = batch / PROGRESS_FILE_NAME
             progress = read_json_file(progress_path, "Run progress")
             progress["configuration"].pop("detect_missing_boxes")
+            progress["configuration"].pop("date_detector")
+            for item in progress["inputs"]:
+                if result := item.get("result"):
+                    result.pop("date_detector")
+                    for record in result["records"]:
+                        record["transcription"].pop("dates")
             progress.pop("verification")
             progress.pop("file_type")
             progress_path.write_text(json.dumps(progress), encoding="utf-8")
@@ -1376,6 +1468,35 @@ class ManagedBatchTest(unittest.TestCase):
 
             self.assertIn('"Box Images/Shelf Photo - Box 01.png"', row["Cropped Box Image Link"])
             self.assertTrue((moved / BOX_IMAGES_DIRECTORY_NAME / "Shelf Photo - Box 01.png").is_file())
+
+    def test_serialize_results(self):
+        batch_dir=Path("/test")
+
+        model_metadata = {
+            "model": "qwen-test",
+            "model_digest": "test",
+            "ollama_host": "test",
+        }
+
+        image = make_image(Path("/test/test.jpg"))
+        box = make_box(image=image, box_id="1", crop_path=Path("/test/test.jpg"))
+        date = Date(day=10,month=1,year=2005)
+        date_range = DateRange(Date(day=10,month=12,year=1901),Date(day=10,month=5,year=1920))
+        
+        results = [
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "failed", (), (), model_metadata, date_detector="none"
+            ),
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "complete", (BoxResult(box, make_transcription(box)),), (), model_metadata, date_detector="none"
+            ),
+            ImageResult(
+                image, "qwen", "qwen", ("qwen",), "qwen", "complete", (BoxResult(box, make_transcription(box, dates=(date, date_range))),), (), model_metadata, date_detector="none"
+            ),   
+        ]
+
+        for result in results:
+            self.assertEqual(result, deserialize_result(serialize_result(result, batch_dir), batch_dir))
 
 
 if __name__ == "__main__":

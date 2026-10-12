@@ -66,6 +66,7 @@ def arguments(root: Path, *, force=False, file_type="csv"):
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
+        date_detector="none",
         model="qwen-test",
         min_transcription_confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,

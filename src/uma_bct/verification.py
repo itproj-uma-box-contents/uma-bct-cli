@@ -24,7 +24,9 @@ from .constants import AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTI
 from .domain import BoxTranscription
 from .identity import collect_unit_evidence, identifier_evidence_details, normalise_unit_claim
 from .pipeline import ImageResult, warning_text
+from .ports import DateDetector
 from .run_artifacts import write_json_atomic
+from .util.date_util import deserialize_dates
 
 SETTINGS_NAME = ".uma-bct-settings.json"
 MODES = ("ask", "always", "never")
@@ -76,6 +78,7 @@ def reading(value: dict[str, Any]) -> BoxTranscription:
     data = dict(value)
     for key in ("typed_lines", "record_identifiers", "handwritten_lines", "auxiliary_annotations"):
         data[key] = tuple(data[key])
+    data["dates"] = deserialize_dates(data.get("dates", []))
     return BoxTranscription(**data)
 
 
@@ -161,6 +164,8 @@ def reconcile(first: BoxTranscription, second: BoxTranscription,
                 del selected[key]
                 if key not in unresolved:
                     unresolved.append(key)
+    if "handwritten_lines" in selected:
+        selected["dates"] = second.dates
     return replace(first, **selected, confidence=min(item.confidence for item in contributors),
                    needs_review=bool(disputed) or any(item.needs_review for item in contributors)), disputed, unresolved
 
@@ -175,7 +180,9 @@ class VerificationSetupError(RuntimeError):
 
 def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[str], None],
                  checkpoint: Callable[[ImageResult], None] = lambda _result: None,
-                 get_transcriber: Callable[[], Any] | None = None) -> ImageResult:
+                 get_transcriber: Callable[[], Any] | None = None,
+                 date_detector: DateDetector | None = None,
+                 get_date_detector: Callable[[], DateDetector | None] | None = None) -> ImageResult:
     records = list(result.records)
     groups: dict[Path, list[int]] = defaultdict(list)
     for index, record in enumerate(records):
@@ -201,6 +208,15 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
         except Exception as error:
             raise VerificationCheckpointError(str(error)) from error
 
+    def extract_dates(values: list[BoxTranscription]) -> list[BoxTranscription]:
+        try:
+            detector = get_date_detector() if get_date_detector is not None else date_detector
+        except Exception as error:
+            raise VerificationSetupError(str(error)) from error
+        if detector is None:
+            return values
+        return [replace(value, dates=detector.extract_dates(value.get_handwritten_text())) for value in values]
+
     failed = False
     for number, indices in enumerate(groups.values(), 1):
         representative = records[indices[0]]
@@ -223,6 +239,12 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
                 on_stage(f"Verifying crop {number} of {len(groups)}")
                 second = model().verify(box, full_image=full_image)
                 audit["second"] = [asdict(value) for value in second]
+                audit["second_dates_complete"] = False
+                save()
+            if audit.get("second_dates_complete") is False:
+                second = extract_dates([reading(value) for value in audit["second"]])
+                audit["second"] = [asdict(value) for value in second]
+                audit["second_dates_complete"] = True
                 save()
             second = align(first, [reading(value) for value in audit["second"]])
             if second is None:
@@ -237,6 +259,12 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
                 on_stage(f"Checking differences in crop {number} of {len(groups)}")
                 third = model().resolve_discrepancy(box, first, second, full_image=full_image)
                 audit["third"] = [asdict(value) for value in third]
+                audit["third_dates_complete"] = False
+                save()
+            if audit.get("third_dates_complete") is False:
+                third = extract_dates([reading(value) for value in audit["third"]])
+                audit["third"] = [asdict(value) for value in third]
+                audit["third_dates_complete"] = True
                 save()
             third = align(first, [reading(value) for value in audit.get("third", [])])
             disputed_fields, unresolved_fields = set(), set()

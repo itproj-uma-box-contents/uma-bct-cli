@@ -30,8 +30,8 @@ from urllib.parse import urlsplit
 
 from .adapters.ollama_client import timeout_from_environment
 from .atomic import open_stable_file, rename_new_file
-from .bootstrap import build_pipeline
-from .constants import IMAGE_EXTENSIONS
+from .bootstrap import DATE_DETECTORS, build_pipeline
+from .constants import DATE_OUTPUT_COLUMNS, IMAGE_EXTENSIONS, LEGACY_OUTPUT_COLUMNS, OUTPUT_COLUMNS
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .path_safety import check_path, redirected_path_kind
@@ -39,6 +39,7 @@ from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .review_export import export_review, render_review
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
+from .util.date_util import deserialize_dates
 from .verification import choose_verification, configured_mode, verify_image
 
 PROGRESS_FILE_NAME = "Run Progress.json"
@@ -236,6 +237,7 @@ def semantic_configuration(arguments: argparse.Namespace, request_timeout: float
     return {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
+        "date_detector": getattr(arguments, "date_detector", "none"),
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
@@ -657,14 +659,21 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
                 f"Cannot resume {batch_directory}: {details}. Restore its original photo set or move the whole "
                 "unfinished batch elsewhere before starting another.",
             )
-        current_configuration = semantic_configuration(arguments, request_timeout)
         requested_verification = getattr(arguments, "verification", None)
         if requested_verification and requested_verification != progress.get("verification", {}).get("mode", "never"):
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         stored_configuration = progress.get("configuration")
         if isinstance(stored_configuration, dict):
             # Older managed runs always generated missing-box suggestions.
-            stored_configuration = {"detect_missing_boxes": True, **stored_configuration}
+            saved_detectors = {item["result"].get("date_detector", "none")
+                               for item in progress["inputs"] if item.get("result")}
+            if "date_detector" not in stored_configuration and len(saved_detectors) > 1:
+                raise ManagedBatchSelectionError(batch_directory, "Saved date extraction options are inconsistent.")
+            stored_configuration = {"detect_missing_boxes": True,
+                                    "date_detector": next(iter(saved_detectors), "none"), **stored_configuration}
+            if not getattr(arguments, "date_detector_explicit", True):
+                arguments.date_detector = stored_configuration["date_detector"]
+        current_configuration = semantic_configuration(arguments, request_timeout)
         if stored_configuration != current_configuration:
             raise ManagedBatchSelectionError(
                 batch_directory,
@@ -679,6 +688,7 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
             if saved.get("source_path") != current["source_path"]:
                 saved.setdefault("original_source_path", saved.get("source_path"))
                 saved["source_path"] = current["source_path"]
+        progress["configuration"] = stored_configuration
         progress["input_directory"] = str(arguments.path_to_inputs)
         return batch_directory, progress, True, None
 
@@ -1076,6 +1086,7 @@ def build_managed_pipeline(
     pipeline = build_pipeline(
         detector_name=arguments.detector,
         transcriber_name=arguments.transcriber,
+        date_detector_name=arguments.date_detector,
         model_name=arguments.model,
         work_directory=working_root,
         minimum_detector_confidence=arguments.min_detector_confidence,
@@ -1118,6 +1129,7 @@ def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, An
         "actual_detector": result.actual_detector,
         "fallback_path": list(result.fallback_path),
         "transcriber": result.transcriber,
+        "date_detector": result.date_detector,
         "status": result.status,
         "records": records,
         "warnings": list(result.warnings),
@@ -1142,6 +1154,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
             detector_confidence=float(box_value["detector_confidence"]),
         )
         transcription_value = item["transcription"]
+
         transcription = BoxTranscription(
             **{
                 **transcription_value,
@@ -1149,6 +1162,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
                 "record_identifiers": tuple(transcription_value["record_identifiers"]),
                 "typed_lines": tuple(transcription_value["typed_lines"]),
                 "handwritten_lines": tuple(transcription_value["handwritten_lines"]),
+                "dates": deserialize_dates(transcription_value.get("dates", [])),
                 "auxiliary_annotations": tuple(transcription_value["auxiliary_annotations"]),
                 "needs_review": bool(transcription_value["needs_review"]),
             }
@@ -1160,6 +1174,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
         actual_detector=value["actual_detector"],
         fallback_path=tuple(value["fallback_path"]),
         transcriber=value["transcriber"],
+        date_detector=value.get("date_detector", "none"),
         status=value["status"],
         records=tuple(records),
         warnings=tuple(value.get("warnings", [])),
@@ -1507,6 +1522,11 @@ def stage_catalogue(
         if name != pending.name and path_entry_exists(batch_directory / name):
             raise ManagedBatchError(f"Unexpected pending catalogue format: {batch_directory / name}")
     publication = progress.setdefault("publication", {})
+    known_layouts = (OUTPUT_COLUMNS, LEGACY_OUTPUT_COLUMNS, DATE_OUTPUT_COLUMNS)
+    stored_columns = publication.get("output_columns")
+    if stored_columns is not None and stored_columns not in known_layouts:
+        raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
+    columns = stored_columns or OUTPUT_COLUMNS
     publication.update(phase="staging", pending_catalogue=pending.name)
     progress["phase"] = "staging"
     write_progress(batch_directory, progress)
@@ -1517,15 +1537,18 @@ def stage_catalogue(
         check_path(pending, "Pending catalogue")
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}{pending.suffix}"
         try:
-            records = export_catalogue(
-                results,
-                verification,
-                minimum_confidence=arguments.min_transcription_confidence,
-                replace_existing=False,
-                detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
-                trusted_crop_links=True,
-            )
-            if file_digest(verification, "Expected pending catalogue") != file_digest(pending, "Pending catalogue"):
+            pending_digest = file_digest(pending, "Pending catalogue")
+            for columns in ((stored_columns,) if stored_columns is not None else known_layouts):
+                records = export_catalogue(
+                    results, verification, minimum_confidence=arguments.min_transcription_confidence,
+                    replace_existing=False, detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
+                    trusted_crop_links=True, output_columns=columns,
+                )
+                matches = file_digest(verification, "Expected pending catalogue") == pending_digest
+                verification.unlink()
+                if matches:
+                    break
+            else:
                 raise ManagedBatchError(f"Pending catalogue does not match the committed results: {pending}")
         finally:
             try:
@@ -1540,11 +1563,14 @@ def stage_catalogue(
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
             trusted_crop_links=True,
+            output_columns=columns,
         )
+    publication["output_columns"] = list(columns)
     review_pending = batch_directory / PENDING_REVIEW_NAME
     review_options = {"catalogue_path": batch_directory / catalogue_file_name(progress),
                       "minimum_confidence": arguments.min_transcription_confidence,
-                      "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True)}
+                      "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
+                      "output_columns": columns}
     expected_review = hashlib.sha256(render_review(results, **review_options).encode("utf-8")).hexdigest()
     if not path_entry_exists(review_pending):
         export_review(results, review_pending, **review_options)
@@ -1789,6 +1815,15 @@ def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, An
             pipeline = candidate
         return pipeline.transcriber
 
+    def load_date_detector() -> Any:
+        if pipeline is None:
+            name = getattr(arguments, "date_detector", "none")
+            if name in {"none", "regex"}:
+                return DATE_DETECTORS[name](None)
+            # A missing model-based extraction follows the same lazy identity check.
+            load_transcriber()
+        return getattr(pipeline, "date_detector", None)
+
     progress["phase"] = "verifying"
     write_progress(batch_directory, progress)
     for item in pending:
@@ -1801,7 +1836,8 @@ def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, An
             write_progress(batch_directory, progress)
 
         result = verify_image(deserialize_result(item["result"], batch_directory), None,
-                              on_stage=reporter.phase, checkpoint=checkpoint, get_transcriber=load_transcriber)
+                              on_stage=reporter.phase, checkpoint=checkpoint, get_transcriber=load_transcriber,
+                              get_date_detector=load_date_detector)
         checkpoint(result)
     state["complete"] = True
     write_progress(batch_directory, progress)

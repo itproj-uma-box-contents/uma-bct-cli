@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import quote
 
@@ -42,6 +42,15 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: .5r
 @media print { body { padding: 0; } .catalogue { overflow: visible; } table { min-width: 0; } }
 """
 
+DATE_STYLE = """
+table { min-width: 1250px; }
+col:nth-child(1) { width: 20%; } col:nth-child(2) { width: 6%; }
+col:nth-child(3) { width: 22%; } col:nth-child(4) { width: 5%; }
+col:nth-child(5) { width: 7%; } col:nth-child(6) { width: 12%; } col:nth-child(7) { width: 7%; }
+col:nth-child(8) { width: 9%; } col:nth-child(9) { width: 6%; } col:nth-child(10) { width: 6%; }
+@media print { table { min-width: 0; } }
+"""
+
 
 def escape(value: object) -> str:
     return html.escape(str(value), quote=True)
@@ -74,7 +83,7 @@ def comparison(audit: dict[str, object] | None) -> str:
 
 def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
                   minimum_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
-                  detect_missing_boxes: bool = True) -> str:
+                  detect_missing_boxes: bool = True, output_columns: Sequence[str] = OUTPUT_COLUMNS) -> str:
     results = list(results)
     rows = catalogue_records(results, catalogue_path=catalogue_path, minimum_confidence=minimum_confidence,
                              detect_missing_boxes=detect_missing_boxes, spreadsheet_safe=False)
@@ -84,7 +93,7 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
     for row in rows:
         cells = []
         crop = str(row["Cropped Box Image Link"])
-        for column in OUTPUT_COLUMNS:
+        for column in output_columns:
             content = escape(row[column])
             if column == "Cropped Box Image Link" and crop:
                 # Prefix ./ so a colon in a filename cannot become a URL scheme.
@@ -93,14 +102,15 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
                 content += comparison(audits.get(crop))
             cells.append(f"<td>{content}</td>")
         rendered.append("<tr>" + "".join(cells) + "</tr>")
-    headings = "".join(f'<th scope="col">{escape(column)}</th>' for column in OUTPUT_COLUMNS)
+    headings = "".join(f'<th scope="col">{escape(column)}</th>' for column in output_columns)
+    style = STYLE + (DATE_STYLE if len(output_columns) > 7 else "")
     catalogue_format = "Excel" if catalogue_path.suffix.casefold() == ".xlsx" else "CSV"
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<meta name="referrer" content="no-referrer">'
             '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; '
             'base-uri \'none\'; form-action \'none\'">'
-            f'<title>Archive box catalogue</title><style>{STYLE}</style></head><body><header>'
+            f'<title>Archive box catalogue</title><style>{style}</style></head><body><header>'
             '<h1>Archive box catalogue</h1>'
             '<p>Compare each transcription with its cropped photograph. Review flagged rows before importing the catalogue.</p>'
             f'<p><a href="{escape(quote("./" + catalogue_path.name, safe="/"))}">Open catalogue {catalogue_format}</a> '
@@ -108,15 +118,16 @@ def render_review(results: Iterable[ImageResult], catalogue_path: Path, *,
             f'<p>This page shows the generated readings. Later {catalogue_format} edits are preserved but do not update this page. '
             'Keep this file and the crop folder together when moving results.</p></header>'
             f'<main class="catalogue"><table><caption>{len(rows)} catalogue rows</caption>'
-            f'<colgroup>{"<col>" * len(OUTPUT_COLUMNS)}</colgroup><thead><tr>{headings}</tr></thead>'
+            f'<colgroup>{"<col>" * len(output_columns)}</colgroup><thead><tr>{headings}</tr></thead>'
             f'<tbody>{"".join(rendered)}</tbody></table></main></body></html>\n')
 
 
 def export_review(results: Iterable[ImageResult], destination: Path, *, catalogue_path: Path,
-                  minimum_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, detect_missing_boxes: bool = True) -> None:
+                  minimum_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, detect_missing_boxes: bool = True,
+                  output_columns: Sequence[str] = OUTPUT_COLUMNS) -> None:
     """Stage one complete HTML file without clobbering an existing destination."""
     content = render_review(results, catalogue_path, minimum_confidence=minimum_confidence,
-                            detect_missing_boxes=detect_missing_boxes)
+                            detect_missing_boxes=detect_missing_boxes, output_columns=output_columns)
     check_path(destination, "Review output")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None

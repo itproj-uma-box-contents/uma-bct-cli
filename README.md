@@ -121,7 +121,20 @@ Date Range
 Transcription Confidence (%)
 Review Flags
 Cropped Box Image Link
+Dates
+Earliest Date
+Latest Date
 ```
+
+The first four import columns keep their existing order; `Date Range` remains
+blank. Date extraction from handwriting adds `Dates`, `Earliest Date`, and
+`Latest Date` after the existing review columns. The default is regex extraction;
+use `--date-detector none` to disable it or `--date-detector qwen` to use the
+local model. No dates are shown as `No Dates`, with `None` for the earliest and
+latest date. Check extracted dates against the crop during human review.
+
+An unfinished managed batch keeps its original date extraction method when the
+option is omitted. Explicitly selecting a different method requires a new batch.
 
 ### Unit Type and Unit Number
 

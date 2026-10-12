@@ -11,7 +11,7 @@ import os
 import re
 import tempfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
@@ -174,7 +174,7 @@ def catalogue_records(
     return records
 
 
-def _write_excel(path: Path, records: list[dict[str, str | int]]) -> None:
+def _write_excel(path: Path, records: list[dict[str, str | int]], columns: Sequence[str]) -> None:
     """Write literal cell values and relative links to the actual crop files."""
     with xlsxwriter.Workbook(path, {
         "in_memory": True, "strings_to_formulas": False, "strings_to_urls": False,
@@ -185,12 +185,13 @@ def _write_excel(path: Path, records: list[dict[str, str | int]]) -> None:
         text = workbook.add_format({"text_wrap": True, "valign": "top"})
         heading = workbook.add_format({"bold": True, "text_wrap": True, "valign": "top"})
         link = workbook.add_format({"font_color": "blue", "underline": True, "text_wrap": True, "valign": "top"})
-        for column, width in enumerate((42, 14, 52, 16, 20, 36, 40)):
-            sheet.set_column(column, column, width, text)
-        sheet.write_row(0, 0, OUTPUT_COLUMNS, heading)
+        widths = dict(zip(OUTPUT_COLUMNS, (42, 14, 52, 16, 20, 36, 40, 32, 18, 18), strict=True))
+        for column, name in enumerate(columns):
+            sheet.set_column(column, column, widths[name], text)
+        sheet.write_row(0, 0, columns, heading)
         sheet.freeze_panes(1, 0)
         for row_number, record in enumerate(records, start=1):
-            for column_number, column in enumerate(OUTPUT_COLUMNS):
+            for column_number, column in enumerate(columns):
                 value = record[column]
                 if column == "Cropped Box Image Link" and value:
                     reference = str(value)
@@ -211,6 +212,7 @@ def export_catalogue(
     replace_existing: bool = True,
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
+    output_columns: Sequence[str] = OUTPUT_COLUMNS,
 ) -> list[dict[str, str | int]]:
     """Safely write an Excel workbook or UTF-8 CSV and return its rows."""
 
@@ -245,14 +247,14 @@ def export_catalogue(
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
             if not excel:
-                writer = csv.DictWriter(temporary_file, fieldnames=OUTPUT_COLUMNS)
+                writer = csv.DictWriter(temporary_file, fieldnames=output_columns, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(records)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
         if excel:
             # Close the temporary handle first; Windows prevents reopening it.
-            _write_excel(temporary_path, records)
+            _write_excel(temporary_path, records, output_columns)
             with temporary_path.open("r+b") as workbook_file:
                 os.fsync(workbook_file.fileno())
         check_path(destination, "Catalogue output")

@@ -1,5 +1,6 @@
 import argparse
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -10,9 +11,11 @@ from unittest.mock import Mock, patch
 from helpers import make_box, make_result, make_transcription
 
 from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
+from uma_bct.adapters.regex_date_detector import RegexDateDetector
 from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records
 from uma_bct.ports import ModelResponse
+from uma_bct.util.date_util import Date, DateRange
 from uma_bct.verification import VerificationSetupError, choose_verification, configured_mode, reconcile, verify_image
 
 
@@ -161,6 +164,78 @@ class VerificationTest(unittest.TestCase):
                 factory.assert_not_called()
                 self.assertEqual(verified.records[0].transcription.handwritten_lines, expected)
                 self.assertEqual(verified.records[0].verification["status"], "complete")
+
+    def test_cached_dates_follow_corroborated_handwriting_without_loading_model(self):
+        self.first = replace(self.first, handwritten_lines=("Minutes 1950",), dates=(Date(year=1950),))
+        corrected_dates = (DateRange(Date(year=1951), Date(year=1953)),)
+        changed = replace(self.first, handwritten_lines=("Minutes 1951-1953",), dates=corrected_dates)
+        cached = self.cached_result(changed, changed)
+        audit = json.loads(json.dumps(cached.records[0].verification))
+        cached = replace(cached, records=(replace(cached.records[0], verification=audit),))
+        factory = Mock(side_effect=AssertionError("must not load"))
+        result = verify_image(cached, None, on_stage=lambda _: None, get_transcriber=factory)
+        factory.assert_not_called()
+        self.assertEqual(result.records[0].transcription.dates, corrected_dates)
+        self.assertEqual(result.records[0].verification["status"], "complete")
+        self.assertEqual(catalogue_records([result])[0]["Dates"], "1951 - 1953")
+
+    def test_uncorroborated_handwriting_keeps_original_dates(self):
+        self.first = replace(self.first, handwritten_lines=("Minutes 1950",), dates=(Date(year=1950),))
+        changed = replace(self.first, handwritten_lines=("Minutes 1951",), dates=(Date(year=1951),))
+        third = replace(self.first, handwritten_lines=("Minutes 1952",), dates=(Date(year=1952),))
+        result = verify_image(self.cached_result(changed, third), None, on_stage=lambda _: None)
+        self.assertEqual(result.records[0].transcription.dates, self.first.dates)
+        self.assertEqual(result.records[0].verification["status"], "complete")
+
+    def test_new_verification_readings_extract_and_checkpoint_dates(self):
+        first = replace(self.first, handwritten_lines=("Minutes 1950",), dates=(Date(year=1950),))
+        changed = replace(first, handwritten_lines=("Minutes 1951",), dates=())
+        transcriber = Mock()
+        transcriber.verify.return_value = [changed]
+        transcriber.resolve_discrepancy.return_value = [changed]
+        saved = []
+        result = verify_image(make_result(BoxResult(self.box, first)), transcriber, on_stage=lambda _: None,
+                              checkpoint=saved.append, date_detector=RegexDateDetector())
+        self.assertEqual(result.records[0].transcription.dates, (Date(year=1951),))
+        audit = result.records[0].verification
+        self.assertEqual(audit["second"][0]["dates"], ({"day": None, "month": None, "year": 1951},))
+        self.assertEqual(audit["third"][0]["dates"], audit["second"][0]["dates"])
+        self.assertTrue(saved)
+
+    def test_verification_date_request_failure_keeps_first_reading(self):
+        first = replace(self.first, handwritten_lines=("Minutes 1950",), dates=(Date(year=1950),))
+        transcriber = Mock()
+        transcriber.verify.return_value = [first]
+        detector = Mock()
+        detector.extract_dates.side_effect = RuntimeError("date request failed")
+        result = verify_image(make_result(BoxResult(self.box, first)), transcriber, on_stage=lambda _: None,
+                              date_detector=detector)
+        self.assertEqual(result.records[0].transcription.dates, first.dates)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.records[0].verification["status"], "failed")
+        self.assertEqual(result.records[0].verification["second"][0]["handwritten_lines"], first.handwritten_lines)
+        self.assertFalse(result.records[0].verification["second_dates_complete"])
+
+    def test_interrupted_date_extraction_resumes_without_repeating_reading(self):
+        changed = replace(self.first, handwritten_lines=("Minutes 1951",))
+        cached = self.cached_result(changed, changed)
+        cached.records[0].verification["second_dates_complete"] = False
+        cached.records[0].verification["third_dates_complete"] = False
+        factory = Mock(side_effect=AssertionError("must not load"))
+        result = verify_image(cached, None, on_stage=lambda _: None, get_transcriber=factory,
+                              date_detector=RegexDateDetector())
+        factory.assert_not_called()
+        self.assertEqual(result.records[0].transcription.dates, (Date(year=1951),))
+        self.assertTrue(result.records[0].verification["second_dates_complete"])
+        self.assertTrue(result.records[0].verification["third_dates_complete"])
+
+    def test_resumed_date_detector_setup_failure_stops_verification(self):
+        cached = self.cached_result(self.first)
+        cached.records[0].verification["second_dates_complete"] = False
+        factory = Mock(side_effect=ValueError("model identity changed"))
+        with self.assertRaisesRegex(VerificationSetupError, "model identity changed"):
+            verify_image(cached, None, on_stage=lambda _: None, get_date_detector=factory)
+        self.assertEqual(cached.records[0].verification["status"], "pending")
 
     def test_missing_requests_load_transcriber_once(self):
         changed = replace(self.first, handwritten_lines=("Minutes",))

@@ -13,6 +13,7 @@ from uma_bct.catalogue import map_catalogue_record
 from uma_bct.constants import DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records, export_catalogue, missing_box_records
+from uma_bct.util.date_util import Date, DateRange
 
 
 class CatalogueRulesTest(unittest.TestCase):
@@ -23,9 +24,12 @@ class CatalogueRulesTest(unittest.TestCase):
                 transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
                 self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+                self.assertEqual(record["Date Range"], "")
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
-                self.assertEqual(record["Date Range"], "")
+                self.assertEqual(record["Dates"], "No Dates")
+                self.assertEqual(record["Earliest Date"], "None")
+                self.assertEqual(record["Latest Date"], "None")
 
     def test_accepts_a_prefix_on_the_line_before_unit_number(self):
         box = make_box()
@@ -373,6 +377,9 @@ class CsvExportTest(unittest.TestCase):
                     "Transcription Confidence (%)",
                     "Review Flags",
                     "Cropped Box Image Link",
+                    "Dates",
+                    "Earliest Date",
+                    "Latest Date",
                 ],
             )
             self.assertEqual(len(rows), 3)
@@ -435,6 +442,25 @@ class CsvExportTest(unittest.TestCase):
 
 
 class ExcelExportTest(unittest.TestCase):
+    def test_dates_keep_client_columns_and_match_csv_and_excel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            box = make_box(crop_path=root / "Box Images/é # 20% box.png")
+            dates = (Date(year=1950), DateRange(Date(year=1960), Date(year=1965)))
+            result = make_result(BoxResult(box, make_transcription(box, dates=dates)))
+            csv_path, excel_path = root / "Catalogue.csv", root / "Catalogue.xlsx"
+            export_catalogue([result], csv_path)
+            export_catalogue([result], excel_path)
+            with csv_path.open(newline="", encoding="utf-8") as source:
+                csv_rows = list(csv.DictReader(source))
+            excel_rows, _ = read_excel(excel_path)
+            self.assertEqual(excel_rows[0][:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+            for column in ("Date Range", "Dates", "Earliest Date", "Latest Date"):
+                self.assertEqual(excel_rows[1][OUTPUT_COLUMNS.index(column)], csv_rows[0][column])
+            self.assertEqual(csv_rows[0]["Dates"], "1950; 1960 - 1965")
+            self.assertEqual(csv_rows[0]["Earliest Date"], "1950")
+            self.assertEqual(csv_rows[0]["Latest Date"], "1965")
+
     def test_preserves_rows_literal_text_and_encoded_portable_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

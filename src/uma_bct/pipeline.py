@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
+from .adapters.empty_date_detector import EmptyDateDetector
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
 from .domain import Box, BoxResult, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
-from .ports import BoxCropper, BoxDetector, FullImageTextTranscriber, TextTranscriber
+from .ports import BoxCropper, BoxDetector, DateDetector, FullImageTextTranscriber, TextTranscriber
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]
@@ -41,6 +42,7 @@ class ImageResult:
     records: tuple[BoxResult, ...]
     warnings: tuple[str, ...] = ()
     model_metadata: Mapping[str, str] = field(default_factory=dict)
+    date_detector: str = field(default="none", kw_only=True)
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -49,6 +51,7 @@ class ImageResult:
             "actual_detector": self.actual_detector,
             "fallback_path": list(self.fallback_path),
             "transcriber": self.transcriber,
+            "date_detector": self.date_detector,
             "status": self.status,
             "boxes": [record.to_dict() for record in self.records],
         }
@@ -80,6 +83,7 @@ class BoxTranscriptionPipeline:
     fallback_detector: BoxDetector | None = None
     model_metadata: dict[str, str] = field(default_factory=dict)
     on_stage: Callable[[str], None] | None = None
+    date_detector: DateDetector = field(default_factory=EmptyDateDetector, kw_only=True)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:
@@ -178,6 +182,17 @@ class BoxTranscriptionPipeline:
         if not returned:
             warnings.append(f"{label} returned no boxes.")
             return []
+
+        #extect dates for each transcription
+        for i in range(len(returned)):
+            transcription = returned[i]
+            try:
+                dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
+            except Exception as error:
+                warnings.append(f"{label} failed to extract dates: {warning_text(error)}")
+                continue
+            returned[i] = replace(transcription, dates=dates)
+
         return observations_from_response(box, returned, 0)
 
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
@@ -195,6 +210,17 @@ class BoxTranscriptionPipeline:
                 warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} returned no boxes.")
                 unresolved += 1
                 continue
+
+            #extect dates for each transcription
+            for i in range(len(returned)):
+                transcription = returned[i]
+                try:
+                    dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
+                except Exception as error:
+                    warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} failed to extract dates: {warning_text(error)}")
+                    continue
+                returned[i] = replace(transcription, dates=dates)
+
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
@@ -259,6 +285,7 @@ class BoxTranscriptionPipeline:
                 actual_detector=actual_detector,
                 fallback_path=route,
                 transcriber=self.transcriber.name,
+                date_detector=self.date_detector.name,
                 status=status,
                 records=tuple(BoxResult(item.box, item.transcription) for item in consolidated),
                 warnings=tuple(warnings),

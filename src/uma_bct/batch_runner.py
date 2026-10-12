@@ -92,6 +92,7 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
     return {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
+        "date_detector": getattr(arguments, "date_detector", "none"),
         "model": arguments.model,
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
@@ -165,6 +166,7 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         pipeline = build_pipeline(
             detector_name=arguments.detector,
             transcriber_name=arguments.transcriber,
+            date_detector_name=arguments.date_detector,
             model_name=arguments.model,
             work_directory=arguments.path_to_box_images,
             minimum_detector_confidence=arguments.min_detector_confidence,
@@ -424,7 +426,8 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     if pipeline:
         progress.close()
         if choose_verification(arguments, configured_mode(arguments), has_records=any(r.records for r in results)):
-            results = [verify_image(result, pipeline.transcriber, on_stage=progress.phase) for result in results]
+            results = [verify_image(result, pipeline.transcriber, on_stage=progress.phase,
+                                    date_detector=getattr(pipeline, "date_detector", None)) for result in results]
     progress.phase("Finalizing results" if pipeline else "Saving run details")
     export_state = ExportState()
     manifest: Path | None = None

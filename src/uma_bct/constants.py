@@ -8,7 +8,14 @@ OUTPUT_COLUMNS = [
     "Transcription Confidence (%)",
     "Review Flags",
     "Cropped Box Image Link",
+    "Dates",
+    "Earliest Date",
+    "Latest Date",
 ]
+
+# These exact layouts remain readable when recovering interrupted publications.
+LEGACY_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:7]
+DATE_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:3] + OUTPUT_COLUMNS[7:] + OUTPUT_COLUMNS[4:7]
 
 DUPLICATE_FLAG = "Potential Duplicate"
 MISSING_BOX_FLAG = "Missing Box"

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .domain import Box, BoxTranscription, DetectedRegion, InputImage
+from .util.date_util import Date, DateRange
 
 
 class BoxDetector(Protocol):
@@ -34,6 +35,14 @@ class TextTranscriber(Protocol):
     name: str
 
     def transcribe(self, box: Box) -> list[BoxTranscription]: ...
+
+
+class DateDetector(Protocol):
+    """Read the text from one box."""
+
+    name: str
+
+    def extract_dates(self, text: str) -> tuple[Date | DateRange, ...]: ...
 
 
 @runtime_checkable
