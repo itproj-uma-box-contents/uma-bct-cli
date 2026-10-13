@@ -47,12 +47,14 @@ class HostedWorkflowTest(unittest.TestCase):
         with patch("uma_bct.bootstrap.OllamaVisionModel", return_value=model), contextlib.redirect_stderr(io.StringIO()):
             pipeline = build_pipeline(
                 detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                ai_dates=True,
                 work_directory=Path("unused"), minimum_detector_confidence=0.6,
             )
         self.assertEqual(pipeline.detector.prompt_profile, "qwen")
         self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
         self.assertIs(pipeline.transcriber.crop_prompt, crop_question)
         self.assertEqual(pipeline.transcriber.full_image_prompt, QUESTION)
+        self.assertIs(pipeline.date_detector.client, model)
         self.assertNotIn("Physical-box checks:", pipeline.transcriber.crop_prompt(make_box()))
 
     def test_openai_uses_hosted_prompts_with_x_first_coordinates(self):
@@ -78,7 +80,7 @@ class HostedWorkflowTest(unittest.TestCase):
         ) as ollama:
             pipeline = build_pipeline(
                 detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
-                date_detector_name="qwen",
+                ai_dates=True,
                 work_directory=Path("unused"), minimum_detector_confidence=0.6,
                 hosted_model=self.config,
             )
@@ -144,6 +146,7 @@ class HostedWorkflowTest(unittest.TestCase):
                     work_directory=root / "crops", minimum_detector_confidence=0.6, hosted_model=config,
                 )
                 result = pipeline.process(photo)
+            self.assertEqual(pipeline.date_detector.name, "regex")
             catalogue = root / "catalogue.csv"
             export_catalogue([result], catalogue)
             with catalogue.open(encoding="utf-8-sig", newline="") as stream:
@@ -188,7 +191,6 @@ class HostedWorkflowTest(unittest.TestCase):
             ):
                 pipeline = build_pipeline(
                     detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
-                    date_detector_name="regex",
                     work_directory=root / "crops", minimum_detector_confidence=0.6,
                     hosted_model=self.config,
                 )

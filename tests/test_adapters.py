@@ -571,6 +571,7 @@ class OllamaClientTest(unittest.TestCase):
             )
         self.assertEqual(pipeline.detector.name, "qwen")
         self.assertEqual(pipeline.fallback_detector.name, "opencv")
+        self.assertEqual(pipeline.date_detector.name, "regex")
         client.preflight.assert_called_once_with()
 
 

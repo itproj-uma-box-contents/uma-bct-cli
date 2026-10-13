@@ -44,7 +44,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
-        date_detector="none",
+        ai_dates=False,
         model="qwen-test",
         min_transcription_confidence=80,
         min_detector_confidence=0.6,

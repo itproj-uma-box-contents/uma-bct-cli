@@ -102,6 +102,10 @@ Review Flags
 Cropped Box Image Link
 ```
 
+Dates are extracted from transcribed handwriting with a local regex by default.
+Pass `--ai-dates` to use the selected model instead: local Qwen normally, or the
+configured provider when `--hosted` is present.
+
 ### Unit Type and Unit Number
 
 `Unit Type` contains all printed text visible on the box label in reading
