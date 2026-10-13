@@ -345,7 +345,7 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
 
 
 def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> None:
-    """Restore the old CSV atomically, or remove a newly published CSV."""
+    """Restore the old catalogue atomically, or remove a newly published catalogue."""
 
     check_path(destination, "Catalogue rollback")
     if previous_catalogue is None:
@@ -356,7 +356,7 @@ def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> No
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            dir=destination.parent, prefix=".uma-bct-rollback-", suffix=".csv", delete=False
+            dir=destination.parent, prefix=".uma-bct-rollback-", suffix=destination.suffix, delete=False
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
         shutil.copy2(previous_catalogue, temporary_path)

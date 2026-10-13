@@ -3,14 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
+from zipfile import ZipFile
 
-from helpers import make_box, make_image, make_result, make_transcription
+from helpers import make_box, make_image, make_result, make_transcription, read_excel
 
 from uma_bct.atomic import rename_exclusive
 from uma_bct.catalogue import map_catalogue_record
-from uma_bct.constants import OUTPUT_COLUMNS
+from uma_bct.constants import DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, OUTPUT_COLUMNS
 from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records, export_catalogue, missing_box_records
+from uma_bct.util.date_util import Date, DateRange
 
 
 class CatalogueRulesTest(unittest.TestCase):
@@ -20,7 +23,8 @@ class CatalogueRulesTest(unittest.TestCase):
                 box = make_box()
                 transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(list(record)[:6], ["Unit Type", "Unit Number", "Description", "Dates", "Earliest Date", "Latest Date"])
+                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+                self.assertEqual(record["Date Range"], "")
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
                 self.assertEqual(record["Dates"], "No Dates")
@@ -225,7 +229,8 @@ class CatalogueRulesTest(unittest.TestCase):
         records = catalogue_records(
             [
                 make_result(
-                    BoxResult(first, make_transcription(first, confidence=70)), BoxResult(second, make_transcription(second))
+                    BoxResult(first, make_transcription(first, confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE - 1)),
+                    BoxResult(second, make_transcription(second)),
                 )
             ]
         )
@@ -319,6 +324,14 @@ class CatalogueRulesTest(unittest.TestCase):
         self.assertIn("Low confidence", below_threshold[0]["Review Flags"])
         self.assertNotIn("Low confidence", at_threshold[0]["Review Flags"])
 
+    def test_default_low_confidence_threshold_is_fifty_percent(self):
+        box = make_box()
+        for confidence, flagged in ((0, True), (49, True), (50, False), (79, False), (100, False)):
+            with self.subTest(confidence=confidence):
+                result = make_result(BoxResult(box, make_transcription(box, confidence=confidence)))
+                flags = catalogue_records([result])[0]["Review Flags"]
+                self.assertEqual("Low confidence" in flags, flagged)
+
 
 class CsvExportTest(unittest.TestCase):
     def test_writes_exact_headers_in_sorted_order_with_relative_crop_images(self):
@@ -360,12 +373,13 @@ class CsvExportTest(unittest.TestCase):
                     "Unit Type",
                     "Unit Number",
                     "Description",
-                    "Dates",
-                    "Earliest Date",
-                    "Latest Date",
+                    "Date Range",
                     "Transcription Confidence (%)",
                     "Review Flags",
                     "Cropped Box Image Link",
+                    "Dates",
+                    "Earliest Date",
+                    "Latest Date",
                 ],
             )
             self.assertEqual(len(rows), 3)
@@ -422,9 +436,102 @@ class CsvExportTest(unittest.TestCase):
 
             self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
-    def test_csv_is_the_only_output_format(self):
-        with self.assertRaisesRegex(ValueError, "must end in .csv"):
-            export_catalogue([], "catalogue.xlsx")
+    def test_rejects_unsupported_output_formats(self):
+        with self.assertRaisesRegex(ValueError, "must end in .xlsx or .csv"):
+            export_catalogue([], "catalogue.pdf")
+
+
+class ExcelExportTest(unittest.TestCase):
+    def test_dates_keep_client_columns_and_match_csv_and_excel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            box = make_box(crop_path=root / "Box Images/é # 20% box.png")
+            dates = (Date(year=1950), DateRange(Date(year=1960), Date(year=1965)))
+            result = make_result(BoxResult(box, make_transcription(box, dates=dates)))
+            csv_path, excel_path = root / "Catalogue.csv", root / "Catalogue.xlsx"
+            export_catalogue([result], csv_path)
+            export_catalogue([result], excel_path)
+            with csv_path.open(newline="", encoding="utf-8") as source:
+                csv_rows = list(csv.DictReader(source))
+            excel_rows, _ = read_excel(excel_path)
+            self.assertEqual(excel_rows[0][:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+            for column in ("Date Range", "Dates", "Earliest Date", "Latest Date"):
+                self.assertEqual(excel_rows[1][OUTPUT_COLUMNS.index(column)], csv_rows[0][column])
+            self.assertEqual(csv_rows[0]["Dates"], "1950; 1960 - 1965")
+            self.assertEqual(csv_rows[0]["Earliest Date"], "1950")
+            self.assertEqual(csv_rows[0]["Latest Date"], "1965")
+
+    def test_preserves_rows_literal_text_and_encoded_portable_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            output = root / "batch/Catalogue.xlsx"
+            crop = output.parent / "Box Images/é # 20% box.png"
+            crop.parent.mkdir(parents=True)
+            crop.write_bytes(b"synthetic crop")
+            boxes = [make_box(box_id=f"box:{unit}", crop_path=crop) for unit in (3, 1, 1)]
+            result = make_result(*(BoxResult(box, make_transcription(
+                box, unit=str(unit), handwritten=("=SUM(1,2)", "https://example.org"), confidence=49,
+            )) for box, unit in zip(boxes, (3, 1, 1), strict=True)))
+            records = export_catalogue([result], output, trusted_crop_links=True)
+            rows, links = read_excel(output)
+            self.assertEqual(rows[0], OUTPUT_COLUMNS)
+            self.assertEqual([row[1] for row in rows[1:]], ["0001", "0001", "0002", "0003"])
+            self.assertEqual(rows[1][2], "=SUM(1,2); https://example.org")
+            self.assertIn("Potential Duplicate", rows[1][5])
+            self.assertIn("Low confidence", rows[1][5])
+            self.assertEqual(rows[3][5], "Missing Box")
+            self.assertEqual(rows[3][6], "")
+            self.assertEqual(rows[1][6], crop.name)
+            self.assertEqual(records[0]["Cropped Box Image Link"], "Box Images/" + crop.name)
+            self.assertEqual(set(links), {"G2", "G3", "G5"})
+            self.assertIn("é", links["G2"])
+            self.assertNotIn("%C3", links["G2"])
+            with ZipFile(output) as workbook:
+                self.assertNotIn(b"<f>", workbook.read("xl/worksheets/sheet1.xml"))
+                self.assertIn(b' ySplit="1"', workbook.read("xl/worksheets/sheet1.xml"))
+            moved = root / "Moved Batch"
+            output.parent.rename(moved)
+            for target in read_excel(moved / output.name)[1].values():
+                self.assertTrue((moved / unquote(target.replace("\\", "/"))).is_file())
+
+    def test_quotes_in_link_names_are_encoded_without_creating_a_formula(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            box = make_box(crop_path=output.parent / 'crops/"quoted".png')
+            export_catalogue([make_result(BoxResult(box, make_transcription(box)))], output)
+            rows, links = read_excel(output)
+            self.assertEqual(rows[1][6], '"quoted".png')
+            self.assertIn("%22quoted%22.png", links["G2"])
+
+    def test_identical_exports_have_identical_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            box = make_box(crop_path=root / "crops/box.png")
+            results = [make_result(BoxResult(box, make_transcription(box)))]
+            first, second = root / "first.xlsx", root / "second.xlsx"
+            export_catalogue(results, first)
+            export_catalogue(results, second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_failed_workbook_preserves_existing_output_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            output.write_bytes(b"reviewer workbook")
+            with patch("uma_bct.export.xlsxwriter.Workbook.close", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    export_catalogue([], output)
+            self.assertEqual(output.read_bytes(), b"reviewer workbook")
+            self.assertEqual(list(output.parent.glob(".uma-bct-catalogue-*")), [])
+
+    def test_cell_limits_fail_without_publishing_truncated_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "catalogue.xlsx"
+            box = make_box(crop_path=output.parent / "crops/box.png")
+            result = make_result(BoxResult(box, make_transcription(box, handwritten=("a" * 32768,))))
+            with self.assertRaisesRegex(ValueError, "Excel's cell or hyperlink limits"):
+                export_catalogue([result], output)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(output.parent.glob(".uma-bct-catalogue-*")), [])
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ class TerminalProgress:
     def __enter__(self) -> TerminalProgress:
         # Rich refreshes one line on an interactive terminal. Captured output
         # gets milestones so logs do not fill with repeated progress frames.
-        if self.console is not None and self.console.is_terminal:
+        if self.console is not None and self.console.is_terminal and not self.console.is_dumb_terminal:
             try:
                 columns = [SpinnerColumn(), TextColumn("{task.description}")]
                 if self.total is not None:
@@ -115,6 +115,12 @@ class TerminalProgress:
         self.current = terminal_text(message)
         self._show()
 
+    def set_total(self, count: int) -> None:
+        if self.total != count:
+            self.total = count
+            if not self._update_live(total=count):
+                self._write(f"This batch contains {count} photo{'s' if count != 1 else ''}.")
+
     def reused(self, count: int) -> None:
         self.completed = count
         if not self._update_live(completed=count) and count:
@@ -154,7 +160,7 @@ def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted:
         "failed": "Run failed",
         "interrupted": "Run interrupted",
     }.get(status, terminal_text(status).capitalize())
-    if status == "partial" and not summary.get("catalogue_output"):
+    if status == "partial" and not (summary.get("catalogue_output") or summary.get("catalogue_outputs")):
         label = "Run incomplete"
     if summary.get("already_complete"):
         condition = " with issues" if status != "complete" else ""
@@ -174,16 +180,30 @@ def human_summary(summary: dict[str, Any], *, elapsed_seconds: float, attempted:
     if processed:
         lines.append(f"Photos: {complete} complete | {partial} partial | {failed} failed")
     catalogue = summary.get("catalogue_output")
+    catalogues = summary.get("catalogue_outputs") or ([catalogue] if catalogue else [])
     rows = int(summary.get("catalogue_records", 0))
-    lines.append(f"Catalogue: {rows} rows" if catalogue else "Catalogue: not created")
+    if catalogues:
+        label = "Catalogues" if len(catalogues) > 1 else "Catalogue"
+        count_label = "recorded rows" if summary.get("already_complete") else "rows"
+        lines.append(f"{label}: {rows} {count_label}")
+    else:
+        lines.append("Catalogue: not created")
+    if summary.get("already_complete") and "current_input_records" in summary:
+        lines.append(f"Transcribed boxes in current photos: {summary['current_input_records']}")
     lines.append(f"Time this launch: {elapsed_text(elapsed_seconds)}")
-    if batch := summary.get("batch_directory"):
-        lines.append(f"Results: {terminal_text(batch)}")
+    batches = summary.get("batch_directories") or ([summary["batch_directory"]] if summary.get("batch_directory") else [])
+    if batches:
+        lines.extend(f"Results: {terminal_text(batch)}" for batch in batches)
     elif catalogue:
         lines.append(f"Results: {terminal_text(catalogue)}")
-    if details := summary.get("run_manifest"):
+    if not catalogue:
+        lines.extend(f"Catalogue file: {terminal_text(path)}" for path in catalogues)
+    manifests = summary.get("run_manifests") or ([summary["run_manifest"]] if summary.get("run_manifest") else [])
+    for details in manifests:
         kind = "Progress" if Path(details).name == "Run Progress.json" else "Run details"
         lines.append(f"{kind}: {terminal_text(details)}")
+    recovery_paths = summary.get("recovery_paths") or ([summary["recovery_path"]] if summary.get("recovery_path") else [])
+    lines.extend(f"Recovery file: {terminal_text(path)}" for path in recovery_paths)
     return "\n".join(lines)
 
 

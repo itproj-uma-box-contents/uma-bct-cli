@@ -30,7 +30,7 @@ DETECTORS: dict[str, DetectorFactory] = {"opencv": lambda model_client: OpenCVBo
 
 TRANSCRIBERS: dict[str, TranscriberFactory] = {"qwen": QwenTextTranscriber}
 
-DATE_DETECTORS: dict[str, TranscriberFactory] = {"none": lambda model_client: EmptyDateDetector(), "regex": lambda model_client: RegexDateDetector(), "qwen": QwenDateDetector}
+DATE_DETECTORS: dict[str, DateDetectorFactory] = {"none": lambda model_client: EmptyDateDetector(), "regex": lambda model_client: RegexDateDetector(), "qwen": QwenDateDetector}
 
 
 def build_pipeline(*, detector_name: str, transcriber_name: str, date_detector_name: str = "none", model_name: str, work_directory: Path,

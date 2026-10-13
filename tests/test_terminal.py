@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +11,11 @@ from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
 
 
 class TerminalProgressTest(unittest.TestCase):
+    def setUp(self):
+        terminal = patch.dict(os.environ, {"TERM": "xterm-256color"})
+        terminal.start()
+        self.addCleanup(terminal.stop)
+
     def test_captured_progress_and_human_report_use_plain_committed_counts(self):
         moment = [100.0]
         output = io.StringIO()
@@ -49,6 +55,33 @@ class TerminalProgressTest(unittest.TestCase):
             print_run_summary(summary, human=False, elapsed_seconds=1)
         self.assertEqual(json.loads(stdout.getvalue()), summary)
 
+    def test_reused_history_report_lists_all_results_and_retains_failures(self):
+        summary = {
+            "already_complete": True, "status": "partial", "images_total": 2,
+            "images_complete": 1, "images_partial": 0, "images_failed": 1,
+            "catalogue_records": 2, "current_input_records": 1, "catalogue_output": None,
+            "catalogue_outputs": ["/results/second/Catalogue.csv"],
+            "batch_directories": ["/results/second", "/results/first"],
+            "run_manifests": ["/results/second/Run Details.json", "/results/first/Run Details.json"],
+        }
+        report = human_summary(summary, elapsed_seconds=1)
+        self.assertIn("Already complete with issues", report)
+        self.assertIn("1 complete | 0 partial | 1 failed", report)
+        self.assertIn("Catalogue: 2 recorded rows", report)
+        self.assertIn("Transcribed boxes in current photos: 1", report)
+        self.assertNotIn("Catalogue: not created", report)
+        for path in (*summary["catalogue_outputs"], *summary["run_manifests"]):
+            self.assertIn(path, report)
+
+    def test_recovery_report_lists_only_retained_recovery_files(self):
+        summary = {"status": "partial", "catalogue_output": None, "catalogue_records": 0,
+                   "recovery_path": "/results/old-catalogue.csv",
+                   "recovery_paths": ["/results/old-catalogue.csv"]}
+        report = human_summary(summary, elapsed_seconds=1)
+        self.assertIn("Recovery file: /results/old-catalogue.csv", report)
+        self.assertEqual(report.count("Recovery file:"), 1)
+        self.assertIn("Catalogue: not created", report)
+
     def test_live_progress_redraws_in_place(self):
         output = io.StringIO()
         with TerminalProgress(1, stream=output, force_terminal=True) as reporter:
@@ -69,6 +102,24 @@ class TerminalProgressTest(unittest.TestCase):
                 reporter.photo_finished(1, "complete", 1)
         self.assertIn("Processing Photo 1 of 1: shelf.jpg", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
+
+    def test_dumb_terminal_uses_milestones_instead_of_silent_live_updates(self):
+        for total in (None, 1):
+            with self.subTest(total=total), patch.dict(os.environ, {"TERM": "dumb"}):
+                output = io.StringIO()
+                with patch("uma_bct.terminal.Progress") as make_progress:
+                    with TerminalProgress(total, stream=output, force_terminal=True) as reporter:
+                        reporter.phase("Verifying crop 1 of 1")
+                        if total is not None:
+                            reporter.photo_started(1, Path("shelf.jpg"))
+                            reporter.photo_finished(1, "complete", 1)
+                    make_progress.assert_not_called()
+                self.assertIn("Verifying crop 1 of 1", output.getvalue())
+                self.assertNotIn("\x1b[", output.getvalue())
+                if total is None:
+                    self.assertIn("Preparing UMA BCT", output.getvalue())
+                else:
+                    self.assertIn("Photo 1 finished: complete | 1 box found", output.getvalue())
 
     def test_live_display_error_falls_back_to_milestones(self):
         output = io.StringIO()

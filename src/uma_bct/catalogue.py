@@ -179,9 +179,21 @@ def description(transcription: BoxTranscription) -> str:
     return escape_spreadsheet_formula("; ".join(visible))
 
 
+def verification_flags(audit: dict[str, object] | None) -> tuple[str, ...]:
+    flags = []
+    if audit:
+        if audit.get("error"):
+            flags.append("Verification failed")
+        if audit.get("disputed"):
+            flags.append("Verification discrepancy")
+        if audit.get("unresolved"):
+            flags.append("Verification unresolved")
+    return tuple(flags)
+
+
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
-                         trusted_crop_link: bool = False) -> dict[str, str | int]:
+                         trusted_crop_link: bool = False, spreadsheet_safe: bool = True) -> dict[str, str | int]:
     """Keep printed text visible and flag identity claims that need review."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
@@ -213,11 +225,21 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Unit Type": escape_spreadsheet_formula(unit_type),
         "Unit Number": unit_number,
         "Description": description(transcription),
-        "Dates": "; ".join([date.to_string() for date in transcription.dates]) if transcription.dates else "No Dates",
-        "Earliest Date": get_earliest_date(transcription.dates).to_string(),
-        "Latest Date": get_latest_date(transcription.dates).to_string(),
+        "Date Range": "",
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,
+        "Dates": "; ".join(date.to_string() for date in transcription.dates) if transcription.dates else "No Dates",
+        "Earliest Date": get_earliest_date(transcription.dates).to_string(),
+        "Latest Date": get_latest_date(transcription.dates).to_string(),
     }
+    if not spreadsheet_safe:
+        # HTML escapes at its own boundary; do not display CSV's protective apostrophe.
+        record["Unit Type"] = unit_type
+        record["Description"] = "; ".join(
+            line for line in (*non_empty_lines(transcription.handwritten_lines),
+                              *non_empty_lines(transcription.auxiliary_annotations))
+            if not identity_only_line(line, transcription.record_identifiers, transcription.unit_number)
+        )
+        record["Cropped Box Image Link"] = image_reference(image_file_path, catalogue_path)
     return CatalogueRow({column: record[column] for column in OUTPUT_COLUMNS})

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
+from .adapters.empty_date_detector import EmptyDateDetector
+from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
 from .domain import Box, BoxResult, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
 from .ports import BoxCropper, BoxDetector, DateDetector, FullImageTextTranscriber, TextTranscriber
@@ -36,11 +38,11 @@ class ImageResult:
     actual_detector: str
     fallback_path: tuple[str, ...]
     transcriber: str
-    date_detector: str
     status: ImageStatus
     records: tuple[BoxResult, ...]
     warnings: tuple[str, ...] = ()
     model_metadata: Mapping[str, str] = field(default_factory=dict)
+    date_detector: str = field(default="none", kw_only=True)
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -49,6 +51,7 @@ class ImageResult:
             "actual_detector": self.actual_detector,
             "fallback_path": list(self.fallback_path),
             "transcriber": self.transcriber,
+            "date_detector": self.date_detector,
             "status": self.status,
             "boxes": [record.to_dict() for record in self.records],
         }
@@ -75,12 +78,12 @@ class BoxTranscriptionPipeline:
     detector: BoxDetector
     cropper: BoxCropper
     transcriber: TextTranscriber
-    date_detector: DateDetector
     work_directory: Path
-    minimum_detector_confidence: float = 0.60
+    minimum_detector_confidence: float = DEFAULT_MIN_DETECTOR_CONFIDENCE
     fallback_detector: BoxDetector | None = None
     model_metadata: dict[str, str] = field(default_factory=dict)
     on_stage: Callable[[str], None] | None = None
+    date_detector: DateDetector = field(default_factory=EmptyDateDetector, kw_only=True)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.minimum_detector_confidence <= 1.0:

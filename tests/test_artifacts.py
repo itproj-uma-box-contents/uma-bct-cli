@@ -32,6 +32,10 @@ class ArtifactSafetyTest(unittest.TestCase):
             "custom-input/SHELF.JPG",
             "custom-input/SHELF.DNG",
             "custom-model/MODEL.GGUF",
+            "custom-results/catalogue.review.html",
+            "custom-results/catalogue.review.previous-example.html",
+            "custom-results/Review.html",
+            "custom-results/.uma-bct-settings.json",
         )
         for path in managed_paths:
             with self.subTest(path=path):
@@ -45,6 +49,12 @@ class ArtifactSafetyTest(unittest.TestCase):
         self.assertIn("**/*.[Jj][Pp][Gg]", dockerignore)
         self.assertIn("**/*.[Dd][Nn][Gg]", dockerignore)
         self.assertIn("*.[Gg][Gg][Uu][Ff]", dockerignore)
+
+    def test_review_outputs_are_rejected_from_release_archives(self):
+        for name in ("Review.html", "catalogue.review.html", "catalogue.review.previous-example.html",
+                     ".uma-bct-review-pending.html", ".uma-bct-settings.json"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(unsafe_reason(name))
 
     def test_ollama_extractor_accepts_archive_internal_link_targets(self):
         cases = (

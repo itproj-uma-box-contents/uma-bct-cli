@@ -7,6 +7,7 @@ unsafe output layouts, and unsupported files are rejected early.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import ntpath
 import os
@@ -18,13 +19,14 @@ from pathlib import Path
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
 from .bootstrap import DATE_DETECTORS, DETECTORS, TRANSCRIBERS
-from .constants import IMAGE_EXTENSIONS
+from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
 from .run_artifacts import manifest_path
 from .setup_command import run_setup
+from .verification import MODES, configured_mode
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
@@ -83,8 +85,12 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         "--path-to-output",
         dest="path_to_outputs",
         type=Path,
-        default=Path("outputs/catalogue.csv"),
-        help="catalogue CSV path (default: %(default)s)",
+        default=None,
+        help="catalogue .xlsx or .csv path (default: outputs/catalogue.csv)",
+    )
+    parser.add_argument(
+        "--file-type", type=str.casefold, choices=("excel", "csv"), default=None,
+        help="catalogue format (default: CSV, or the explicit output filename's extension)",
     )
     parser.add_argument(
         "-b",
@@ -104,6 +110,8 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--verification", choices=MODES, default=None,
+                        help="accuracy check with a second reading: ask, always, or never (default: never)")
     parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
@@ -119,7 +127,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         "--min-transcription-confidence",
         dest="min_transcription_confidence",
         type=bounded_percentage,
-        default=80,
+        default=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         metavar="INTEGER",
         help="review threshold from 0 to 100 (default: %(default)s)",
     )
@@ -128,7 +136,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         "--min-detector-confidence",
         dest="min_detector_confidence",
         type=bounded_float,
-        default=0.60,
+        default=DEFAULT_MIN_DETECTOR_CONFIDENCE,
         metavar="FLOAT",
         help="OpenCV threshold from 0 to 1 (default: %(default).2f)",
     )
@@ -175,7 +183,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_argument_parser().parse_args(argv)
+    parser = build_argument_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.command != "setup":
+        resolve_output_arguments(arguments, parser)
+    return arguments
+
+
+def resolve_output_arguments(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    suffix = ".xlsx" if arguments.file_type == "excel" else ".csv"
+    if arguments.path_to_outputs is None:
+        arguments.path_to_outputs = Path("outputs") / f"catalogue{suffix}"
+    else:
+        output_suffix = arguments.path_to_outputs.suffix.casefold()
+        if output_suffix not in {".csv", ".xlsx"}:
+            parser.error("output path must end in .xlsx or .csv")
+        if arguments.file_type is not None and output_suffix != suffix:
+            parser.error("--file-type conflicts with the output filename's extension")
 
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
@@ -199,12 +223,13 @@ def ensure_readable(path: Path) -> None:
         raise ValueError(f"Input image is not readable: {path}: {error}") from error
 
 
-def discover_images(path: Path) -> list[Path]:
+def discover_images(path: Path, *, check_readable: bool = True) -> list[Path]:
     metadata = path_metadata(path, "Input path")
     if stat.S_ISREG(metadata.st_mode):
         if path.suffix.casefold() not in IMAGE_EXTENSIONS:
             raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
-        ensure_readable(path)
+        if check_readable:
+            ensure_readable(path)
         return [path]
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"Input path is not a file or directory: {path}")
@@ -221,7 +246,8 @@ def discover_images(path: Path) -> list[Path]:
             continue
         metadata = path_metadata(candidate, "Input image")
         if stat.S_ISREG(metadata.st_mode):
-            ensure_readable(candidate)
+            if check_readable:
+                ensure_readable(candidate)
             images.append(candidate)
     return sorted(images, key=lambda item: (item.name.casefold(), item.name))
 
@@ -313,6 +339,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
+    resolve_output_arguments(arguments, parser)
+    arguments.date_detector_explicit = option_was_supplied(raw_arguments, ("-u", "--date-detector"))
+    try:
+        configured_mode(arguments)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
     if arguments.results_directory is not None:
         # Managed batches own their catalogue and crop paths. Mixing direct
         # output flags with that layout would make resume ambiguous.
@@ -325,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--results-directory cannot be combined with -o, -b, or --force")
         try:
             validate_output_target(arguments.results_directory, directory=True, purpose="Results directory")
-            images = discover_images(arguments.path_to_inputs)
+            images = discover_images(arguments.path_to_inputs, check_readable=False)
             validate_managed_layout(arguments.path_to_inputs, arguments.results_directory)
         except ValueError as error:
             parser.error(str(error))
@@ -336,11 +368,10 @@ def main(argv: list[str] | None = None) -> int:
             return run_managed_batch(arguments, images, arguments.results_directory)
 
     output_path = arguments.path_to_outputs
-    if output_path.suffix.casefold() != ".csv":
-        parser.error("output path must end in .csv")
     crop_root = arguments.path_to_box_images or output_path.parent / "crops"
     arguments.path_to_box_images = crop_root
     run_manifest = manifest_path(output_path)
+    output_paths = (output_path, run_manifest)
     # Check every output before reading photos or starting the model.
     try:
         validate_output_target(output_path, directory=False, purpose="Catalogue output")
@@ -353,14 +384,30 @@ def main(argv: list[str] | None = None) -> int:
     if not images:
         parser.error(f"no supported images found in {arguments.path_to_inputs}")
 
-    existing = next((path for path in (output_path, run_manifest) if path.exists()), None)
+    existing = next((path for path in output_paths if path.exists()), None)
     if existing is not None and not arguments.force:
         parser.error(f"output already exists; pass --force to replace it: {existing}")
-    with keep_awake():
-        return run_batch(
-            arguments,
-            images,
-            output_path,
-            run_manifest,
-            preserve_existing_manifest_on_failure=bool(arguments.force and existing),
-        )
+    try:
+        with keep_awake():
+            return run_batch(
+                arguments,
+                images,
+                output_path,
+                run_manifest,
+                preserve_existing_manifest_on_failure=bool(arguments.force and existing),
+            )
+    except KeyboardInterrupt:
+        exit_code = 130
+    except SystemExit as error:
+        if error.code not in {129, 143}:
+            raise
+        exit_code = error.code
+    # Batch cleanup has already run. Do not imply that a new catalogue was
+    # committed, or fabricate per-photo counts after an interrupted direct run.
+    message = "Run interrupted. Check stderr for recovery paths; use --results-directory for resumable batches."
+    if arguments.json:
+        print(json.dumps({"schema_version": 1, "status": "interrupted", "exit_code": exit_code,
+                          "catalogue_output": None, "message": message}))
+    else:
+        print(message, file=sys.stderr)
+    return exit_code
