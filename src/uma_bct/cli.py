@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DETECTORS, TRANSCRIBERS
+from .bootstrap import DATE_DETECTORS, DETECTORS, TRANSCRIBERS
 from .constants import IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
@@ -113,6 +113,9 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen", help="text transcriber (default: %(default)s)"
+    )
+    parser.add_argument(
+        "-u", "--date-detector", choices=tuple(DATE_DETECTORS), default="regex", help="date extraction method (default: %(default)s)"
     )
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(

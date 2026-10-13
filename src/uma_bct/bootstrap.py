@@ -9,25 +9,41 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from .adapters import HostedVisionModel, OllamaVisionModel, OpenCVBoxDetector, QwenBoxDetector, QwenTextTranscriber
+from .adapters import (
+    EmptyDateDetector,
+    HostedVisionModel,
+    OllamaVisionModel,
+    OpenCVBoxDetector,
+    QwenBoxDetector,
+    QwenDateDetector,
+    QwenTextTranscriber,
+    RegexDateDetector,
+)
 from .adapters.ollama_client import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from .adapters.qwen_transcriber import HOSTED_FULL_IMAGE_QUESTION, hosted_crop_question
 from .imaging import OpenCVBoxCropper
 from .model_config import HostedModelConfig
 from .pipeline import BoxTranscriptionPipeline
-from .ports import BoxDetector, TextTranscriber, VisionModelClient
+from .ports import BoxDetector, DateDetector, TextTranscriber, VisionModelClient
 from .terminal import print_selected_model
 
 DetectorFactory = Callable[[VisionModelClient], BoxDetector]
 TranscriberFactory = Callable[[VisionModelClient], TextTranscriber]
+DateDetectorFactory = Callable[[VisionModelClient], DateDetector]
 
 DETECTORS: dict[str, DetectorFactory] = {"opencv": lambda model_client: OpenCVBoxDetector(), "qwen": QwenBoxDetector}
 
 TRANSCRIBERS: dict[str, TranscriberFactory] = {"qwen": QwenTextTranscriber}
 
+DATE_DETECTORS: dict[str, DateDetectorFactory] = {
+    "none": lambda model_client: EmptyDateDetector(),
+    "regex": lambda model_client: RegexDateDetector(),
+    "qwen": QwenDateDetector,
+}
 
-def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str, work_directory: Path,
-                   minimum_detector_confidence: float, request_timeout_seconds: float | None = None,
+def build_pipeline(*, detector_name: str, transcriber_name: str, date_detector_name: str = "none", model_name: str,
+                   work_directory: Path, minimum_detector_confidence: float,
+                   request_timeout_seconds: float | None = None,
                    hosted_model: HostedModelConfig | None = None) -> BoxTranscriptionPipeline:
     """Build the requested detector and transcriber."""
 
@@ -39,6 +55,10 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
         transcriber_factory = TRANSCRIBERS[transcriber_name]
     except KeyError as error:
         raise ValueError(f"Unknown text transcriber: {transcriber_name}") from error
+    try:
+        date_detector_factory = DATE_DETECTORS[date_detector_name]
+    except KeyError as error:
+        raise ValueError(f"Unknown date detector: {date_detector_name}") from error
 
     model_client = (
         HostedVisionModel(hosted_model, timeout_seconds=request_timeout_seconds or DEFAULT_REQUEST_TIMEOUT_SECONDS)
@@ -66,6 +86,7 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
         fallback_detector=fallback_detector,
         cropper=OpenCVBoxCropper(),
         transcriber=transcriber,
+        date_detector=date_detector_factory(model_client),
         work_directory=work_directory,
         minimum_detector_confidence=minimum_detector_confidence,
         model_metadata=model_metadata,

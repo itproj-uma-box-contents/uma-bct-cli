@@ -126,6 +126,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     representative = best_observation(group, lambda value: value.typed_lines)
     typed = representative.transcription.typed_lines
     handwritten_source = best_observation(group, lambda value: value.handwritten_lines)
+    dates_source = best_observation(group, lambda value: value.handwritten_lines)
     identifier_source = best_observation(group, lambda value: value.record_identifiers)
     auxiliary_source = best_observation(group, lambda value: value.auxiliary_annotations)
     unit_source = max(
@@ -140,7 +141,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     position_source = max(
         group, key=lambda item: (bool(item.transcription.position.strip()), item.transcription.confidence, -item.crop_index)
     )
-    selected = (representative, handwritten_source, identifier_source, auxiliary_source, unit_source, position_source)
+    selected = (representative, handwritten_source, dates_source, identifier_source, auxiliary_source, unit_source, position_source)
     transcription = BoxTranscription(
         box_id=representative.box.box_id,
         position=position_source.transcription.position,
@@ -149,6 +150,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
         unit_number=unit_source.transcription.unit_number,
         typed_lines=typed,
         handwritten_lines=handwritten_source.transcription.handwritten_lines,
+        dates=dates_source.transcription.dates,
         auxiliary_annotations=auxiliary_source.transcription.auxiliary_annotations,
         needs_review=(
             any(item.transcription.needs_review for item in group)

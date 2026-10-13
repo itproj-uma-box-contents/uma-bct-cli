@@ -40,6 +40,7 @@ from .path_safety import check_path, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
+from .util.date_util import Date, DateRange
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
@@ -1014,6 +1015,7 @@ def build_managed_pipeline(
     pipeline = build_pipeline(
         detector_name=arguments.detector,
         transcriber_name=arguments.transcriber,
+        date_detector_name=arguments.date_detector,
         model_name=selected_model_name(arguments),
         work_directory=working_root,
         minimum_detector_confidence=arguments.min_detector_confidence,
@@ -1059,6 +1061,7 @@ def serialize_result(result: ImageResult, batch_directory: Path) -> dict[str, An
         "actual_detector": result.actual_detector,
         "fallback_path": list(result.fallback_path),
         "transcriber": result.transcriber,
+        "date_detector": result.date_detector,
         "status": result.status,
         "records": records,
         "warnings": list(result.warnings),
@@ -1083,6 +1086,17 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
             detector_confidence=float(box_value["detector_confidence"]),
         )
         transcription_value = item["transcription"]
+
+        dates = []
+        for date in transcription_value["dates"]:
+            if "start" in date:
+                dates.append(DateRange(
+                    Date(**date["start"]),
+                    Date(**date["end"])
+                ))
+            else:
+                dates.append(Date(**date))
+
         transcription = BoxTranscription(
             **{
                 **transcription_value,
@@ -1090,6 +1104,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
                 "record_identifiers": tuple(transcription_value["record_identifiers"]),
                 "typed_lines": tuple(transcription_value["typed_lines"]),
                 "handwritten_lines": tuple(transcription_value["handwritten_lines"]),
+                "dates": tuple(dates),
                 "auxiliary_annotations": tuple(transcription_value["auxiliary_annotations"]),
                 "needs_review": bool(transcription_value["needs_review"]),
             }
@@ -1101,6 +1116,7 @@ def deserialize_result(value: dict[str, Any], batch_directory: Path) -> ImageRes
         actual_detector=value["actual_detector"],
         fallback_path=tuple(value["fallback_path"]),
         transcriber=value["transcriber"],
+        date_detector=value["date_detector"],
         status=value["status"],
         records=tuple(records),
         warnings=tuple(value.get("warnings", [])),

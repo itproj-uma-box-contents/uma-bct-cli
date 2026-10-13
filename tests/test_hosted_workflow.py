@@ -78,6 +78,7 @@ class HostedWorkflowTest(unittest.TestCase):
         ) as ollama:
             pipeline = build_pipeline(
                 detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                date_detector_name="qwen",
                 work_directory=Path("unused"), minimum_detector_confidence=0.6,
                 hosted_model=self.config,
             )
@@ -85,6 +86,7 @@ class HostedWorkflowTest(unittest.TestCase):
         ollama.assert_not_called()
         self.assertIs(pipeline.detector.client, model)
         self.assertIs(pipeline.transcriber.client, model)
+        self.assertIs(pipeline.date_detector.client, model)
         self.assertEqual(pipeline.model_metadata, self.metadata)
         self.assertEqual(pipeline.detector.coordinate_order, "xyxy")
         self.assertEqual(pipeline.detector.prompt_profile, "hosted")
@@ -186,6 +188,7 @@ class HostedWorkflowTest(unittest.TestCase):
             ):
                 pipeline = build_pipeline(
                     detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                    date_detector_name="regex",
                     work_directory=root / "crops", minimum_detector_confidence=0.6,
                     hosted_model=self.config,
                 )
@@ -195,9 +198,10 @@ class HostedWorkflowTest(unittest.TestCase):
             with catalogue.open(encoding="utf-8-sig", newline="") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 1)
-            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Dates"])
             self.assertEqual(rows[0]["Unit Type"], "1960.0009")
             self.assertEqual(rows[0]["Unit Number"], "0004")
+            self.assertEqual(rows[0]["Dates"], "No Dates")
             self.assertEqual(rows[0]["Transcription Confidence (%)"], "0")
             self.assertTrue(rows[0]["Review Flags"])
         self.assertEqual(sdk.completion.call_count, 2)

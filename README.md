@@ -94,7 +94,9 @@ The CSV columns are:
 Unit Type
 Unit Number
 Description
-Date Range
+Dates
+Earliest Date
+Latest Date
 Transcription Confidence (%)
 Review Flags
 Cropped Box Image Link

@@ -108,6 +108,18 @@ def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return convert(schema)
 
 
+def _can_use_strict_schema(value: Any) -> bool:
+    """Strict provider schemas require every object property to be present."""
+
+    if isinstance(value, dict):
+        if value.get("type") == "object" and set(value.get("required", ())) != set(value.get("properties", {})):
+            return False
+        return all(_can_use_strict_schema(item) for item in value.values())
+    if isinstance(value, list):
+        return all(_can_use_strict_schema(item) for item in value)
+    return True
+
+
 def _token_logprobs(choice: Any, content: str) -> tuple[tuple[str, float], ...]:
     """Use probabilities only when they exactly cover the returned text."""
 
@@ -155,19 +167,21 @@ class HostedVisionModel:
 
     def query(
         self,
-        image_path: Path,
+        image_path: Path | None,
         prompt: str,
         schema: dict[str, Any],
         *,
         validator: Callable[[Any], object] | None = None,
         logprobs: bool = False,
     ) -> ModelResponse:
-        if image_path.suffix.casefold() != ".png":
-            raise ValueError("Hosted model requests require a sanitized PNG image.")
-        image_bytes = image_path.read_bytes()
-        if not image_bytes.startswith(PNG_SIGNATURE):
-            raise ValueError("Hosted model image is not a PNG.")
-        image_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        image_url = None
+        if image_path is not None:
+            if image_path.suffix.casefold() != ".png":
+                raise ValueError("Hosted model requests require a sanitized PNG image.")
+            image_bytes = image_path.read_bytes()
+            if not image_bytes.startswith(PNG_SIGNATURE):
+                raise ValueError("Hosted model image is not a PNG.")
+            image_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
         schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
         request_prompt = f"{prompt}\n\nReturn only one JSON object matching this schema: {schema_text}"
         litellm = _load_litellm()
@@ -178,6 +192,9 @@ class HostedVisionModel:
             # Keep the public metadata as the origin, but use the versioned base
             # so the SDK constructs /v1beta/models/<model>:generateContent.
             api_base += "/v1beta"
+        content: list[dict[str, Any]] = [{"type": "text", "text": request_prompt}]
+        if image_url is not None:
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
         arguments: dict[str, Any] = {
             "model": self.config.model,
             "api_key": self.config.api_key,
@@ -185,10 +202,7 @@ class HostedVisionModel:
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": request_prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
+                    "content": content,
                 }
             ],
             "timeout": self.timeout_seconds,
@@ -196,7 +210,7 @@ class HostedVisionModel:
             "num_retries": 0,
         }
         if "response_format" in supported:
-            if _supports_schema(litellm, self.config.model):
+            if _supports_schema(litellm, self.config.model) and _can_use_strict_schema(schema):
                 arguments["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {"name": "archive_boxes", "strict": True, "schema": _strict_schema(schema)},

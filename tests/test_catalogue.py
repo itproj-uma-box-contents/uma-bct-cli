@@ -20,10 +20,12 @@ class CatalogueRulesTest(unittest.TestCase):
                 box = make_box()
                 transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+                self.assertEqual(list(record)[:6], ["Unit Type", "Unit Number", "Description", "Dates", "Earliest Date", "Latest Date"])
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
-                self.assertEqual(record["Date Range"], "")
+                self.assertEqual(record["Dates"], "No Dates")
+                self.assertEqual(record["Earliest Date"], "None")
+                self.assertEqual(record["Latest Date"], "None")
 
     def test_accepts_a_prefix_on_the_line_before_unit_number(self):
         box = make_box()
@@ -372,7 +374,9 @@ class CsvExportTest(unittest.TestCase):
                     "Unit Type",
                     "Unit Number",
                     "Description",
-                    "Date Range",
+                    "Dates",
+                    "Earliest Date",
+                    "Latest Date",
                     "Transcription Confidence (%)",
                     "Review Flags",
                     "Cropped Box Image Link",

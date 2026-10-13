@@ -12,8 +12,10 @@ from helpers import make_box, make_image
 from PIL import Image
 
 from uma_bct.adapters.hosted_client import PROVIDER_API_BASES, HostedVisionModel
+from uma_bct.adapters.qwen_date_detector import QwenDateDetector
 from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 from uma_bct.model_config import HostedModelConfig
+from uma_bct.util.date_util import Date
 
 
 class ProviderError(Exception):
@@ -71,6 +73,25 @@ class HostedVisionModelTest(unittest.TestCase):
                 self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), self.image_path.read_bytes())
                 self.assertNotIn(str(self.image_path), repr(arguments["messages"]))
                 self.assertNotIn("secret-test-key", repr(client))
+
+    def test_date_detector_sends_text_only_to_hosted_providers(self):
+        response = json.dumps({"dates": [{
+            "raw_text": "1950", "starting_index": 0,
+            "start_date": {"year": 1950}, "end_date": {},
+        }]})
+        for provider in PROVIDER_API_BASES:
+            with self.subTest(provider=provider):
+                sdk = self.sdk(content=response)
+                sdk.supports_response_schema.return_value = True
+                client = HostedVisionModel(HostedModelConfig(model=f"{provider}/example", api_key="secret-test-key"))
+                with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+                    dates = QwenDateDetector(client).extract_dates("1950")
+                self.assertEqual(dates, (Date(year=1950),))
+                content = sdk.completion.call_args.kwargs["messages"][0]["content"]
+                self.assertEqual(len(content), 1)
+                self.assertEqual(content[0]["type"], "text")
+                self.assertIn("1950", content[0]["text"])
+                self.assertEqual(sdk.completion.call_args.kwargs["response_format"], {"type": "json_object"})
 
     def test_schema_capability_uses_portable_strict_structure(self):
         sdk = self.sdk()
