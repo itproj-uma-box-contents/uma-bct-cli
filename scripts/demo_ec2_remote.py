@@ -61,15 +61,26 @@ def write_json(path: Path, value: dict) -> None:
 def health(action: str = "status", *, backend: str = "gpu", transcription_workers: int = 1) -> dict:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
-    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
+    if transcription_workers not in {1, 2, 4, 6, 8} or (backend == "cpu" and transcription_workers != 1):
         raise ValueError("Two independent runners require GPU mode.")
-    args = ([PARALLEL_HEALTH, "status"] if transcription_workers == 2 else
+    args = ([PARALLEL_HEALTH, "status"] if transcription_workers > 1 else
             [HEALTH, action, *(["--backend", "cpu"] if backend == "cpu" else [])])
     process = subprocess.run(args, capture_output=True, text=True,
                              timeout=960 if action == "warm" else 90)
     value = json.loads(process.stdout)
     if process.returncode:
         raise RuntimeError(value.get("error", "GPU/model readiness failed."))
+    if transcription_workers > 1 and value.get("settings", {}).get("transcription_workers") != transcription_workers:
+        raise RuntimeError("Prepared runner count differs from the requested mode; run prepare first.")
+    mps_config = Path("/opt/uma-bct-demo/mps.json")
+    if (mps_config.exists() and json.loads(mps_config.read_text()).get("enabled") is True
+            and value.get("gpu_scheduling", {}).get("gpu_mps") is not True):
+        check = subprocess.run(["sudo", "/usr/local/bin/uma-bct-demo-mps", "status", "--workers", str(transcription_workers)],
+                               capture_output=True, text=True, timeout=30)
+        scheduling = json.loads(check.stdout)
+        if check.returncode or scheduling.get("gpu_mps") is not True:
+            raise RuntimeError(scheduling.get("error", "Selected CUDA scheduler is not ready."))
+        value["gpu_scheduling"] = scheduling
     return value
 
 
@@ -160,7 +171,7 @@ def prepare(request: dict) -> dict:
     image_name = request["filename"]
     if image_name is None:
         app = install_source(INCOMING / f"{upload_id}.tar")
-        for suffix in (".tar", ".py", "-health.py", "-parallel.py", "-parallel.yaml"):
+        for suffix in (".tar", ".py", "-health.py", "-parallel.py", "-mps.py", "-parallel.yaml"):
             (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
         return {"status": "prepared", "application": app, "readiness": ready, "image_staged": False}
     if Path(image_name).name != image_name or image_name.startswith(".") or not image_name.lower().endswith((".jpg", ".jpeg")):
@@ -182,7 +193,7 @@ def prepare(request: dict) -> dict:
                "staged_sha256": fingerprint, "metadata_policy": "unchanged original JPEG", "source_path": request["source_path"]})
     for suffix in (".jpg", ".tar", ".py"):
         (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
-    for suffix in ("-health.py", "-parallel.py", "-parallel.yaml"):
+    for suffix in ("-health.py", "-parallel.py", "-mps.py", "-parallel.yaml"):
         (INCOMING / f"{upload_id}{suffix}").unlink(missing_ok=True)
     return {"status": "prepared", "source_sha256": fingerprint, "application": app, "readiness": ready}
 
@@ -242,8 +253,8 @@ def run(request: dict) -> dict:
             "--results-directory", "/data/outputs/Batches", "--reprocess", "--verification", mode, "--model", MODEL]
     if request.get("timings") is True:
         args[2:2] = ["-e", "UMA_BCT_DEMO_TIMINGS_FILE=/data/outputs/Request Timings.jsonl"]
-    if workers == 2:
-        args[2:2] = ["-e", "UMA_BCT_DEMO_TRANSCRIPTION_WORKERS=2"]
+    if workers > 1:
+        args[2:2] = ["-e", f"UMA_BCT_DEMO_TRANSCRIPTION_WORKERS={workers}"]
     print(f"Running fresh EC2 inference on {backend.upper()}; CLI progress follows.", file=sys.stderr, flush=True)
     started = time.monotonic()
     with (directory / "CLI stdout.json").open("w") as output:
@@ -279,6 +290,7 @@ def run(request: dict) -> dict:
 
 def main() -> int:
     os.umask(0o077)
+    stream_started = False
     try:
         if sys.platform != "linux":
             raise RuntimeError("The EC2 control helper requires Linux; use the Mac SSH wrapper instead.")
@@ -299,7 +311,7 @@ def main() -> int:
                 result = {"status": "ready", "readiness": health(backend=request.get("backend", "gpu"),
                            transcription_workers=request.get("transcription_workers", 1)),
                           "application": deployment()}
-            elif action == "run":
+            elif action in {"run", "run-stream-v1"}:
                 result = run(request)
             elif action == "retrieve":
                 run_id = token(request["run_id"])
@@ -308,10 +320,20 @@ def main() -> int:
                           "transfer": transfer_manifest(directory)}
             else:
                 raise ValueError("Unknown demo action.")
+            if action == "run-stream-v1":
+                # Distinct action: old controllers reject it BEFORE inference. One
+                # authenticated connection carries the outcome then the whole folder.
+                result["protocol"] = "uma-bct-stream-v1"
+                print(json.dumps(result), flush=True)
+                stream_started = True
+                directory = RESULTS / token(result["envelope"]["run_id"])
+                subprocess.run(["tar", f"--directory={directory}", "--create", "--file=-", "."],
+                               check=True, stdout=sys.stdout.buffer, stderr=sys.stderr)
+                return 0
         print(json.dumps(result))
         return 0  # CLI exit code is retained in the envelope; SSH transport remains distinguishable.
     except Exception as error:
-        print(json.dumps({"status": "failed", "error": str(error)}))
+        print(json.dumps({"status": "failed", "error": str(error)}), file=sys.stderr if stream_started else sys.stdout)
         return 2
 
 

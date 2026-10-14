@@ -12,9 +12,11 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VARIANTS = {"g6": ("gpu", "L4"), "g5": ("gpu", "A10G"), "p5": ("gpu", "H100"), "m7i": ("cpu", None)}
+VARIANTS = {"g6": ("gpu", "L4"), "g5": ("gpu", "A10G"), "p5": ("gpu", "H100"),
+            "g6e": ("gpu", "L40S"), "g7e": ("gpu", "RTX PRO 6000 Blackwell Server Edition"), "m7i": ("cpu", None)}
 FILENAMES = {"g6": "demo-ec2-user-data.sh", "g5": "demo-ec2-g5-user-data.sh",
-             "p5": "demo-ec2-p5-user-data.sh", "m7i": "demo-ec2-m7i-user-data.sh"}
+             "p5": "demo-ec2-p5-user-data.sh", "m7i": "demo-ec2-m7i-user-data.sh",
+             "g6e": "demo-ec2-g6e-user-data.sh", "g7e": "demo-ec2-g7e-user-data.sh"}
 
 
 def embedded(script: str, marker: str, content: str) -> str:
@@ -36,9 +38,15 @@ def render(variant: str) -> str:
     compose = (ROOT / ("compose.ec2-demo.cpu.yaml" if mode == "cpu" else "compose.ec2-demo.yaml")).read_text()
     script = embedded(script, "DEMO_COMPOSE", compose)
     script = embedded(script, "DEMO_HEALTH", (ROOT / "scripts/demo_ec2_health.py").read_text())
-    if variant in {"g5", "p5"}:
+    if variant in {"g5", "p5", "g6e", "g7e"}:
         script = script.replace("one NVIDIA L4", f"one NVIDIA {gpu_name}")
         script = script.replace("supported L4 CUDA backends", f"supported {gpu_name} CUDA backends")
+        if variant == "g7e":
+            # Blackwell requires NVIDIA's open kernel modules.
+            script = script.replace("ubuntu-drivers install --gpgpu nvidia:580-server\n",
+                                    "# Blackwell uses open kernel modules; install the Ubuntu server package.\n"
+                                    "apt-get install -y nvidia-driver-580-server-open\n")
+            script = script.replace(" nvidia-driver-580-server ", " nvidia-driver-580-server-open ")
     elif variant == "m7i":
         script = script.replace("one NVIDIA L4", "M7i CPU rehearsal (>=32 GiB RAM)")
         script = script.replace("python3 ubuntu-drivers-common pciutils linux-headers-aws linux-aws", "python3")

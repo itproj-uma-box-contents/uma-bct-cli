@@ -12,20 +12,20 @@ from unittest.mock import Mock, patch
 from helpers import make_box, make_image, make_transcription
 
 from uma_bct.adapters.ollama_client import normalize_ollama_host
-from uma_bct.bootstrap import build_pipeline
+from uma_bct.bootstrap import build_pipeline, parallel_preflight
 from uma_bct.domain import BoundingBox, DetectedRegion
 from uma_bct.pipeline import BoxTranscriptionPipeline
 
 
 class ParallelPipelineTest(unittest.TestCase):
-    def run_pipeline(self, first, second, count=2, on_stage=None):
+    def run_pipeline(self, first, second, count=2, on_stage=None, extras=()):
         image = make_image()
         boxes = [make_box(image=image, box_id=f"box-{index}",
                           bbox=BoundingBox((index * 60, 0), (index * 60 + 50, 100))) for index in range(count)]
         detector = SimpleNamespace(name="qwen", detect=lambda _: [
             DetectedRegion(box.bounding_box, 0.9) for box in boxes])
         pipeline = BoxTranscriptionPipeline(detector=detector, cropper=SimpleNamespace(create_boxes=lambda *_: boxes),
-                                            transcriber=first, parallel_transcribers=(second,), work_directory=Path("crops"),
+                                            transcriber=first, parallel_transcribers=(second, *extras), work_directory=Path("crops"),
                                             on_stage=on_stage)
         with patch("uma_bct.pipeline.prepare_input_image", return_value=contextlib.nullcontext(image)), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -53,6 +53,19 @@ class ParallelPipelineTest(unittest.TestCase):
         self.assertEqual(result.status, "complete")
         self.assertEqual([record.box.box_id for record in result.records], ["box-0", "box-1"])
         self.assertEqual(sorted(calls), [("first", "box-0"), ("second", "box-1")])
+
+    def test_four_readers_process_every_box_once_and_preserve_physical_duplicates(self):
+        gate = threading.Barrier(4)
+        calls = []
+        def read(box):
+            gate.wait(timeout=2)
+            calls.append(box.box_id)
+            return [make_transcription(box)]
+        readers = [SimpleNamespace(name="qwen", transcribe=read) for _ in range(4)]
+        result = self.run_pipeline(*readers[:2], count=8, extras=readers[2:])
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(sorted(calls), [f"box-{index}" for index in range(8)])
+        self.assertEqual([record.box.box_id for record in result.records], [f"box-{index}" for index in range(8)])
 
     def test_failed_crop_keeps_successful_neighbour_and_partial_status(self):
         gate = threading.Barrier(2)
@@ -184,6 +197,35 @@ class ParallelBootstrapTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.build()
                 preflight.assert_not_called()
+
+    def test_four_and_six_readers_use_only_their_declared_private_hosts(self):
+        for count in (4, 6, 8):
+            environment = {**self.environment, "UMA_BCT_DEMO_TRANSCRIPTION_WORKERS": str(count)}
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch("uma_bct.bootstrap.OllamaVisionModel.preflight", return_value={"model": "same", "model_digest": "same"}):
+                pipeline = self.build()
+                self.assertEqual(len(pipeline.parallel_transcribers), count - 1)
+                self.assertEqual(pipeline.model_metadata["demo_transcription_workers"], str(count))
+                self.assertEqual(normalize_ollama_host(f"http://ollama-parallel-{count}:11434"),
+                                 f"http://ollama-parallel-{count}:11434")
+                with self.assertRaises(ValueError):
+                    normalize_ollama_host(f"http://ollama-parallel-{count + 1}:11434")
+
+    def test_parallel_preflight_interrupt_does_not_wait_for_blocked_http_reader(self):
+        blocked, release = threading.Event(), threading.Event()
+        def preflight():
+            blocked.set()
+            release.wait(timeout=2)
+            return {"model": "same"}
+        def interrupted_get(_queue):
+            self.assertTrue(blocked.wait(timeout=1))
+            raise KeyboardInterrupt
+        try:
+            with patch("uma_bct.bootstrap.Queue.get", interrupted_get):
+                with self.assertRaises(KeyboardInterrupt):
+                    parallel_preflight((SimpleNamespace(preflight=preflight),))
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from scripts import build_demo_userdata as userdata
 from scripts import demo_benchmark as benchmark
 from scripts import demo_ec2 as client
 from scripts import demo_ec2_health as health
+from scripts import demo_ec2_mps as mps
 from scripts import demo_ec2_parallel as parallel
 from scripts import demo_ec2_remote as remote
 from uma_bct.adapters.ollama_client import OllamaVisionModel
@@ -28,6 +30,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.name == "posix", "Temporary demo scripts target macOS/Linux")
 class DemoConfigTest(unittest.TestCase):
+    def test_g6e_and_g7e_scripts_match_gpu_and_driver_requirements(self):
+        for variant, gpu in (("g6e", "L40S"), ("g7e", "RTX PRO 6000 Blackwell Server Edition")):
+            with self.subTest(variant=variant):
+                path = ROOT / "scripts" / f"demo-ec2-{variant}-user-data.sh"
+                script = path.read_text()
+                self.assertEqual(script, userdata.render(variant))
+                self.assertLessEqual(len(script.encode()), 16 * 1024)
+                backend = json.loads(script.split("<<'DEMO_BACKEND'\n", 1)[1].split("\nDEMO_BACKEND\n", 1)[0])
+                self.assertEqual(backend, {"mode": "gpu", "gpu_name": gpu})
+                self.assertIn("shutdown -r +1", script)
+                self.assertIn("107374182400", script)
+                self.assertIn(health.OLLAMA_IMAGE, script)
+                self.assertIn(health.MODEL, script)
+                helper = script.split("<<'DEMO_HEALTH'\n", 1)[1].split("\nDEMO_HEALTH\n", 1)[0] + "\n"
+                self.assertEqual(helper, (ROOT / "scripts/demo_ec2_health.py").read_text())
+                if variant == "g7e":
+                    self.assertIn("apt-get install -y nvidia-driver-580-server-open", script)
+                    self.assertNotIn("ubuntu-drivers install --gpgpu nvidia:580-server\n", script)
+                else:
+                    self.assertIn("ubuntu-drivers install --gpgpu nvidia:580-server\n", script)
+                subprocess.run(["bash", "-n", str(path)], check=True)
+
     def test_p5_userdata_is_self_contained_and_requires_one_h100(self):
         path = ROOT / "scripts/demo-ec2-p5-user-data.sh"
         script = path.read_text()
@@ -112,6 +136,35 @@ class DemoConfigTest(unittest.TestCase):
 
 
 class DemoHealthTest(unittest.TestCase):
+    def test_l4_readiness_does_not_accept_l40s_substring(self):
+        with patch.object(health, "backend_config", return_value={"mode": "gpu", "gpu_name": "L4"}), \
+                patch.object(health, "command", return_value="NVIDIA L40S, 580, 46068 MiB"):
+            with self.assertRaisesRegex(RuntimeError, "L4"):
+                health.readiness()
+
+    def test_l40s_and_blackwell_readiness_require_the_selected_gpu_and_full_residency(self):
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384, "size_vram": 1}
+        for name in ("L40S", "RTX PRO 6000 Blackwell Server Edition"):
+            with tempfile.TemporaryDirectory() as temporary:
+                backend = Path(temporary) / "backend.json"
+                backend.write_text(json.dumps({"mode": "gpu", "gpu_name": name}))
+                with patch.object(health, "BACKEND_FILE", backend):
+                    self.assertEqual(health.backend_config()["gpu_name"], name)
+            for gpu, processor, accepted in ((f"NVIDIA {name}", "100% GPU", True),
+                                             ("NVIDIA L4", "100% GPU", False),
+                                             (f"NVIDIA {name}", "100% CPU", False)):
+                with self.subTest(name=name, gpu=gpu, processor=processor), \
+                        patch.object(health, "backend_config", return_value={"mode": "gpu", "gpu_name": name}), \
+                        patch.object(health, "command", side_effect=[gpu, "GPU device", f"{health.MODEL} {processor}"]), \
+                        patch.object(health, "container_info", return_value=("container", {})), \
+                        patch.object(health, "inventory", return_value={}), \
+                        patch.object(health, "api", return_value={"models": [running]}):
+                    if accepted:
+                        self.assertEqual(health.readiness()["status"], "ready")
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            health.readiness()
+
     def test_h100_configuration_and_readiness_reject_other_devices_and_cpu_spill(self):
         with tempfile.TemporaryDirectory() as temporary:
             backend = Path(temporary) / "backend.json"
@@ -329,6 +382,65 @@ class DemoRemoteTest(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
 class DemoParallelServiceTest(unittest.TestCase):
+    def test_scheduler_batch_readiness_checks_exact_gpu_residency_for_each_runner(self):
+        info = {"Id": "fixture", "State": {"Running": True},
+                "Config": {"Image": health.OLLAMA_IMAGE, "Env": ["OLLAMA_NO_CLOUD=1", "OLLAMA_KEEP_ALIVE=-1",
+                    "OLLAMA_MAX_LOADED_MODELS=1", "OLLAMA_NUM_PARALLEL=1", "OLLAMA_CONTEXT_LENGTH=16384",
+                    "CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps"]},
+                "HostConfig": {"PortBindings": {}, "DeviceRequests": [{"Driver": "nvidia", "Count": 1}]}}
+        running = {"name": health.MODEL, "digest": health.MODEL_DIGEST, "context_length": 16384,
+                   "size": 100, "size_vram": 100}
+        def command(*args):
+            if args[0] == "nvidia-smi":
+                return "NVIDIA H100 80GB HBM3, 580.178.04, 81559 MiB"
+            if args[:2] == ("docker", "inspect"):
+                return json.dumps([info, info])
+            return "GPU device"
+        module = SimpleNamespace(backend_config=lambda: {"mode": "gpu", "gpu_name": "H100"}, command=command,
+            OLLAMA_IMAGE=health.OLLAMA_IMAGE, MODEL=health.MODEL, MODEL_DIGEST=health.MODEL_DIGEST,
+            CONTEXT=health.CONTEXT, SETTINGS=health.SETTINGS, inventory=lambda _: {},
+            api=lambda *_: {"models": [running]})
+        self.assertEqual(len(parallel.scheduled_readiness(module, 2)), 2)
+        for key, value in (("size_vram", 99), ("context_length", 8192), ("digest", "changed")):
+            with self.subTest(key=key):
+                changed = {**running, key: value}
+                module.api = lambda *_, changed=changed: {"models": [changed]}
+                with self.assertRaisesRegex(RuntimeError, "cold|CPU"):
+                    parallel.scheduled_readiness(module, 2)
+
+    def test_read_only_readiness_overlaps_all_independent_runners(self):
+        gate = threading.Barrier(4)
+        def readiness(**kwargs):
+            gate.wait(timeout=2)
+            return {"backend": {"mode": "gpu"}, "gpu": "H100", "settings": health.SETTINGS}
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config.json"
+            config.write_text('{"workers": 4}')
+            module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"}, readiness=readiness)
+            with patch.object(parallel, "CONFIG", config), patch.object(parallel, "health_module", return_value=module):
+                result = parallel.status()
+            self.assertEqual(len(result["runners"]), 4)
+            self.assertEqual(result["settings"]["transcription_workers"], 4)
+
+    def test_many_runners_keep_pinned_private_services_and_recheck_every_loaded_model(self):
+        template = (ROOT / "compose.ec2-demo.parallel.yaml").read_bytes()
+        for count in (4, 6):
+            compose = parallel.runner_compose(template, count).decode()
+            self.assertEqual(compose.count("    image: " + health.OLLAMA_IMAGE), count - 1)
+            self.assertNotIn("ports:", compose)
+            self.assertEqual(compose.count("OLLAMA_CONTEXT_LENGTH: \"16384\""), count - 1)
+            with tempfile.TemporaryDirectory() as temporary:
+                config = Path(temporary) / "config.json"
+                config.write_text(json.dumps({"workers": count}))
+                def readiness(**kwargs):
+                    if kwargs.get("service") == "ollama-parallel-3" and not kwargs.get("warm"):
+                        raise RuntimeError("earlier reader spilled onto CPU")
+                    return {"backend": {"mode": "gpu"}, "gpu": "H100", "settings": health.SETTINGS}
+                module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"}, readiness=readiness)
+                with patch.object(parallel, "CONFIG", config), patch.object(parallel, "health_module", return_value=module):
+                    with self.assertRaisesRegex(RuntimeError, "spilled"):
+                        parallel.status(warm_second=True)
+
     def test_active_run_excludes_configuration_before_any_mutation(self):
         import fcntl
 
@@ -391,7 +503,7 @@ class DemoParallelServiceTest(unittest.TestCase):
             stack.enter_context(patch.object(parallel, "ubuntu_identity", return_value=(os.getuid(), os.getgid())))
             source_health, source_compose = root / "source-health", root / "source-compose"
             source_health.write_text("source helper")
-            source_compose.write_text("source compose")
+            source_compose.write_bytes((ROOT / "compose.ec2-demo.parallel.yaml").read_bytes())
             module = SimpleNamespace(backend_config=lambda: {"mode": "gpu"},
                                      container_info=lambda: ("first", {}), command=Mock())
             stack.enter_context(patch.object(parallel, "health_module", return_value=module))
@@ -408,7 +520,176 @@ class DemoParallelServiceTest(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix", "SSH wrapper targets macOS/Linux")
+class DemoMPSTest(unittest.TestCase):
+    def test_matching_json_flag_cannot_hide_incomplete_scheduler_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            root = Path(temporary)
+            stack.enter_context(patch.object(mps, "BASE", root))
+            (root / "backend.json").write_text('{"mode":"gpu","gpu_name":"H100"}')
+            for name in ("COMPOSE", "DROPIN", "UNIT", "CONFIG"):
+                stack.enter_context(patch.object(mps, name, root / name))
+            stack.enter_context(patch.object(mps, "configuration_lock", return_value=contextlib.nullcontext()))
+            mps.COMPOSE.write_text("CUDA_MPS_PIPE_DIRECTORY: stale")
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                mps.configure(False)
+            mps.COMPOSE.write_text("normal Compose")
+            mps.DROPIN.write_text("stale dependency")
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                mps.configure(False)
+            mps.CONFIG.write_text('{"enabled":true}')
+            with self.assertRaisesRegex(RuntimeError, "Incomplete"):
+                mps.configure(True)
+
+    def test_scheduler_preserves_settings_and_requires_private_api(self):
+        source = (ROOT / "compose.ec2-demo.parallel.yaml").read_bytes()
+        configured = mps.decorate(parallel.runner_compose(source, 4)).decode()
+        self.assertEqual(configured.count(health.OLLAMA_IMAGE), 3)
+        self.assertEqual(configured.count('OLLAMA_CONTEXT_LENGTH: "16384"'), 3)
+        self.assertEqual(configured.count('CUDA_MPS_PIPE_DIRECTORY: "/tmp/nvidia-mps"'), 3)
+        self.assertEqual(configured.count("    ipc: host"), 3)
+        self.assertNotIn("ports:", configured)
+        with self.assertRaisesRegex(ValueError, "publish"):
+            mps.decorate(source + b'\n    ports: ["11434:11434"]\n')
+        with self.assertRaisesRegex(ValueError, "already"):
+            mps.decorate(configured.encode())
+
+    def test_scheduler_requires_actual_client_mapping_and_shared_ipc(self):
+        info = {"Id": "fixture-container-id", "Name": "/uma-bct-demo-ollama-1",
+                "Config": {"Env": ["CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps"]},
+                "HostConfig": {"IpcMode": "host"},
+                "Mounts": [{"Source": str(mps.PIPE), "Destination": "/tmp/nvidia-mps"}]}
+        def command(*args, **kwargs):
+            if args[0] == "systemctl":
+                return "active"
+            if args[:2] == ("docker", "inspect"):
+                return json.dumps([info])
+            return "123" if kwargs.get("text") == "get_server_list\n" else "456"
+        with patch.object(mps, "enabled", return_value=True), patch.object(mps, "command", side_effect=command), \
+                patch.object(Path, "read_bytes", return_value=b"helper"), \
+                patch.object(Path, "read_text", return_value="/system.slice/docker-fixture-container-id.scope"):
+            self.assertTrue(mps.status(1)["gpu_mps"])
+            with patch.object(Path, "read_text", return_value="other-container"):
+                with self.assertRaisesRegex(RuntimeError, "verified"):
+                    mps.status(1)
+            info["HostConfig"]["IpcMode"] = "private"
+            with self.assertRaisesRegex(RuntimeError, "bypasses"):
+                mps.status(1)
+
+    def test_scheduler_failed_preparation_restores_original_primary(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            root = Path(temporary)
+            stack.enter_context(patch.object(mps, "BASE", root))
+            for name in ("CONFIG", "COMPOSE", "BACKUP", "INSTALLED", "UNIT", "DROPIN", "PIPE", "LOG"):
+                stack.enter_context(patch.object(mps, name, root / name))
+            original = (ROOT / "compose.ec2-demo.yaml").read_bytes()
+            mps.COMPOSE.write_bytes(original)
+            (root / "backend.json").write_text('{"mode":"gpu","gpu_name":"H100"}')
+            stack.enter_context(patch.object(mps, "configuration_lock", return_value=contextlib.nullcontext()))
+            stack.enter_context(patch.object(mps, "foreign_controller", return_value=False))
+            stopped = stack.enter_context(patch.object(mps, "stop_models"))
+            attempts = []
+            def command(*args, **kwargs):
+                if args == ("systemctl", "restart", mps.PRIMARY):
+                    attempts.append(args)
+                    if len(attempts) == 1:
+                        raise RuntimeError("scheduler startup failed")
+                return ""
+            stack.enter_context(patch.object(mps, "command", side_effect=command))
+            with self.assertRaisesRegex(RuntimeError, "original GPU service restored"):
+                mps.configure(True)
+            self.assertEqual(mps.COMPOSE.read_bytes(), original)
+            self.assertFalse(json.loads(mps.CONFIG.read_text())["enabled"])
+            self.assertFalse(mps.DROPIN.exists())
+            self.assertEqual(stopped.call_count, 2)
+            self.assertEqual(len(attempts), 2)
+
+
 class DemoClientTest(unittest.TestCase):
+    def test_mismatched_stream_cannot_supply_another_runs_nonzero_cli_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.jpg"
+            image.write_bytes(b"synthetic")
+            response = {"protocol": "uma-bct-stream-v1", "envelope": {"run_id": "a" * 32, "cli_exit_code": 1,
+                "status": "partial", "backend": "gpu", "source": {"source_sha256": "wrong"},
+                "settings": {"transcription_workers": 1}}}
+            process = SimpleNamespace(stdin=Mock(), stdout=io.BytesIO(json.dumps(response).encode() + b"\n"),
+                                      wait=Mock(return_value=0), poll=Mock(return_value=0))
+            with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                    patch.object(client, "result_root", return_value=root / "local"), \
+                    patch.object(client.uuid, "uuid4", return_value=SimpleNamespace(hex="a" * 32)), \
+                    patch.object(client.subprocess, "Popen", return_value=process):
+                value, code = client.demo_run(image, "never", time.monotonic(), stream_results=True)
+            self.assertEqual(code, 2)
+            self.assertIsNone(value["cli_exit_code"])
+
+    def test_single_ssh_stream_validates_and_publishes_all_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.jpg"
+            image.write_bytes(b"synthetic approved image")
+            source = root / "server"
+            (source / "Batch fixture/Crops").mkdir(parents=True)
+            (source / "Batch fixture/Crops/box.png").write_bytes(b"synthetic crop")
+            (source / "Batch fixture/Review.html").write_text('<a href="Crops/box.png">View</a>')
+            response = {"protocol": "uma-bct-stream-v1", "envelope": {
+                "run_id": "a" * 32, "cli_exit_code": 0, "status": "complete", "backend": "gpu",
+                "source": {"source_sha256": client.digest(image)}, "settings": {"transcription_workers": 4}},
+                "transfer": remote.transfer_manifest(source)}
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w") as bundle:
+                bundle.add(source, arcname=".")
+            process = SimpleNamespace(stdin=Mock(), stdout=io.BytesIO(json.dumps(response).encode() + b"\n" + archive.getvalue()),
+                                      wait=Mock(return_value=0), poll=Mock(return_value=0))
+            with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                    patch.object(client, "result_root", return_value=root / "local"), \
+                    patch.object(client.uuid, "uuid4", return_value=SimpleNamespace(hex="a" * 32)), \
+                    patch.object(client.subprocess, "Popen", return_value=process) as ssh, \
+                    patch.object(client, "rpc") as rpc:
+                value, code = client.demo_run(image, "never", time.monotonic(), transcription_workers=4, stream_results=True)
+            self.assertEqual(code, 0)
+            self.assertTrue(value["retrieval_complete"])
+            self.assertEqual(value["result_transport"], "ssh-stream")
+            self.assertEqual((Path(value["local_results"]) / "Batch fixture/Crops/box.png").read_bytes(), b"synthetic crop")
+            self.assertEqual(json.loads(process.stdin.write.call_args.args[0])["action"], "run-stream-v1")
+            ssh.assert_called_once()
+            rpc.assert_not_called()
+
+    def test_stream_legacy_server_and_source_mismatch_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for response in ({"status": "failed", "error": "Unknown demo action."},
+                             {"protocol": "uma-bct-stream-v1", "envelope": {"run_id": "wrong"}}, []):
+                process = SimpleNamespace(stdin=Mock(), stdout=io.BytesIO(json.dumps(response).encode() + b"\n"),
+                                          wait=Mock(return_value=0), poll=Mock(return_value=0))
+                with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                        patch.object(client.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(client.StreamTransferError):
+                        client.stream_rpc({"run_id": "a" * 32, "source_sha256": "b" * 64,
+                                           "backend": "gpu", "transcription_workers": 4}, root)
+                self.assertFalse(list(root.rglob("Results")))
+
+    def test_failed_stream_retains_partial_cli_exit_code_and_transfer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "fixture.jpg"
+            image.write_bytes(b"synthetic")
+            response = {"protocol": "uma-bct-stream-v1", "envelope": {"run_id": "a" * 32, "cli_exit_code": 1,
+                "status": "partial", "backend": "gpu", "source": {"source_sha256": client.digest(image)},
+                "settings": {"transcription_workers": 1}}, "transfer": {"files": {}}}
+            process = SimpleNamespace(stdin=Mock(), stdout=io.BytesIO(json.dumps(response).encode() + b"\npartial"),
+                                      wait=Mock(return_value=255), poll=Mock(return_value=255))
+            with patch.object(client, "connection", return_value=("ubuntu@fixture", [])), \
+                    patch.object(client, "result_root", return_value=root / "local"), \
+                    patch.object(client.uuid, "uuid4", return_value=SimpleNamespace(hex="a" * 32)), \
+                    patch.object(client.subprocess, "Popen", return_value=process):
+                value, code = client.demo_run(image, "never", time.monotonic(), stream_results=True)
+            self.assertEqual(code, 1)
+            self.assertEqual(value["cli_status"], "partial")
+            self.assertEqual(value["status"], "failed")
+            self.assertTrue(list(root.rglob("Transfer.tar")))
+            self.assertFalse(list(root.rglob("Results")))
+
     def test_archive_retrieval_preserves_exact_files_and_relative_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

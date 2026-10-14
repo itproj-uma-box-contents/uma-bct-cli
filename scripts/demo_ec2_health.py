@@ -32,8 +32,10 @@ def backend_config() -> dict:
         value = {"mode": "gpu", "gpu_name": "L4"}  # Original G6 installations.
     if not isinstance(value, dict) or value.get("mode") not in {"gpu", "cpu"}:
         raise RuntimeError("Invalid prepared backend configuration.")
-    if value["mode"] == "gpu" and value.get("gpu_name") not in {"L4", "A10G", "H100"}:
-        raise RuntimeError("GPU setup must specify L4, A10G or H100.")
+    if value["mode"] == "gpu" and value.get("gpu_name") not in {
+        "L4", "A10G", "H100", "L40S", "RTX PRO 6000 Blackwell Server Edition"
+    }:
+        raise RuntimeError("GPU setup must name a supported GPU.")
     return value
 
 
@@ -95,7 +97,9 @@ def readiness(*, warm: bool = False, expected_backend: str = "gpu", service: str
     gpu = None
     if config["mode"] == "gpu":
         gpu = command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader")
-        if len(gpu.splitlines()) != 1 or config["gpu_name"] not in gpu:
+        name = gpu.split(",", 1)[0].strip().removeprefix("NVIDIA ")
+        expected = config["gpu_name"]
+        if len(gpu.splitlines()) != 1 or not (name == expected or name.startswith(expected + " ")):
             raise RuntimeError(f"GPU setup requires one NVIDIA {config['gpu_name']}; CPU fallback is not permitted.")
     container, info = container_info(config, service=service, compose=compose)
     if config["mode"] == "gpu":

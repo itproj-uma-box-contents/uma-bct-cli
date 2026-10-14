@@ -284,7 +284,10 @@ def normalize_ollama_host(value: str) -> str:
 
     # Fixed private Compose service names only; the second requires explicit demo
     # mode as well. Other hostnames still require the HTTPS privacy opt-in.
-    demo_runner = hostname == "ollama-parallel" and os.getenv("UMA_BCT_DEMO_TRANSCRIPTION_WORKERS") == "2"
+    workers = os.getenv("UMA_BCT_DEMO_TRANSCRIPTION_WORKERS", "1")
+    demo_hosts = ({f"ollama-parallel{'' if index == 2 else f'-{index}'}" for index in range(2, int(workers) + 1)}
+                  if workers in {"2", "4", "6", "8"} else set())
+    demo_runner = hostname in demo_hosts
     container = (hostname == "ollama" or demo_runner) and environment_flag(CONTAINER_OLLAMA_ENVIRONMENT_VARIABLE)
     remote = environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE)
     if not loopback and not container and not remote:

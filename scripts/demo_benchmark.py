@@ -158,6 +158,7 @@ def benchmark(args: argparse.Namespace) -> dict:
                        "--verification", args.verification, "--backend", args.backend,
                        "--transcription-workers", str(args.transcription_workers),
                        *(["--archive-results"] if args.archive_results else []),
+                       *(["--stream-results"] if args.stream_results else []),
                        *(["--timings"] if args.timings else [])]
         started = time.monotonic()
         interrupted = False
@@ -229,8 +230,9 @@ def main() -> int:
         command.add_argument("--timings", action="store_true")
         if name == "ec2":
             command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu")
-            command.add_argument("--transcription-workers", type=int, choices=(1, 2), default=1)
+            command.add_argument("--transcription-workers", type=int, choices=(1, 2, 4, 6, 8), default=1)
             command.add_argument("--archive-results", action="store_true")
+            command.add_argument("--stream-results", action="store_true")
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")

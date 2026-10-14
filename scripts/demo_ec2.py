@@ -105,12 +105,12 @@ def source_bundle(destination: Path, *, root: Path = ROOT) -> dict:
     return metadata
 
 
-def prepare(image: Path | None, *, backend: str = "gpu", transcription_workers: int = 1) -> dict:
+def prepare(image: Path | None, *, backend: str = "gpu", transcription_workers: int = 1, gpu_mps: bool = False) -> dict:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
     host, options = connection()
-    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
-        raise ValueError("Use one worker normally; two independent runners require GPU demo mode.")
+    if transcription_workers not in {1, 2, 4, 6, 8} or (backend == "cpu" and (transcription_workers != 1 or gpu_mps)):
+        raise ValueError("Use one worker normally; independent runners require GPU demo mode.")
     chosen, fingerprint = selected_image(image) if image is not None else (None, None)
     print("Preparing the server, application, and selected input; this is outside live-run timing.", file=sys.stderr)
     # Verify infrastructure/reheat before any private transfer. A stopped or unfinished
@@ -123,12 +123,14 @@ def prepare(image: Path | None, *, backend: str = "gpu", transcription_workers: 
     # is explicit preparation, never hidden inside a timed run.
     for source, suffix in (("scripts/demo_ec2_health.py", "health.py"),
                            ("scripts/demo_ec2_parallel.py", "parallel.py"),
+                           ("scripts/demo_ec2_mps.py", "mps.py"),
                            ("compose.ec2-demo.parallel.yaml", "parallel.yaml")):
         copy(str(ROOT / source), f"{host}:{REMOTE_BASE}/demo_incoming/{upload_id}-{suffix}")
+    ssh_json(f"sudo python3 {REMOTE_BASE}/demo_incoming/{upload_id}-mps.py {'enable' if gpu_mps else 'disable'}")
     ssh_json(f"sudo python3 {REMOTE_BASE}/demo_incoming/{upload_id}-parallel.py configure "
              f"--workers {transcription_workers} --health-file {REMOTE_BASE}/demo_incoming/{upload_id}-health.py "
              f"--compose-file {REMOTE_BASE}/demo_incoming/{upload_id}-parallel.yaml")
-    if transcription_workers == 2:
+    if transcription_workers > 1:
         ready = {**ssh_json("/usr/local/bin/uma-bct-demo-parallel status"), "primary_reheat": ready}
     with tempfile.TemporaryDirectory(prefix="uma-bct-demo-deploy-") as temporary:
         directory = Path(temporary)
@@ -210,7 +212,7 @@ def extract_result_archive(archive: Path, directory: Path, transfer: dict) -> No
         raise RuntimeError("Result archive is incomplete.")
 
 
-def retrieve(response: dict, root: Path, *, archive_results: bool = False) -> Path:
+def retrieve(response: dict, root: Path, *, archive_results: bool = False, local_archive: Path | None = None) -> Path:
     run_id = response["envelope"]["run_id"]
     if not re.fullmatch(r"[a-f0-9]{32}", run_id):
         raise ValueError("Invalid remote run identifier.")
@@ -219,30 +221,107 @@ def retrieve(response: dict, root: Path, *, archive_results: bool = False) -> Pa
         raise ValueError("Local demo result root must be a private directory (chmod 700).")
     # A new enclosing directory is exclusively reserved even when retrieving an old
     # run again. Earlier results are never replaced, including interrupted copies.
-    reserved = Path(tempfile.mkdtemp(prefix=f"{run_id}-", dir=root))
+    reserved = local_archive.parent if local_archive else Path(tempfile.mkdtemp(prefix=f"{run_id}-", dir=root))
     staging = reserved / "Incoming"
     staging.mkdir(mode=0o700)
     host, options = connection()
     try:
-        if archive_results:
-            archive = reserved / "Transfer.tar"
-            with archive.open("xb") as output:
-                archive.chmod(0o600)
-                # The only interpolated value is the validated hexadecimal run ID.
-                command = f"tar --directory={REMOTE_BASE}/demo_results/{run_id} --create --file=- ."
-                subprocess.run(["ssh", "-T", *options, host, command], check=True,
-                               stdout=output, stderr=sys.stderr)
+        if archive_results or local_archive:
+            archive = local_archive or reserved / "Transfer.tar"
+            if local_archive is None:
+                with archive.open("xb") as output:
+                    archive.chmod(0o600)
+                    # The only interpolated value is the validated hexadecimal run ID.
+                    command = f"tar --directory={REMOTE_BASE}/demo_results/{run_id} --create --file=- ."
+                    subprocess.run(["ssh", "-T", *options, host, command], check=True,
+                                   stdout=output, stderr=sys.stderr)
             extract_result_archive(archive, staging, response["transfer"])
         else:
             copy(f"{host}:{REMOTE_BASE}/demo_results/{run_id}/.", str(staging), recursive=True)
         validate_transfer(staging, response["transfer"])
-        if archive_results:
+        if archive_results or local_archive:
             archive.unlink()
         final = reserved / "Results"
         staging.rename(final)
         return final
     except Exception as error:
         raise RuntimeError(f"Retrieval failed; partial copy retained in {staging}. Retry retrieve --run-id {run_id}. {error}") from error
+
+
+class StreamTransferError(RuntimeError):
+    """Retain an authenticated CLI outcome when its subsequent transfer fails."""
+
+    def __init__(self, message: str, response: dict):
+        super().__init__(message)
+        self.response = response if isinstance(response, dict) else {}
+
+
+def stream_rpc(request: dict, root: Path) -> tuple[dict, Path, float, float]:
+    """Receive a bounded JSON header and complete archive through one private SSH session."""
+    host, options = connection()
+    reserved = Path(tempfile.mkdtemp(prefix=f"{request['run_id']}-", dir=root))
+    archive = reserved / "Transfer.tar"
+    response = {}
+    process = subprocess.Popen(["ssh", "-T", *options, host, "python3 /home/ubuntu/demo_control.py"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr)
+    started = time.monotonic()
+    try:
+        process.stdin.write(json.dumps(request).encode())
+        process.stdin.close()
+        header = process.stdout.readline(1024 * 1024 + 1)
+        header_seconds = time.monotonic() - started
+        if len(header) > 1024 * 1024 or not header.endswith(b"\n"):
+            raise RuntimeError("Server returned no bounded stream header. Update/prepare the server first.")
+        parsed = json.loads(header)
+        if not isinstance(parsed, dict) or parsed.get("protocol") != "uma-bct-stream-v1":
+            raise RuntimeError(parsed.get("error", "Server does not support streaming; run prepare first.")
+                               if isinstance(parsed, dict) else "Invalid stream response.")
+        envelope = parsed["envelope"]
+        if (envelope.get("run_id") != request["run_id"]
+                or envelope.get("source", {}).get("source_sha256") != request["source_sha256"]
+                or envelope.get("backend") != request["backend"]
+                or envelope.get("settings", {}).get("transcription_workers") != request["transcription_workers"]):
+            raise RuntimeError("Stream outcome does not match the selected source, backend or runner count.")
+        code = envelope.get("cli_exit_code")
+        if type(code) is not int or not 0 <= code <= 255:
+            raise RuntimeError("Invalid CLI exit code in stream outcome.")
+        # Only a matched, validated outcome can supply a preserved CLI exit code.
+        response = parsed
+        files = response["transfer"]["files"]
+        if not isinstance(files, dict):
+            raise RuntimeError("Invalid stream file manifest.")
+        maximum = 2 * 1024 * 1024
+        for name, metadata in files.items():
+            safe_relative(name)
+            size = metadata["size"]
+            if type(size) is not int or size < 0:
+                raise RuntimeError("Invalid stream manifest size.")
+            maximum += size + 8192  # Tar path/directory headers, plus manifest allowance.
+        transfer_started = time.monotonic()
+        with archive.open("xb") as output:
+            archive.chmod(0o600)
+            received = 0
+            while block := process.stdout.read(64 * 1024):
+                received += len(block)
+                if received > maximum:
+                    raise RuntimeError("Stream archive exceeds its authenticated file manifest.")
+                output.write(block)
+        if process.wait() != 0:
+            raise RuntimeError("SSH stream failed; completed server results can be retrieved by run ID.")
+        return response, archive, header_seconds, time.monotonic() - transfer_started
+    except Exception as error:
+        raise StreamTransferError(f"Stream failed; partial transfer retained in {reserved}. {error}", response) from error
+    finally:
+        process.stdout.close()
+        if not process.stdin.closed:
+            process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
 def result_root() -> Path:
@@ -254,10 +333,10 @@ def result_root() -> Path:
 
 def demo_run(image: Path | None, verification: str, started: float, *, run_id: str | None = None,
              timings: bool = False, backend: str = "gpu", transcription_workers: int = 1,
-             archive_results: bool = False) -> tuple[dict, int]:
+             archive_results: bool = False, stream_results: bool = False) -> tuple[dict, int]:
     if backend not in {"gpu", "cpu"}:
         raise ValueError("Backend must be gpu or cpu.")
-    if transcription_workers not in {1, 2} or (backend == "cpu" and transcription_workers != 1):
+    if transcription_workers not in {1, 2, 4, 6, 8} or (backend == "cpu" and transcription_workers != 1):
         raise ValueError("Two independent transcription runners require GPU demo mode.")
     identifier = run_id or uuid.uuid4().hex
     if not re.fullmatch(r"[a-f0-9]{32}", identifier):
@@ -274,21 +353,31 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
                 "timings": timings, "backend": backend, "transcription_workers": transcription_workers})
     print(f"Demo run ID: {identifier}", file=sys.stderr, flush=True)
     rpc_started = time.monotonic()
+    local_archive = None
+    received_seconds = 0.0
     try:
-        if not run_id and backend == "cpu":
-            # Old G6 controllers ignore unknown RPC fields. Confirm CPU capability
-            # before asking such a controller to perform any fresh inference.
-            require_cpu_status(rpc({"action": "status", "backend": "cpu"}))
-        if not run_id and transcription_workers == 2:
-            prepared = rpc({"action": "status", "backend": "gpu", "transcription_workers": 2})
-            if prepared.get("readiness", {}).get("settings", {}).get("transcription_workers") != 2:
-                raise RuntimeError("Server did not confirm two independent runners. Run prepare --transcription-workers 2.")
-        response = rpc(request)
+        if stream_results and not run_id:
+            request["action"] = "run-stream-v1"
+            response, local_archive, rpc_seconds, received_seconds = stream_rpc(request, destination)
+        else:
+            if not run_id and backend == "cpu":
+                # Old G6 controllers ignore unknown RPC fields. Confirm CPU capability
+                # before asking such a controller to perform any fresh inference.
+                require_cpu_status(rpc({"action": "status", "backend": "cpu"}))
+            if not run_id and transcription_workers > 1:
+                prepared = rpc({"action": "status", "backend": "gpu", "transcription_workers": transcription_workers})
+                if prepared.get("readiness", {}).get("settings", {}).get("transcription_workers") != transcription_workers:
+                    raise RuntimeError("Server did not confirm two independent runners or the selected count. Run prepare first.")
+            response = rpc(request)
+            rpc_seconds = time.monotonic() - rpc_started
     except Exception as error:
-        return {"status": "failed", "run_id": identifier, "cli_exit_code": None,
-                "error": str(error), "elapsed_seconds": time.monotonic() - started}, 2
+        failed_envelope = error.response.get("envelope", {}) if isinstance(error, StreamTransferError) else {}
+        failed_code = failed_envelope.get("cli_exit_code")
+        return {"status": "failed", "run_id": identifier, "cli_exit_code": failed_code,
+                "cli_status": failed_envelope.get("status"),
+                "error": str(error), "elapsed_seconds": time.monotonic() - started}, (
+                    failed_code if isinstance(failed_code, int) and 1 <= failed_code <= 255 else 2)
     envelope = response["envelope"]
-    rpc_seconds = time.monotonic() - rpc_started
     cli_code = envelope["cli_exit_code"]
     if not isinstance(cli_code, int) or not 0 <= cli_code <= 255:
         raise ValueError("Remote CLI exit code is invalid.")
@@ -303,8 +392,11 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
                 "error": "Remote transcription worker count differs from the selected mode."}, cli_code or 2
     try:
         retrieval_started = time.monotonic()
-        local = retrieve(response, destination, archive_results=archive_results)
-        retrieval_seconds = time.monotonic() - retrieval_started
+        if local_archive:
+            local = retrieve(response, destination, archive_results=True, local_archive=local_archive)
+        else:
+            local = retrieve(response, destination, archive_results=archive_results)
+        retrieval_seconds = received_seconds + time.monotonic() - retrieval_started
     except Exception as error:
         return {"status": "failed", "run_id": identifier, "cli_exit_code": cli_code,
                 "cli_status": envelope.get("status"), "retrieval_error": str(error),
@@ -312,7 +404,7 @@ def demo_run(image: Path | None, verification: str, started: float, *, run_id: s
     value = {**envelope, "cli_status": envelope["status"], "local_results": str(local),
              "worker_elapsed_seconds": time.monotonic() - started, "retrieval_complete": True,
              "operation": "retrieve" if run_id else "run", "host": connection()[0]}
-    value["result_transport"] = "ssh-tar" if archive_results else "scp"
+    value["result_transport"] = "ssh-stream" if local_archive else ("ssh-tar" if archive_results else "scp")
     if timings:
         value["workflow_timings"] = {"remote_calls_seconds": rpc_seconds,
                                     "retrieval_and_validation_seconds": retrieval_seconds}
@@ -332,13 +424,18 @@ def parser() -> argparse.ArgumentParser:
         if name != "retrieve":
             command.add_argument("--backend", choices=("gpu", "cpu"), default="gpu",
                                  help="gpu by default; select cpu explicitly for M7i functional rehearsal")
-            command.add_argument("--transcription-workers", type=int, choices=(1, 2), default=1,
-                                 help="opt-in two independent GPU runners; default sequential")
+            command.add_argument("--transcription-workers", type=int, choices=(1, 2, 4, 6, 8), default=1,
+                                 help="opt-in independent GPU runners; default sequential")
         if name in {"prepare", "run"}:
             command.add_argument("--image", type=Path, required=name == "run")
+        if name == "prepare":
+            command.add_argument("--gpu-mps", action="store_true",
+                                 help="opt-in H100 CUDA multiprocess scheduling; normal preparation disables it")
         if name == "run":
             command.add_argument("--verification", choices=("never", "always"), default="never")
             command.add_argument("--timings", action="store_true", help="private per-request timings; inference settings unchanged")
+            command.add_argument("--stream-results", action="store_true",
+                                 help="run and retrieve complete verified results over one authenticated SSH connection")
         if name in {"run", "retrieve"}:
             command.add_argument("--archive-results", action="store_true",
                                  help="retrieve all unchanged result files as one verified private SSH archive")
@@ -430,20 +527,23 @@ def main(argv: list[str] | None = None) -> int:
     code = 0
     try:
         if args.command == "prepare":
-            value = prepare(args.image, backend=args.backend, transcription_workers=args.transcription_workers)
+            value = prepare(args.image, backend=args.backend, transcription_workers=args.transcription_workers,
+                            gpu_mps=args.gpu_mps)
         elif args.command == "status":
             value = rpc({"action": "status", "backend": args.backend,
                          "transcription_workers": args.transcription_workers})
             if args.backend == "cpu":
                 require_cpu_status(value)
-            if args.transcription_workers == 2 and value.get("readiness", {}).get("settings", {}).get("transcription_workers") != 2:
+            if (args.transcription_workers > 1 and value.get("readiness", {}).get("settings", {}).get("transcription_workers")
+                    != args.transcription_workers):
                 raise RuntimeError("Server did not confirm two independent runners; prepare this mode first.")
         else:
             value, code = demo_run(getattr(args, "image", None), getattr(args, "verification", "never"), started,
                                    run_id=getattr(args, "run_id", None), timings=getattr(args, "timings", False),
                                    backend=getattr(args, "backend", "gpu"),
                                    transcription_workers=getattr(args, "transcription_workers", 1),
-                                   archive_results=getattr(args, "archive_results", False))
+                                   archive_results=getattr(args, "archive_results", False),
+                                   stream_results=getattr(args, "stream_results", False))
     except KeyboardInterrupt:
         value, code = {"status": "interrupted", "error": "Interrupted; inspect the recorded run ID before retrying."}, 130
     except Exception as error:

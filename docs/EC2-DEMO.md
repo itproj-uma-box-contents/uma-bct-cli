@@ -15,6 +15,9 @@ For the bounded single-H100 experiment, use the
 [P5 User Data](../scripts/demo-ec2-p5-user-data.sh). This requires Sydney's
 separate P-instance quota; H100 runtime and the five-second target are unmeasured.
 
+The [GPU script selector](EC2-GPU-SCRIPTS.md) covers Tokyo H100, G7e Blackwell
+and G6e L40S, including the matching driver and regional quota requirements.
+
 ## G5 GPU and M7i CPU scripts
 
 Both alternatives use **Ubuntu Server 24.04 LTS amd64**, **100 GiB encrypted gp3**,
@@ -143,7 +146,7 @@ include gaps between requests and exclude later catalogue work; whole CLI and Ma
 timers remain the completion measures. Old logs without boundaries retain their
 durations and report no span.
 
-Maintainers can regenerate all four embedded scripts without contacting AWS:
+Maintainers can regenerate all six embedded scripts without contacting AWS:
 `uv run python scripts/build_demo_userdata.py`. Tests verify the generated files
 match their shared helper/Compose configuration.
 

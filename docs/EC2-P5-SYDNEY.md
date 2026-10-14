@@ -8,6 +8,39 @@ and contingencies. Keep all photographs, results and model state private.
 
 ## Quota and availability first
 
+**Purchase-option correction (13 October 2026):** An On-Demand pricing-catalogue
+entry does not prove that the instance can be launched through that option in
+Sydney. AWS's published p5.4xlarge launch announcement lists Sydney for Capacity
+Blocks and lists Tokyo, Mumbai, Jakarta, London and Sao Paulo for On-Demand/Spot.
+Confirm current regional purchase support before following the On-Demand
+checklist below; live capacity is a separate check. The earlier USD 8.944/hour
+quote is a catalogue rate, not a capacity guarantee.
+[AWS purchase-option announcement](https://aws.amazon.com/about-aws/whats-new/2025/08/amazon-p5-single-gpu-instances-now-available/).
+
+Read-only CloudShell check:
+
+```bash
+aws ec2 describe-instance-types --region ap-southeast-2 \
+  --instance-types p5.4xlarge \
+  --query 'InstanceTypes[0].SupportedUsageClasses' --output json
+```
+
+Spot requires the separate regional **All P Spot Instance Requests** quota and
+spare capacity; it can be interrupted and is unsuitable as the sole live-demo
+plan. Regional Reserved Instances do not reserve hardware; zonal reservations
+have capacity benefits but one-/three-year commitments are unsuitable for this
+temporary budget. An immediate Capacity Reservation can also fail for insufficient
+capacity and is billed while held, even unused.
+
+Capacity Blocks are scheduled, non-cancellable purchases with a documented
+minimum one-day duration. AWS's current indicative p5.4xlarge block rate is
+USD 5.970/hour: a 24-hour block is about **USD 143.28 before other charges**, above
+the USD 120 total budget. Actual offering prices depend on supply/demand. Do not
+purchase a block within this budget; upfront credit eligibility is unverified.
+[Block duration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-how.html),
+[Block pricing](https://aws.amazon.com/ec2/capacityblocks/pricing/),
+[Spot quotas](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-spot-limits.html).
+
 Select **Asia Pacific (Sydney), ap-southeast-2**. Open **Service Quotas → Amazon
 EC2 → Running On-Demand P instances**. You need **16 available vCPUs**, after
 subtracting other P usage/reservations. Request an applied quota of at least 16

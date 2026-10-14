@@ -1,8 +1,7 @@
 #!/bin/bash
 # Paste the WHOLE file into EC2 Advanced details > User data.
 # Ubuntu 24.04 LTS amd64, one NVIDIA L4, encrypted >=100 GiB gp3 root EBS.
-# No credentials, repository tokens, private keys or image download URLs belong here.
-# Application deployment is deliberately a later authenticated SSH prepare step.
+# No credentials, keys or private URLs. Deploy application/photos later over SSH.
 set -Eeuo pipefail
 umask 077
 export DEBIAN_FRONTEND=noninteractive
@@ -17,8 +16,7 @@ if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != 24.04 ] || [ "$(dpkg --print-archit
     echo 'This setup requires Ubuntu 24.04 LTS amd64.'; exit 1
 fi
 
-# Check the provisioned block device, not filesystem capacity (which has overhead).
-# A filesystem grow command cannot enlarge the underlying EBS volume.
+# Check provisioned root capacity; filesystem expansion cannot enlarge EBS.
 root_source=$(findmnt -n -o SOURCE /)
 root_device=$(lsblk -snb -o TYPE,PATH "$root_source" | awk '$1 == "disk" {print $2; exit}')
 [ -n "$root_device" ] || { echo 'Cannot identify root EBS disk.'; exit 1; }
@@ -142,8 +140,10 @@ def backend_config() -> dict:
         value = {"mode": "gpu", "gpu_name": "L4"}  # Original G6 installations.
     if not isinstance(value, dict) or value.get("mode") not in {"gpu", "cpu"}:
         raise RuntimeError("Invalid prepared backend configuration.")
-    if value["mode"] == "gpu" and value.get("gpu_name") not in {"L4", "A10G", "H100"}:
-        raise RuntimeError("GPU setup must specify L4, A10G or H100.")
+    if value["mode"] == "gpu" and value.get("gpu_name") not in {
+        "L4", "A10G", "H100", "L40S", "RTX PRO 6000 Blackwell Server Edition"
+    }:
+        raise RuntimeError("GPU setup must name a supported GPU.")
     return value
 
 
@@ -205,7 +205,9 @@ def readiness(*, warm: bool = False, expected_backend: str = "gpu", service: str
     gpu = None
     if config["mode"] == "gpu":
         gpu = command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader")
-        if len(gpu.splitlines()) != 1 or config["gpu_name"] not in gpu:
+        name = gpu.split(",", 1)[0].strip().removeprefix("NVIDIA ")
+        expected = config["gpu_name"]
+        if len(gpu.splitlines()) != 1 or not (name == expected or name.startswith(expected + " ")):
             raise RuntimeError(f"GPU setup requires one NVIDIA {config['gpu_name']}; CPU fallback is not permitted.")
     container, info = container_info(config, service=service, compose=compose)
     if config["mode"] == "gpu":
@@ -297,10 +299,8 @@ dpkg-query -W docker-ce docker-compose-plugin nvidia-driver-580-server nvidia-co
 DEMO_START
 chmod 0755 /usr/local/sbin/uma-bct-demo-start
 
-# User Data normally runs only on first launch. This enabled unit handles the
-# driver reboot and EVERY subsequent stop/start. Enable without starting on the
-# first boot; start after reboot. Do not order after cloud-final: it orders after
-# multi-user.target itself, which would create a boot ordering cycle.
+# User Data normally runs only once; this unit handles driver reboot/stop-start.
+# Enable now, start after reboot. Avoid cloud-final/multi-user ordering cycles.
 cat >/etc/systemd/system/uma-bct-demo.service <<'DEMO_UNIT'
 [Unit]
 Description=UMA BCT private GPU demo model preparation
