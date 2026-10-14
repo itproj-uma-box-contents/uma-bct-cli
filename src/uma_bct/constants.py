@@ -1,16 +1,21 @@
-"""Catalogue rules and output column names."""
+"""Shared processing defaults, catalogue rules, and image constants."""
 
 OUTPUT_COLUMNS = [
     "Unit Type",
     "Unit Number",
     "Description",
-    "Dates",
-    "Earliest Date",
-    "Latest Date",
+    "Date Range",
     "Transcription Confidence (%)",
     "Review Flags",
     "Cropped Box Image Link",
+    "Dates",
+    "Earliest Date",
+    "Latest Date",
 ]
+
+# These exact layouts remain readable when recovering interrupted publications.
+LEGACY_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:7]
+DATE_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:3] + OUTPUT_COLUMNS[7:] + OUTPUT_COLUMNS[4:7]
 
 DUPLICATE_FLAG = "Potential Duplicate"
 MISSING_BOX_FLAG = "Missing Box"
@@ -24,6 +29,10 @@ MISSING_UNIT_FLAG = "Missing unit"
 INVALID_UNIT_FLAG = "Invalid unit"
 TRANSCRIPTION_MISMATCH_FLAG = "Transcription mismatch"
 FALLBACK_USED_FLAG = "Fallback used"
+
+# Transcription review uses integer percentages; detector scores use 0 to 1.
+DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE = 50
+DEFAULT_MIN_DETECTOR_CONFIDENCE = 0.60
 
 MIN_AREA_FRACTION = 0.025
 MAX_AREA_FRACTION = 0.45

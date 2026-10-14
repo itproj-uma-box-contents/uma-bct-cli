@@ -52,6 +52,23 @@ function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
     }
 }
 
+function Test-VerifiedSettings([IO.FileInfo] $Item) {
+    if ($Item.Name -ne ".uma-bct-settings.json" -or $Item.Length -gt 4096 -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+    $LinkType = $Item.PSObject.Properties["LinkType"]
+    if ($null -eq $LinkType -or -not [string]::IsNullOrEmpty("$($LinkType.Value)")) {
+        return $false
+    }
+    try {
+        $Raw = Get-Content -LiteralPath $Item.FullName -Raw -Encoding UTF8
+        return $Raw -cmatch '^\s*\{\s*"verification"\s*:\s*"(ask|always|never)"\s*\}\s*$'
+    } catch {
+        return $false
+    }
+}
+
 function Test-DirectoryData([string] $Path) {
     try {
         $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -65,7 +82,7 @@ function Test-DirectoryData([string] $Path) {
         throw "$Path must be a directory and not a symbolic link or junction."
     }
     foreach ($Entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
-        if ($Entry -is [IO.FileInfo] -and (Test-VerifiedResultsLock $Entry)) {
+        if ($Entry -is [IO.FileInfo] -and ((Test-VerifiedResultsLock $Entry) -or (Test-VerifiedSettings $Entry))) {
             continue
         }
         return $true

@@ -20,7 +20,7 @@ from typing import Any
 
 from .adapters.ollama_client import timeout_from_environment
 from .atomic import rename_new_file
-from .bootstrap import build_pipeline
+from .bootstrap import build_pipeline, selected_date_detector
 from .export import export_catalogue
 from .model_config import selected_model_metadata, selected_model_name
 from .path_safety import check_path
@@ -36,6 +36,7 @@ from .run_artifacts import (
     write_json_atomic,
 )
 from .terminal import TerminalProgress, print_run_summary
+from .verification import choose_verification, configured_mode, verify_image
 
 
 @dataclass
@@ -50,6 +51,7 @@ class ExportState:
     catalogue_digest: str | None = None
     replace_manifest: bool = False
     wrote_catalogue: bool = False
+    recovery_paths: tuple[Path, ...] = ()
 
 
 @contextmanager
@@ -87,9 +89,11 @@ def configuration(arguments: argparse.Namespace, work_directory: Path | None, re
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
         "model": selected_model_name(arguments),
+        "date_detector": selected_date_detector(arguments),
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
+        "verification": configured_mode(arguments),
         "request_timeout_seconds": request_timeout_seconds,
         "input": str(arguments.path_to_inputs),
         "output": str(arguments.path_to_outputs),
@@ -144,6 +148,8 @@ def public_summary(summary: dict[str, Any], *, image_count: int, model_name: str
     }
     if recovery_path := summary.get("recovery_path"):
         result["recovery_path"] = recovery_path
+    if recovery_paths := summary.get("recovery_paths"):
+        result["recovery_paths"] = recovery_paths
     return result
 
 
@@ -158,7 +164,7 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         pipeline = build_pipeline(
             detector_name=arguments.detector,
             transcriber_name=arguments.transcriber,
-            ai_dates=arguments.ai_dates,
+            date_detector_name=selected_date_detector(arguments),
             model_name=selected_model_name(arguments),
             work_directory=arguments.path_to_box_images,
             minimum_detector_confidence=arguments.min_detector_confidence,
@@ -185,22 +191,23 @@ def export_results(arguments: argparse.Namespace, results: list[ImageResult], ou
 
 def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
     manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
-    """Publish a staged CSV while retaining enough evidence to undo this run."""
+    """Publish a staged catalogue while retaining enough evidence to undo this run."""
 
     if not sum(len(result.records) for result in results):
         return state
     previous: tuple[Path, ...] = ()
     previous_catalogue: Path | None = None
-    staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}.csv")
+    staging = output_path.with_name(f".uma-bct-catalogue-publish-{uuid.uuid4().hex}{output_path.suffix}")
     publication_started = False
+    output_paths = (output_path, manifest_path)
     try:
         # Check again because model processing can take a long time.
         if not arguments.force:
-            for path in (output_path, manifest_path):
+            for path in output_paths:
                 check_path(path, "Output")
                 if path.exists():
                     raise FileExistsError(f"Output already exists: {path}")
-        # Stage the entire CSV before backing up or replacing a previous run.
+        # Stage the entire catalogue before backing up or replacing a previous run.
         # A forced run can restore only files whose saved copies still match.
         records = export_catalogue(
             results,
@@ -209,8 +216,8 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
         )
-        previous = backup_existing_results((output_path, manifest_path)) if arguments.force else ()
-        previous_catalogue = next((path for path in previous if path.suffix.casefold() == ".csv"), None)
+        previous = backup_existing_results(output_paths) if arguments.force else ()
+        previous_catalogue = next((path for path in previous if path.suffix.casefold() == output_path.suffix.casefold()), None)
         previous_manifest = next((path for path in previous if path.name.endswith(".run.json")), None)
         replace_manifest = previous_manifest is not None
         state.previous_results = previous
@@ -236,22 +243,21 @@ def export_results_into(arguments: argparse.Namespace, results: list[ImageResult
         if published_or_uncertain:
             try:
                 rollback_exported_catalogue(output_path, state)
-                state.record_count = 0
-                state.catalogue_output = None
-                state.wrote_catalogue = False
             except Exception as rollback_error:
+                failures.append({"stage": "rollback", "error": warning_text(rollback_error)})
                 print(
-                    f"Export rollback failed: {warning_text(rollback_error)}. Review {previous_catalogue or output_path}.",
+                    f"Export rollback failed: {warning_text(rollback_error)}. Review {state.recovery_paths}.",
                     file=sys.stderr,
                 )
+        else:
+            state.record_count = 0
+            state.catalogue_output = None
+            state.wrote_catalogue = False
         if not isinstance(error, Exception):
             raise
         message = warning_text(error)
         failures.append({"stage": "export", "error": message})
         print(f"Export failed: {message}", file=sys.stderr)
-        state.record_count = 0
-        state.catalogue_output = None
-        state.wrote_catalogue = False
         return state
 
     finally:
@@ -273,9 +279,16 @@ def write_manifest(manifest: Path, summary: dict[str, Any], failures: list[dict[
 
 
 def rollback_exported_catalogue(output_path: Path, state: ExportState) -> None:
-    if not state.wrote_catalogue or state.catalogue_digest is None:
-        return
-    rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
+    if state.wrote_catalogue and state.catalogue_digest is not None:
+        try:
+            rollback_owned_file(output_path, state.catalogue_digest, state.previous_catalogue, "catalogue")
+        except Exception:
+            state.recovery_paths = (state.previous_catalogue or output_path,)
+            raise
+        state.catalogue_output = None
+        state.record_count = 0
+        state.wrote_catalogue = False
+    state.recovery_paths = ()
 
 
 def write_backed_manifest(manifest: Path, summary: dict[str, Any], backup: Path, failures: list[dict[str, str]]) -> bool:
@@ -350,15 +363,15 @@ def recover_manifest_failure(output_path: Path, summary: dict[str, Any], export_
         rollback_exported_catalogue(output_path, export_state)
     except Exception as error:
         message = warning_text(error)
-        recovery_path = export_state.previous_catalogue or output_path
         failures.append({"stage": "rollback", "error": message})
         summary["status"] = "partial"
-        summary["recovery_path"] = str(recovery_path)
-        print(f"Rollback failed: {message}. Recovery file retained at {recovery_path}.", file=sys.stderr)
+        summary["recovery_paths"] = [str(path) for path in export_state.recovery_paths]
+        summary["recovery_path"] = summary["recovery_paths"][0]
+        print(f"Rollback failed: {message}. Review recovery files: {summary['recovery_paths']}.", file=sys.stderr)
     else:
         summary["status"] = "failed"
-        summary["catalogue_output"] = None
-        summary["catalogue_records"] = 0
+    summary["catalogue_output"] = export_state.catalogue_output
+    summary["catalogue_records"] = export_state.record_count
 
     recovery_manifest = failed_manifest_path(output_path)
     summary["run_manifest"] = str(recovery_manifest)
@@ -377,6 +390,11 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
     if isinstance(pipeline, BoxTranscriptionPipeline):
         pipeline.on_stage = progress.phase
     results = process_images(pipeline, images, failures, progress) if pipeline else []
+    if pipeline:
+        progress.close()
+        if choose_verification(arguments, configured_mode(arguments), has_records=any(r.records for r in results)):
+            results = [verify_image(result, pipeline.transcriber, on_stage=progress.phase,
+                                    date_detector=getattr(pipeline, "date_detector", None)) for result in results]
     progress.phase("Finalizing results" if pipeline else "Saving run details")
     export_state = ExportState()
     manifest: Path | None = None
@@ -407,12 +425,15 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
             "run_manifest": str(manifest),
             "previous_results": [str(path) for path in export_state.previous_results],
         }
-        if export_state.previous_manifest is not None:
+        if export_state.recovery_paths:
+            summary["recovery_paths"] = [str(path) for path in export_state.recovery_paths]
+            summary["recovery_path"] = summary["recovery_paths"][0]
+        if manifest == normal_manifest_path and export_state.previous_manifest is not None:
             manifest_written = write_backed_manifest(
                 manifest, summary, export_state.previous_manifest, failures
             )
         else:
-            manifest_written = write_manifest(manifest, summary, failures, replace_existing=export_state.replace_manifest)
+            manifest_written = write_manifest(manifest, summary, failures, replace_existing=False)
     except BaseException:
         if export_state.wrote_catalogue:
             try:
@@ -420,7 +441,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
             except Exception as error:
                 print(
                     f"Rollback after interruption failed: {warning_text(error)}. "
-                    f"Review {export_state.previous_catalogue or output_path}.",
+                    f"Review {export_state.recovery_paths}.",
                     file=sys.stderr,
                 )
         if manifest is not None and summary is not None:
@@ -433,7 +454,7 @@ def locked_batch_summary(arguments: argparse.Namespace, images: list[Path],
                     file=sys.stderr,
                 )
         raise
-    if not manifest_written and export_state.wrote_catalogue:
+    if not manifest_written and (export_state.wrote_catalogue):
         recover_manifest_failure(output_path, summary, export_state, failures)
     return summary, pipeline is not None
 

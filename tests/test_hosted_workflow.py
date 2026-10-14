@@ -57,6 +57,39 @@ class HostedWorkflowTest(unittest.TestCase):
         self.assertIs(pipeline.date_detector.client, model)
         self.assertNotIn("Physical-box checks:", pipeline.transcriber.crop_prompt(make_box()))
 
+    def test_hosted_verification_and_disputes_keep_the_selected_prompts(self):
+        model = Mock()
+        model.preflight.return_value = self.metadata
+        model.query.return_value = ModelResponse(value={"boxes": []})
+        with patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), contextlib.redirect_stderr(io.StringIO()):
+            pipeline = build_pipeline(
+                detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                work_directory=Path("unused"), minimum_detector_confidence=0.6, hosted_model=self.config,
+            )
+        box = make_box()
+        for full_image in (False, True):
+            with self.subTest(full_image=full_image):
+                expected = HOSTED_FULL_IMAGE_QUESTION if full_image else hosted_crop_question(box)
+                pipeline.transcriber.verify(box, full_image=full_image)
+                self.assertTrue(model.query.call_args.args[1].startswith(expected + "\nIndependently check"))
+                pipeline.transcriber.resolve_discrepancy(box, [], [], full_image=full_image)
+                self.assertTrue(model.query.call_args.args[1].startswith(expected + "\nTwo readings disagree"))
+
+    def test_hosted_date_selector_can_disable_dates_or_use_the_hosted_client(self):
+        model = Mock()
+        model.preflight.return_value = self.metadata
+        for name in ("none", "regex", "qwen"):
+            with self.subTest(name=name), patch("uma_bct.bootstrap.HostedVisionModel", return_value=model), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                pipeline = build_pipeline(
+                    detector_name="qwen", transcriber_name="qwen", model_name="qwen-local",
+                    date_detector_name=name, work_directory=Path("unused"),
+                    minimum_detector_confidence=0.6, hosted_model=self.config,
+                )
+                self.assertEqual(pipeline.date_detector.name, name)
+                if name == "qwen":
+                    self.assertIs(pipeline.date_detector.client, model)
+
     def test_openai_uses_hosted_prompts_with_x_first_coordinates(self):
         config = HostedModelConfig(model="openai/gpt-test", api_key="secret-test-key")
         model = Mock()
@@ -200,7 +233,7 @@ class HostedWorkflowTest(unittest.TestCase):
             with catalogue.open(encoding="utf-8-sig", newline="") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 1)
-            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Dates"])
+            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
             self.assertEqual(rows[0]["Unit Type"], "1960.0009")
             self.assertEqual(rows[0]["Unit Number"], "0004")
             self.assertEqual(rows[0]["Dates"], "No Dates")
@@ -306,6 +339,7 @@ class HostedWorkflowTest(unittest.TestCase):
             old_batch.mkdir()
             (old_batch / DETAILS_FILE_NAME).write_text(json.dumps({
                 "created_at": "2026-01-01T00:00:00+00:00",
+                "input_directory": str(inputs),
                 "input_snapshot": snapshot_signature(snapshot),
                 "configuration": {"model": "qwen-local"},
             }), encoding="utf-8")

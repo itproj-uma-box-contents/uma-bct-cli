@@ -12,7 +12,7 @@ from pillow_heif import register_heif_opener
 
 from uma_bct.adapters.opencv_detector import detect_regions, plausible_bbox
 from uma_bct.domain import BoundingBox, DetectedRegion, InputImage
-from uma_bct.imaging import OpenCVBoxCropper, load_input_image, prepare_input_image, read_input_image
+from uma_bct.imaging import OpenCVBoxCropper, load_input_image, prepare_input_image, read_image, read_input_image
 from uma_bct.path_safety import check_path
 from uma_bct.transcriptions import ObservedBox, deduplicate
 
@@ -105,6 +105,33 @@ class ImagingTest(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "Could not read image"),
         ):
             load_input_image("missing.jpg")
+
+    def test_windows_reads_unicode_image_paths_and_preserves_jpeg_orientation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, expected_shape in (("png", (20, 40, 3)), ("jpg", (40, 20, 3))):
+                with self.subTest(extension=extension):
+                    source = Path(directory) / f"Shelf é 📦.{extension}"
+                    image = Image.new("RGB", (40, 20), (23, 77, 131))
+                    exif = Image.Exif()
+                    if extension == "jpg":
+                        exif[274] = 6
+                    image.save(source, exif=exif)
+                    with patch("sys.platform", "win32"), patch("uma_bct.imaging.cv2.imread", return_value=None):
+                        pixels = read_image(source)
+                    self.assertEqual(pixels.shape, expected_shape)
+                    self.assertEqual(pixels.dtype, np.uint8)
+                    if extension == "png":
+                        np.testing.assert_array_equal(pixels, np.full(expected_shape, (131, 77, 23), dtype=np.uint8))
+
+    def test_windows_unreadable_images_have_a_clear_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, content in (("missing.png", None), ("empty.png", b""), ("invalid.png", b"not an image")):
+                with self.subTest(name=name):
+                    source = Path(directory) / name
+                    if content is not None:
+                        source.write_bytes(content)
+                    with patch("sys.platform", "win32"), self.assertRaisesRegex(ValueError, "Could not read image"):
+                        read_image(source)
 
     def test_prepares_new_pillow_format_once_and_removes_private_temporary_copy(self):
         with tempfile.TemporaryDirectory() as directory:

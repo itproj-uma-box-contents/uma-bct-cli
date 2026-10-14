@@ -102,7 +102,7 @@ class BoxTranscription:
     unit_number: str = ""
     typed_lines: tuple[str, ...] = ()
     handwritten_lines: tuple[str, ...] = ()
-    dates: tuple[Date | DateRange, ...] = ()
+    dates: tuple[Date | DateRange, ...] = field(default=(), kw_only=True)
     auxiliary_annotations: tuple[str, ...] = ()
     needs_review: bool = False
 
@@ -139,6 +139,7 @@ class BoxResult:
 
     box: Box
     transcription: BoxTranscription
+    verification: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.box.box_id != self.transcription.box_id:
@@ -152,4 +153,6 @@ class BoxResult:
             "detector_confidence": self.box.detector_confidence,
         }
         value.update(self.transcription.to_dict())
+        if self.verification is not None:
+            value["verification"] = self.verification
         return value

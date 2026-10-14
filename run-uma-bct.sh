@@ -48,9 +48,22 @@ directory_has_data() {
         if [ "$(basename -- "$entry")" = ".uma-bct.lock" ] && verified_results_lock "$entry"; then
             continue
         fi
+        if [ "$(basename -- "$entry")" = ".uma-bct-settings.json" ] && verified_settings_file "$entry"; then
+            continue
+        fi
         return 0
     done
     return 1
+}
+
+verified_settings_file() {
+    settings_path=$1
+    [ -f "$settings_path" ] && [ ! -L "$settings_path" ] && [ -r "$settings_path" ] || return 1
+    link_count=$({ stat -c '%h' "$settings_path" 2>/dev/null || stat -f '%l' "$settings_path" 2>/dev/null || true; })
+    [ "$link_count" = "1" ] || return 1
+    size=$(wc -c <"$settings_path" | awk '{print $1}') || return 1
+    [ "$size" -le 4096 ] || return 1
+    LC_ALL=C tr -d '[:space:]' <"$settings_path" | LC_ALL=C grep -Exq '\{"verification":"(ask|always|never)"\}'
 }
 
 verified_results_lock() {
@@ -739,8 +752,11 @@ has_input_images || fail "No supported photos were found in $INPUTS"
 set +e
 # Leave the CLI attached to this terminal so progress stays on stderr and its
 # final readable report appears here before the Results folder opens.
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION &
+# Save stdin before dash replaces a background child's fd 0 with /dev/null.
+exec 3<&0
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION <&3 3<&- &
 APP_PID=$!
+exec 3<&-
 wait "$APP_PID"
 status=$?
 APP_PID=""

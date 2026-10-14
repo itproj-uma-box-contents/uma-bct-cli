@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import sys
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -34,7 +35,14 @@ from .path_safety import check_path
 
 
 def read_image(path: Path) -> np.ndarray:
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if sys.platform == "win32":
+        # Python handles Unicode paths; OpenCV receives only the encoded pixels.
+        try:
+            image = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+        except (OSError, cv2.error) as error:
+            raise ValueError(f"Could not read image: {path}") from error
+    else:
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None or image.size == 0:
         raise ValueError(f"Could not read image: {path}")
     return image

@@ -1,5 +1,7 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 
 def component_to_string(component: int | None, width: int) -> str:
@@ -54,6 +56,14 @@ class DateRange:
                 if self.start.day and self.end.day and self.start.day > self.end.day:
                     return False
         return True
+
+def deserialize_dates(values: Iterable[dict[str, Any]]) -> tuple[Date | DateRange, ...]:
+    """Restore structured dates in both photo and verification checkpoints."""
+    return tuple(
+        DateRange(Date(**value["start"]), Date(**value["end"])) if "start" in value else Date(**value)
+        for value in values
+    )
+
 
 def get_earliest_date(dates: tuple[Date | DateRange, ...]) -> Date:
     #convert date ranges to two dates

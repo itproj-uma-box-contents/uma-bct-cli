@@ -28,8 +28,13 @@ report appears.
 
 During model setup and photo processing, the CLI requests protection against
 automatic idle sleep and releases it when the CLI exits. macOS confirms the
-request before work starts. If the computer rejects it, the terminal warns you
-and the run continues. Keep the laptop lid open: manual sleep or low battery
+request before work starts. If the computer rejects it, the terminal shows the
+failing operation and the available operating-system error, and the run continues.
+On Linux, helper error output and exit codes explain problems such as denied
+permissions, a missing system bus, or an unavailable `systemd-inhibit`. A helper
+that exits during processing also produces a warning. Windows reports a native
+error when supplied, or states that no extended error was provided. These
+diagnostics go to stderr and remain visible in captured terminal logs. Keep the laptop lid open: manual sleep or low battery
 can still interrupt work. Some screen saver or lock policies may still turn
 off the display while processing continues. If a warning appears, adjust the
 computer's power settings before a long batch.
@@ -75,43 +80,80 @@ Archive Box Transcription/
 ```
 
 An unfinished batch instead contains `Run Progress.json` and has no catalogue
-until every source photo has a terminal outcome. Start the same launcher again
+until every source photo and any requested verification have a terminal outcome. Start the same launcher again
 to resume it. Photos already committed as complete, partial, or failed are
-reused; the photo active at interruption is processed again. Do not add,
-remove, rename, reorder, or edit source photos while a batch is unfinished.
-The launcher reports the affected batch if its input snapshot no longer
-matches.
+reused; the photo active at interruption is processed again. Photos added while a batch runs are left for the next launch. A later launch processes
+only new or changed photos, using the saved run details to identify earlier work.
+Each batch has its own catalogue; older catalogues are not combined or overwritten.
+If the current photos span several completed batches, the report lists all relevant
+results and includes failures from earlier batches. Recorded catalogue row counts
+refer to the original published files, which can also contain photos since removed
+from the input folder; the report separately counts transcribed boxes for current
+photos. Later spreadsheet edits are not recounted.
+Do not remove, rename, or edit an original photo while its batch is unfinished;
+if that happens, the CLI preserves progress and explains which inputs to restore.
 
-A partial terminal batch publishes `Catalogue.csv` when it has at least one
+An unfinished batch also requires its original processing options. If it was
+started with the former 80% transcription review threshold, resume it with
+`--min-transcription-confidence 80`; the current default is 50%.
+
+You may edit a completed catalogue or save corrected copies and notes beside
+it. Later launches preserve those files and report a changed catalogue. Keep the
+run details and crop files intact: they record which photographs were processed.
+
+A partial terminal batch publishes its selected catalogue format when it has at least one
 usable row. A batch with no usable rows publishes only failed `Run Details.json`.
 Leaving an already completed photo set in place does not repeat model work.
 Advanced direct-CLI users may pass `--reprocess` with `--results-directory` to
 create a separate new batch intentionally.
 
-The CSV columns are:
+CSV is the default output. Use `--file-type excel` or explicitly pass
+`-o catalogue.xlsx` to select Excel. `--file-type csv` selects CSV explicitly.
+Format names are case-insensitive; a format flag and an explicit filename must
+agree. Direct runs default to `outputs/catalogue.csv`. For example, to select
+Excel and enable verification:
+
+```bash
+uma-bct --file-type excel --verification always
+```
+
+Existing catalogues are preserved, and unfinished batches keep their original
+format when resumed. Choosing a different format does not convert completed
+batches; use `--reprocess` to create a new managed batch if needed.
+
+Both formats use these columns:
 
 ```text
 Unit Type
 Unit Number
 Description
-Dates
-Earliest Date
-Latest Date
+Date Range
 Transcription Confidence (%)
 Review Flags
 Cropped Box Image Link
+Dates
+Earliest Date
+Latest Date
 ```
 
-Dates are extracted from transcribed handwriting with a local regex by default.
-Pass `--ai-dates` to use the selected model instead: local Qwen normally, or the
-configured provider when `--hosted` is present.
+The first four import columns keep their existing order; `Date Range` remains
+blank. Date extraction from handwriting adds `Dates`, `Earliest Date`, and
+`Latest Date` after the existing review columns. The default is regex extraction;
+use `--date-detector none` to disable it or `--ai-dates` (equivalently,
+`--date-detector qwen`) to use the selected model: local Qwen normally, or the
+configured provider when `--hosted` is present. No dates are shown as `No Dates`,
+with `None` for the earliest and latest date. Check extracted dates against the
+crop during human review.
+
+An unfinished managed batch keeps its original date extraction method when the
+option is omitted. Explicitly selecting a different method requires a new batch.
 
 ### Unit Type and Unit Number
 
 `Unit Type` contains all printed text visible on the box label in reading
 order, except for the unit-number phrase. Printed names, headings, logos,
 labels such as `Creator:`, and record identifiers are included. Visual line
-breaks and repeated whitespace are converted to single spaces in the CSV cell.
+breaks and repeated whitespace are converted to single spaces in the catalogue cell.
 
 `Unit Number` contains only the detected box or unit number, normalized to four
 digits. The tool recognizes `Unit`, `Box`, `Box No.`, `Box Number`, and `No.`
@@ -169,18 +211,58 @@ Detection is deliberately conservative:
 Advanced CLI users can disable this behavior with
 `--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
 
-The last column is a controlled relative `HYPERLINK` formula to its file under
-`Box Images`. Keep and move the whole batch folder together. Excel,
-LibreOffice, and Apple's spreadsheet engine document this function, but CSV
-import can vary by application: [Excel](https://support.microsoft.com/en-us/excel/functions/hyperlink-function),
-[LibreOffice Calc](https://help.libreoffice.org/latest/en-US/text/scalc/01/04060109.html), and
-[Apple spreadsheet functions](https://support.apple.com/guide/functions/functions-overview-ffa083bef0c/web).
-Google Sheets cannot open these private local file links and is unsupported.
-Opening a link uses the operating system's registered application; revealing
-and selecting the file in Finder or Explorer is not promised.
+### Review results and open crops
+
+The catalogue adds `Low confidence` to scores below 50% by default;
+a score of exactly 50% does not receive that flag. Set
+`--min-transcription-confidence INTEGER` (or `-c INTEGER`) to choose a review
+threshold from 0 to 100. This flags rows for review and keeps every transcription
+in the catalogue. The separate `--min-detector-confidence` option controls the
+OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
+
+Excel workbooks contain clickable crop filenames in `Cropped Box Image Link`.
+Each link opens the image file using your system's associated application in
+desktop Excel or LibreOffice. Keep the workbook and crop folder together when
+moving results. If your spreadsheet application cannot open a local link, open
+the named crop directly from the batch's `Box Images` folder. Apple Numbers and
+Google Sheets cannot open these private local-file links. CSV cannot save column
+widths or text wrapping; managed CSV batches retain their controlled relative
+`HYPERLINK` formulas for compatible Excel and LibreOffice imports.
+
+### Optional transcription verification
+
+Verification is disabled by default. Use `--verification always` to add a
+second reading of the same images within the same run using the same Qwen model.
+Use `--verification ask` to request an interactive choice after the first pass:
+choose **y** for this run or Enter to finish. The model receives
+a distinct checking prompt without seeing the first answer. Only crops with
+substantive differences receive a third request. Detection is not repeated.
+
+A correction requires the third reading to corroborate an earlier candidate.
+Unresolved differences, whole or partial content deletions, and ambiguous matches between boxes
+keep the original text and receive review flags. Printed text, identifiers, and
+unit number are reconciled together, including handwritten identity claims. Every row still needs human review:
+agreement between model readings does not prove correctness or raise confidence.
+
+Run details preserve the original and comparison readings. Managed runs checkpoint
+completed readings; restart the launcher to resume an interrupted check. A failed
+verification request preserves the first
+reading and produces a partial result with a review flag.
+
+Users can select `--verification always`, `--verification never`, or
+`--verification ask`. Only the CLI option enables verification for a new run;
+`UMA_BCT_VERIFICATION` and saved `.uma-bct-settings.json` preferences do not enable it.
+An unfinished batch keeps its recorded verification choice; finish it
+before changing that option. Older unfinished
+batches continue without verification. Already completed batches are reused;
+use `--reprocess` to intentionally start another complete run.
+
+`--json`, redirected stdin/stderr, and unattended runs never prompt. They verify
+only when verification was requested with `always`. Verification improves the opportunity
+to find discrepancies; measured accuracy gains require human-reviewed references.
 
 Before importing the catalogue, review each row against its crop and source
-photo. The CSV is sorted by `Unit Type` and `Unit Number`:
+photo. The catalogue is sorted by `Unit Type` and `Unit Number`:
 
 - Compare every row with its `Cropped Box Image Link` evidence.
 - Check every non-empty `Review Flags` value and the
@@ -459,13 +541,14 @@ uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/r
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
 
-Direct CLI runs show the same readable final report as the launcher. Add
+Direct CLI runs show the same readable final report as the launcher. Interrupted
+direct runs exit cleanly (130 for Ctrl+C); use managed batches for resumable work. Add
 `--json` when a script needs one JSON summary on stdout; progress and warnings
 still go to stderr. The `--human` flag remains accepted for older commands.
 
 `--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
-Without it, every existing direct-CLI default, alias, and Docker workflow stays
-available.
+Without it, direct output paths and existing aliases remain available. The bundled
+Docker workflow also produces Excel by default.
 
 Current limitations:
 
