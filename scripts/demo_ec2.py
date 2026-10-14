@@ -20,7 +20,8 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_BASE = "/home/ubuntu"
-SOURCE_FILES = ("Dockerfile", ".dockerignore", "README.md", "pyproject.toml", "uv.lock", "scripts/demo_ec2_remote.py")
+SOURCE_FILES = ("Dockerfile", ".dockerignore", "README.md", "pyproject.toml", "uv.lock", "scripts/demo_ec2_remote.py",
+                "scripts/demo_ec2_peer.py")
 
 
 def digest(path: Path) -> str:

@@ -328,9 +328,19 @@ class OllamaVisionModel:
             raise RuntimeError("The 'ollama' package is missing; reinstall UMA BCT.") from error
         # Ignore proxy environment variables and redirects so a local-looking
         # request cannot be forwarded by this client behind the operator's back.
-        return ollama.Client(
-            host=self.effective_host, timeout=self.effective_timeout, follow_redirects=False, trust_env=False
-        )
+        tls = {}
+        directory = os.getenv("UMA_BCT_DEMO_TLS_DIRECTORY")
+        if directory and self.effective_host.startswith("https://"):
+            import ssl
+
+            if os.getenv("UMA_BCT_DEMO_READER_HOSTS") is None or not environment_flag(REMOTE_OLLAMA_ENVIRONMENT_VARIABLE):
+                raise RuntimeError("Private worker certificates require explicitly prepared remote demo readers.")
+            root = Path(directory)
+            context = ssl.create_default_context(cafile=str(root / "ca.crt"))
+            context.load_cert_chain(str(root / "client.crt"), str(root / "client.key"))
+            tls["verify"] = context
+        return ollama.Client(host=self.effective_host, timeout=self.effective_timeout,
+                             follow_redirects=False, trust_env=False, **tls)
 
     def inventory(self) -> tuple[str, dict[str, str]]:
         try:

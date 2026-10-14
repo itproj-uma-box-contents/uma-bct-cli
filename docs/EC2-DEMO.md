@@ -83,6 +83,10 @@ local real-photo benchmarks when the current workflow is testing EC2.
 
 ## Experimental parallel crop transcription
 
+For the optional prepared H100 + Blackwell pair and single-connection verified
+retrieval, follow the [private two-GPU instructions](EC2-TWO-GPU-DEMO.md).
+Those instructions preserve the pipeline and record complete command timing.
+
 Normal execution remains sequential. `--transcription-workers 2` is an explicit
 demo experiment, not an established five-second configuration. Ollama 0.32.9
 forces Qwen3-VL to one request slot; increasing `OLLAMA_NUM_PARALLEL` does not

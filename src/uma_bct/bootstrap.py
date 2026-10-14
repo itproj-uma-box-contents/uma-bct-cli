@@ -6,6 +6,7 @@ The model is checked before any image work starts.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from collections.abc import Callable
@@ -73,9 +74,14 @@ def build_pipeline(*, detector_name: str, transcriber_name: str, model_name: str
     model_metadata = model_client.preflight()
     parallel_transcribers = ()
     if workers != "1":
+        configured_hosts = os.getenv("UMA_BCT_DEMO_READER_HOSTS")
+        hosts = (json.loads(configured_hosts) if configured_hosts else
+                 [f"http://ollama-parallel{'' if index == 2 else f'-{index}'}:11434"
+                  for index in range(2, int(workers) + 1)])
+        if not isinstance(hosts, list) or len(hosts) != int(workers) - 1 or not all(isinstance(host, str) for host in hosts):
+            raise ValueError("Prepared demo reader endpoints must match the declared worker count.")
         readers = tuple(OllamaVisionModel(model=model_name, timeout_seconds=request_timeout_seconds,
-                        host=f"http://ollama-parallel{'' if index == 2 else f'-{index}'}:11434")
-                        for index in range(2, int(workers) + 1))
+                        host=host) for host in hosts)
         # Independent services can be checked concurrently without sharing a request slot.
         metadata = parallel_preflight(readers)
         if any(item.get(key) != model_metadata.get(key) for item in metadata for key in ("model", "model_digest")):

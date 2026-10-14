@@ -148,11 +148,12 @@ def runner_compose(source: bytes, workers: int) -> bytes:
 def scheduled_readiness(health: ModuleType, workers: int) -> list[dict]:
     """Batch fresh checks for MPS clients; strict API residency plus real NVIDIA tooling."""
     config = health.backend_config()
-    if config != {"mode": "gpu", "gpu_name": "H100"}:
-        raise RuntimeError("The selected multiprocess scheduler requires its H100 backend.")
+    if config.get("mode") != "gpu" or config.get("gpu_name") not in {"H100", "RTX PRO 6000 Blackwell Server Edition"}:
+        raise RuntimeError("The selected scheduler requires its H100 or Blackwell backend.")
     gpu = health.command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader")
-    if len(gpu.splitlines()) != 1 or not gpu.split(",", 1)[0].strip().removeprefix("NVIDIA ").startswith("H100 "):
-        raise RuntimeError("The H100 scheduler cannot fall back to another GPU or CPU.")
+    name = gpu.split(",", 1)[0].strip().removeprefix("NVIDIA ")
+    if len(gpu.splitlines()) != 1 or not (name == config["gpu_name"] or name.startswith(config["gpu_name"] + " ")):
+        raise RuntimeError("The scheduler cannot fall back to another GPU or CPU.")
     names = [f"uma-bct-demo-{service_name(index)}-1" for index in range(1, workers + 1)]
     containers = json.loads(health.command("docker", "inspect", *names))
     required = {"OLLAMA_NO_CLOUD=1", "OLLAMA_KEEP_ALIVE=-1", "OLLAMA_MAX_LOADED_MODELS=1",

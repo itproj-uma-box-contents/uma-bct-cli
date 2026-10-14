@@ -27,7 +27,7 @@ MODEL_DIGEST = "0533d74300e4f9bc367d675d4e64ffd073d50ff16a2b4096cc2e8a1cf8c96319
 SETTINGS = {"model": MODEL, "num_ctx": 16384, "temperature": 0, "think": False,
             "transcription_logprobs": True, "parallel_requests": 1}
 SOURCE_FILES = {"Dockerfile", ".dockerignore", "README.md", "pyproject.toml", "uv.lock",
-                "scripts/demo_ec2_remote.py"}
+                "scripts/demo_ec2_remote.py", "scripts/demo_ec2_peer.py"}
 
 
 def digest(path: Path) -> str:
@@ -63,6 +63,20 @@ def health(action: str = "status", *, backend: str = "gpu", transcription_worker
         raise ValueError("Backend must be gpu or cpu.")
     if transcription_workers not in {1, 2, 4, 6, 8} or (backend == "cpu" and transcription_workers != 1):
         raise ValueError("Two independent runners require GPU mode.")
+    coordinator = Path("/opt/uma-bct-demo/peer-coordinator.json")
+    if coordinator.exists():
+        config = json.loads(coordinator.read_text())
+        if transcription_workers == config["total_workers"]:
+            if backend != "gpu" or action != "status":
+                raise RuntimeError("The private GPU pair must be prepared before a live run.")
+            import importlib.machinery
+            import importlib.util
+
+            loader = importlib.machinery.SourceFileLoader("uma_demo_pair", "/usr/local/bin/uma-bct-demo-peer")
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            peer = importlib.util.module_from_spec(spec)
+            loader.exec_module(peer)
+            return peer.combined_readiness(sys.modules[__name__], config)
     args = ([PARALLEL_HEALTH, "status"] if transcription_workers > 1 else
             [HEALTH, action, *(["--backend", "cpu"] if backend == "cpu" else [])])
     process = subprocess.run(args, capture_output=True, text=True,
@@ -255,6 +269,16 @@ def run(request: dict) -> dict:
         args[2:2] = ["-e", "UMA_BCT_DEMO_TIMINGS_FILE=/data/outputs/Request Timings.jsonl"]
     if workers > 1:
         args[2:2] = ["-e", f"UMA_BCT_DEMO_TRANSCRIPTION_WORKERS={workers}"]
+    coordinator = Path("/opt/uma-bct-demo/peer-coordinator.json")
+    if coordinator.exists():
+        pair = json.loads(coordinator.read_text())
+        if workers == pair["total_workers"]:
+            local_hosts = [f"http://ollama-parallel{'' if i == 2 else f'-{i}'}:11434"
+                           for i in range(2, pair["local_workers"] + 1)]
+            args[2:2] = ["-e", "UMA_BCT_ALLOW_REMOTE_OLLAMA=1", "-e",
+                         "UMA_BCT_DEMO_READER_HOSTS=" + json.dumps([*local_hosts, *pair["worker_urls"]]),
+                         "-e", "UMA_BCT_DEMO_TLS_DIRECTORY=/data/demo-peer/tls", "--mount",
+                         f"type=bind,source={pair['tls_directory']},target=/data/demo-peer/tls,readonly"]
     print(f"Running fresh EC2 inference on {backend.upper()}; CLI progress follows.", file=sys.stderr, flush=True)
     started = time.monotonic()
     with (directory / "CLI stdout.json").open("w") as output:

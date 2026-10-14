@@ -105,8 +105,10 @@ def stop_models() -> None:
 
 def configure(use_mps: bool) -> dict:
     with configuration_lock():
-        if use_mps and json.loads((BASE / "backend.json").read_text()) != {"mode": "gpu", "gpu_name": "H100"}:
-            raise RuntimeError("This measured scheduler experiment is H100-only.")
+        backend = json.loads((BASE / "backend.json").read_text()) if use_mps else {}
+        if use_mps and (backend.get("mode") != "gpu" or backend.get("gpu_name") not in {
+                "H100", "RTX PRO 6000 Blackwell Server Edition"}):
+            raise RuntimeError("The scheduler experiment requires its selected H100 or Blackwell GPU.")
         if enabled() == use_mps:
             decorated = b"CUDA_MPS_PIPE_DIRECTORY" in COMPOSE.read_bytes()
             if use_mps:
