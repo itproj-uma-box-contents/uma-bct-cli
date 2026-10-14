@@ -106,12 +106,11 @@ class CliTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 parse_args(["--date-detector"])
 
-    def test_date_options_preserve_disabling_and_reject_conflicting_selection(self):
-        self.assertEqual(parse_args([]).date_detector, "regex")
-        self.assertEqual(parse_args(["--date-detector", "none"]).date_detector, "none")
-        self.assertEqual(parse_args(["-u", "qwen"]).date_detector, "qwen")
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parse_args(["--ai-dates", "--date-detector", "none"])
+    def test_date_detector_option_is_removed(self):
+        self.assertFalse(hasattr(parse_args([]), "date_detector"))
+        for option in ("--date-detector", "-u"):
+            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args([option, "regex"])
 
     def test_confidence_options_keep_their_distinct_meanings(self):
         legacy_detector = parse_args(["--min-confidence", "0.7"])

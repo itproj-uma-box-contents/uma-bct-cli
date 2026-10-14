@@ -185,7 +185,8 @@ def _write_excel(path: Path, records: list[dict[str, str | int]], columns: Seque
         text = workbook.add_format({"text_wrap": True, "valign": "top"})
         heading = workbook.add_format({"bold": True, "text_wrap": True, "valign": "top"})
         link = workbook.add_format({"font_color": "blue", "underline": True, "text_wrap": True, "valign": "top"})
-        widths = dict(zip(OUTPUT_COLUMNS, (42, 14, 52, 16, 20, 36, 40, 32, 18, 18), strict=True))
+        widths = dict(zip(OUTPUT_COLUMNS, (42, 14, 52, 32, 18, 18, 20, 36, 40), strict=True))
+        widths["Date Range"] = 16  # Historical staged catalogues retain their original layout.
         for column, name in enumerate(columns):
             sheet.set_column(column, column, widths[name], text)
         sheet.write_row(0, 0, columns, heading)
@@ -226,6 +227,9 @@ def export_catalogue(
         detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links and not excel,
         spreadsheet_safe=not excel,
     )
+    if "Date Range" in output_columns:
+        for record in records:
+            record["Date Range"] = ""
     check_path(destination, "Catalogue output")
     if destination.exists() and not replace_existing:
         raise FileExistsError(f"Catalogue output already exists: {destination}")

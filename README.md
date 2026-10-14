@@ -127,26 +127,22 @@ Both formats use these columns:
 Unit Type
 Unit Number
 Description
-Date Range
-Transcription Confidence (%)
-Review Flags
-Cropped Box Image Link
 Dates
 Earliest Date
 Latest Date
+Transcription Confidence (%)
+Review Flags
+Cropped Box Image Link
 ```
 
-The first four import columns keep their existing order; `Date Range` remains
-blank. Date extraction from handwriting adds `Dates`, `Earliest Date`, and
-`Latest Date` after the existing review columns. The default is regex extraction;
-use `--date-detector none` to disable it or `--ai-dates` (equivalently,
-`--date-detector qwen`) to use the selected model: local Qwen normally, or the
+`Dates` contains dates extracted from transcribed handwriting; `Earliest Date`
+and `Latest Date` give the bounds. Extraction uses a local regex by default.
+Pass `--ai-dates` to use the selected model: local Qwen normally, or the
 configured provider when `--hosted` is present. No dates are shown as `No Dates`,
 with `None` for the earliest and latest date. Check extracted dates against the
 crop during human review.
 
-An unfinished managed batch keeps its original date extraction method when the
-option is omitted. Explicitly selecting a different method requires a new batch.
+An unfinished managed batch requires the same `--ai-dates` setting on resume.
 
 ### Unit Type and Unit Number
 

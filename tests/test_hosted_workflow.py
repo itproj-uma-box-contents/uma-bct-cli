@@ -233,7 +233,7 @@ class HostedWorkflowTest(unittest.TestCase):
             with catalogue.open(encoding="utf-8-sig", newline="") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 1)
-            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
+            self.assertEqual(list(rows[0])[:4], ["Unit Type", "Unit Number", "Description", "Dates"])
             self.assertEqual(rows[0]["Unit Type"], "1960.0009")
             self.assertEqual(rows[0]["Unit Number"], "0004")
             self.assertEqual(rows[0]["Dates"], "No Dates")

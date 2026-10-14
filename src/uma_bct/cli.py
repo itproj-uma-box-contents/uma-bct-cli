@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DATE_DETECTORS, DETECTORS, TRANSCRIBERS
+from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
@@ -122,14 +122,9 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen", help="text transcriber (default: %(default)s)"
     )
-    dates = parser.add_mutually_exclusive_group()
-    dates.add_argument(
+    parser.add_argument(
         "--ai-dates", action="store_true",
         help="use the selected model for dates instead of local regex extraction",
-    )
-    dates.add_argument(
-        "-u", "--date-detector", choices=tuple(DATE_DETECTORS), default="regex",
-        help="date extraction: none, regex, or the selected model (qwen) (default: %(default)s)",
     )
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -370,7 +365,6 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
     resolve_output_arguments(arguments, parser)
-    arguments.date_detector_explicit = option_was_supplied(raw_arguments, ("-u", "--date-detector", "--ai-dates"))
     try:
         configured_mode(arguments)
     except (OSError, ValueError, KeyError, TypeError) as error:

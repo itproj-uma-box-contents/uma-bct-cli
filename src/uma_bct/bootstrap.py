@@ -43,8 +43,8 @@ DATE_DETECTORS: dict[str, DateDetectorFactory] = {
 
 
 def selected_date_detector(arguments: object) -> str:
-    """Resolve the AI shorthand for callers that construct their own arguments."""
-    return "qwen" if getattr(arguments, "ai_dates", False) else getattr(arguments, "date_detector", "regex")
+    """Select AI or regex extraction, preserving legacy recovery when required."""
+    return getattr(arguments, "_resume_date_detector", "qwen" if getattr(arguments, "ai_dates", False) else "regex")
 
 
 def build_pipeline(*, detector_name: str, transcriber_name: str, ai_dates: bool = False,

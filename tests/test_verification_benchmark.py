@@ -28,11 +28,15 @@ class VerificationBenchmarkTest(unittest.TestCase):
         box = candidate["images"][0]["boxes"][0]
         changed = replace(self.first, unit_number="5", typed_lines=("1960.0009", "Unit 5"))
         box.update(changed.to_dict())
+        box["dates"] = ["1950"]
         box["verification"] = {"original": [asdict(self.first)]}
         report = compare(reference, candidate)
         self.assertEqual(report["newly_incorrect_fields"]["Unit Number"], 1)
         self.assertEqual(report["first_pass_exact_matches"]["Unit Number"], 1)
         self.assertEqual(report["final_exact_matches"]["Unit Number"], 0)
+        self.assertEqual(report["newly_incorrect_fields"]["Dates"], 1)
+        self.assertEqual(report["first_pass_exact_matches"]["Dates"], 1)
+        self.assertEqual(report["final_exact_matches"]["Dates"], 0)
         candidate["images"][0]["boxes"] = []
         self.assertEqual(len(compare(reference, candidate)["missing_boxes"]), 1)
 

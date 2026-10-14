@@ -32,7 +32,13 @@ from .adapters.hosted_client import PROVIDER_API_BASES
 from .adapters.ollama_client import timeout_from_environment
 from .atomic import open_stable_file, rename_new_file
 from .bootstrap import DATE_DETECTORS, build_pipeline, selected_date_detector
-from .constants import DATE_OUTPUT_COLUMNS, IMAGE_EXTENSIONS, LEGACY_OUTPUT_COLUMNS, OUTPUT_COLUMNS
+from .constants import (
+    DATE_OUTPUT_COLUMNS,
+    IMAGE_EXTENSIONS,
+    LEGACY_OUTPUT_COLUMNS,
+    OUTPUT_COLUMNS,
+    REVIEW_DATE_OUTPUT_COLUMNS,
+)
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .model_config import selected_model_metadata, selected_model_name
@@ -669,6 +675,7 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         stored_configuration = progress.get("configuration")
         if isinstance(stored_configuration, dict):
+            legacy_date_configuration = "date_detector" not in stored_configuration
             # Older managed runs always generated missing-box suggestions.
             saved_detectors = {item["result"].get("date_detector", "none")
                                for item in progress["inputs"] if item.get("result")}
@@ -676,8 +683,13 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
                 raise ManagedBatchSelectionError(batch_directory, "Saved date extraction options are inconsistent.")
             stored_configuration = {"detect_missing_boxes": True,
                                     "date_detector": next(iter(saved_detectors), "none"), **stored_configuration}
-            if not getattr(arguments, "date_detector_explicit", True):
-                arguments.date_detector = stored_configuration["date_detector"]
+            # Preserve extraction-free legacy checkpoints and offline publication.
+            # Current batches always require the same explicit AI switch.
+            if (stored_configuration["date_detector"] == "none"
+                    and not getattr(arguments, "ai_dates", False)
+                    and (legacy_date_configuration
+                         or all(item["state"] in TERMINAL_IMAGE_STATES for item in progress["inputs"]))):
+                arguments._resume_date_detector = "none"
         current_configuration = semantic_configuration(arguments, request_timeout)
         if stored_configuration != current_configuration:
             raise ManagedBatchSelectionError(
@@ -1540,7 +1552,7 @@ def stage_catalogue(
         if name != pending.name and path_entry_exists(batch_directory / name):
             raise ManagedBatchError(f"Unexpected pending catalogue format: {batch_directory / name}")
     publication = progress.setdefault("publication", {})
-    known_layouts = (OUTPUT_COLUMNS, LEGACY_OUTPUT_COLUMNS, DATE_OUTPUT_COLUMNS)
+    known_layouts = (OUTPUT_COLUMNS, LEGACY_OUTPUT_COLUMNS, DATE_OUTPUT_COLUMNS, REVIEW_DATE_OUTPUT_COLUMNS)
     stored_columns = publication.get("output_columns")
     if stored_columns is not None and stored_columns not in known_layouts:
         raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
