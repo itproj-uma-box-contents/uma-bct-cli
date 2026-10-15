@@ -18,10 +18,11 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DATE_DETECTORS, DETECTORS, TRANSCRIBERS
+from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
+from .model_config import hosted_model_from_environment
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import warning_text
 from .run_artifacts import manifest_path
@@ -113,13 +114,17 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--verification", choices=MODES, default=None,
                         help="accuracy check with a second reading: ask, always, or never (default: never)")
     parser.add_argument(
+        "--hosted", action="store_true", help="use a hosted model configured by UMA_BCT_API_KEY and UMA_BCT_API_MODEL"
+    )
+    parser.add_argument(
         "-d", "--detector", choices=tuple(DETECTORS), default="qwen", help="primary box detector (default: %(default)s)"
     )
     parser.add_argument(
         "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen", help="text transcriber (default: %(default)s)"
     )
     parser.add_argument(
-        "-u", "--date-detector", choices=tuple(DATE_DETECTORS), default="regex", help="date extraction method (default: %(default)s)"
+        "--ai-dates", action="store_true",
+        help="use the selected model for dates instead of local regex extraction",
     )
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -145,7 +150,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         type=positive_float,
         default=None,
         metavar="SECONDS",
-        help=(f"Ollama timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
+        help=(f"model request timeout; defaults to ${TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s"),
     )
     parser.add_argument("-f", "--force", action="store_true", help="replace an existing catalogue")
     parser.add_argument(
@@ -163,6 +168,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         prog="uma-bct",
         description="Detect and transcribe UMA archive boxes using local components.",
         epilog=("Shortest workflow: run 'uma-bct setup', add photos to inputs/, then run 'uma-bct'."),
+        allow_abbrev=False,
     )
     add_path_arguments(parser)
     add_processing_arguments(parser)
@@ -177,6 +183,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
+    setup.add_argument("--hosted", action="store_true", help="check the configured hosted model instead of local Ollama")
     setup.add_argument("--path-to-inputs", type=Path, default=None, help="directory to prepare for input photos")
     setup.add_argument("--results-directory", type=Path, default=None, help="directory to prepare for managed results")
     return parser
@@ -324,23 +331,40 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     arguments = parser.parse_args(raw_arguments)
+    hosted_model = None
+    if arguments.hosted:
+        try:
+            hosted_model = hosted_model_from_environment()
+        except ValueError as error:
+            parser.error(str(error))
+        if hosted_model is None:
+            parser.error("UMA_BCT_API_KEY is required with --hosted.")
+        from .adapters.hosted_client import HostedVisionModel
 
+        try:
+            HostedVisionModel(hosted_model)
+        except ValueError as error:
+            parser.error(str(error))
+        if option_was_supplied(raw_arguments, ("-m", "--model")):
+            parser.error("--model selects local Ollama; use UMA_BCT_API_MODEL for hosted processing.")
+    arguments.hosted_model = hosted_model
     if arguments.command == "setup":
         if raw_arguments[0] != "setup":
             parser.error("setup must be the first argument")
-        setup_arguments: dict[str, Path] = {}
+        setup_arguments: dict[str, object] = {}
         if arguments.path_to_inputs is not None:
             setup_arguments["input_directory"] = arguments.path_to_inputs
         if arguments.results_directory is not None:
             setup_arguments["results_directory"] = arguments.results_directory
         # Keep the computer active while the local model is checked or downloaded.
         with keep_awake():
+            if hosted_model is not None:
+                setup_arguments["hosted_model"] = hosted_model
             return run_setup(**setup_arguments)
 
     if arguments.reprocess and arguments.results_directory is None:
         parser.error("--reprocess requires --results-directory")
     resolve_output_arguments(arguments, parser)
-    arguments.date_detector_explicit = option_was_supplied(raw_arguments, ("-u", "--date-detector"))
     try:
         configured_mode(arguments)
     except (OSError, ValueError, KeyError, TypeError) as error:

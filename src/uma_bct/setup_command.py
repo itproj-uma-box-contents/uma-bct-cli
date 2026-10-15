@@ -12,8 +12,10 @@ import stat
 import sys
 from pathlib import Path
 
+from .adapters.hosted_client import HostedVisionModel
 from .adapters.ollama_client import DEFAULT_MODEL, OllamaVisionModel
 from .managed_batch import ResultsRootLock
+from .model_config import HostedModelConfig
 from .path_safety import check_path, redirected_path_kind
 from .run_artifacts import CatalogueLock
 from .terminal import TerminalProgress
@@ -62,18 +64,18 @@ def validate_setup_layout(inputs: Path, outputs: Path) -> None:
 
 
 def run_setup(*, root: Path | None = None, model_name: str = DEFAULT_MODEL, input_directory: Path | None = None,
-    results_directory: Path | None = None) -> int:
+    results_directory: Path | None = None, hosted_model: HostedModelConfig | None = None) -> int:
     """Prepare folders and model while showing that a long download is active."""
 
     with TerminalProgress(None) as reporter:
         return _run_setup(
             root=root, model_name=model_name, input_directory=input_directory,
-            results_directory=results_directory, reporter=reporter,
+            results_directory=results_directory, reporter=reporter, hosted_model=hosted_model,
         )
 
 
 def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | None,
-    results_directory: Path | None, reporter: TerminalProgress) -> int:
+    results_directory: Path | None, reporter: TerminalProgress, hosted_model: HostedModelConfig | None = None) -> int:
     """Keep the existing setup result and cleanup in one place."""
 
     working_directory = (root or Path.cwd()).absolute()
@@ -89,7 +91,7 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
         "status": "complete",
         "input_directory": str(inputs),
         "output_directory": str(outputs),
-        "model": model_name,
+        "model": hosted_model.model if hosted_model is not None else model_name,
     }
     lock: CatalogueLock | ResultsRootLock | None = None
     status = 0
@@ -102,8 +104,12 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
         warn_about_permissions(outputs, ensure_directory(outputs))
         lock = ResultsRootLock(outputs) if results_directory is not None else CatalogueLock(outputs / "catalogue.csv")
         lock.acquire()
-        reporter.phase("Checking or downloading the local model")
-        OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
+        if hosted_model is not None:
+            reporter.phase("Checking the hosted client")
+            HostedVisionModel(hosted_model).preflight()
+        else:
+            reporter.phase("Checking or downloading the local model")
+            OllamaVisionModel(model=model_name).ensure_model(progress_stream=sys.stderr)
     except Exception as error:
         message = safe_error(error)
         result.update(status="failed", error=message)

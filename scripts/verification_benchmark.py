@@ -17,7 +17,7 @@ from uma_bct.domain import BoxTranscription
 from uma_bct.run_artifacts import write_json_atomic
 from uma_bct.verification import reading
 
-COLUMNS = ("Unit Type", "Unit Number", "Description", "Date Range")
+COLUMNS = ("Unit Type", "Unit Number", "Description", "Dates")
 
 
 def source_filename(value: str) -> str:
@@ -44,8 +44,10 @@ def transcription(box: dict[str, Any]) -> BoxTranscription:
     )
 
 
-def fields(value: BoxTranscription) -> dict[str, str]:
+def fields(value: BoxTranscription, *, dates: list[str] | None = None) -> dict[str, str]:
     row = map_catalogue_record(value, "crop.png", spreadsheet_safe=False)
+    if dates is not None:
+        row["Dates"] = "; ".join(dates) if dates else "No Dates"
     return {key: str(row[key]) for key in COLUMNS}
 
 
@@ -61,7 +63,7 @@ def prepare(manifest: dict[str, Any]) -> dict[str, Any]:
             "source_image": name, "source_path": image["source_image"], "review_status": "unreviewed",
             "notes": "Check all visible boxes; add missed boxes and remove false detections.",
             "boxes": [{"box_id": box["box_id"], "bbox": box.get("bbox"), "crop_image": box.get("image"),
-                       "expected": fields(transcription(box))} for box in image.get("boxes", [])],
+                       "expected": fields(transcription(box), dates=box.get("dates"))} for box in image.get("boxes", [])],
         })
     if not images:
         raise ValueError("The manifest contains no photo results to review.")
@@ -89,7 +91,7 @@ def compare(reference: dict[str, Any], manifest: dict[str, Any]) -> dict[str, An
     matches, baseline_matches, regressions, changes = Counter(), Counter(), Counter(), Counter()
     for key in expected.keys() & actual.keys():
         box = actual[key]
-        final = fields(transcription(box))
+        final = fields(transcription(box), dates=box.get("dates"))
         original = next((value for value in box.get("verification", {}).get("original", [])
                          if value["box_id"] == box["box_id"]), None)
         baseline = fields(reading(original)) if original else final

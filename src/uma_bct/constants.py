@@ -4,18 +4,18 @@ OUTPUT_COLUMNS = [
     "Unit Type",
     "Unit Number",
     "Description",
-    "Date Range",
-    "Transcription Confidence (%)",
-    "Review Flags",
-    "Cropped Box Image Link",
     "Dates",
     "Earliest Date",
     "Latest Date",
+    "Transcription Confidence (%)",
+    "Review Flags",
+    "Cropped Box Image Link",
 ]
 
 # These exact layouts remain readable when recovering interrupted publications.
-LEGACY_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:7]
-DATE_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:3] + OUTPUT_COLUMNS[7:] + OUTPUT_COLUMNS[4:7]
+DATE_OUTPUT_COLUMNS = OUTPUT_COLUMNS.copy()
+LEGACY_OUTPUT_COLUMNS = OUTPUT_COLUMNS[:3] + ["Date Range"] + OUTPUT_COLUMNS[6:]
+REVIEW_DATE_OUTPUT_COLUMNS = LEGACY_OUTPUT_COLUMNS + OUTPUT_COLUMNS[3:6]
 
 DUPLICATE_FLAG = "Potential Duplicate"
 MISSING_BOX_FLAG = "Missing Box"

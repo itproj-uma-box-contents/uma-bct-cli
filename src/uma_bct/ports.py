@@ -69,7 +69,7 @@ class VisionModelClient(Protocol):
 
     def query(
         self,
-        image_path: Path,
+        image_path: Path | None,
         prompt: str,
         schema: dict[str, Any],
         *,

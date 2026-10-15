@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -22,6 +22,14 @@ def terminal_text(value: object) -> str:
     """Keep filenames and paths from moving the cursor or adding fake lines."""
 
     return "".join(character if character.isprintable() else "?" for character in str(value))
+
+
+def print_selected_model(metadata: Mapping[str, str], *, fallback_model: str) -> None:
+    """Persist the selected model on stderr without printing credentials."""
+
+    model = terminal_text(metadata.get("model", fallback_model))
+    backend = terminal_text(metadata.get("backend", "ollama"))
+    print(f"Selected model: {model} ({backend})", file=sys.stderr)
 
 
 def elapsed_text(seconds: float) -> str:

@@ -631,28 +631,34 @@ try {
     $env:UV_DEFAULT_INDEX = "https://pypi.org/simple"
     $env:UV_NO_CONFIG = "1"
     $env:OLLAMA_NO_CLOUD = "1"
+    $HostedMode = -not [string]::IsNullOrWhiteSpace($env:UMA_BCT_API_KEY)
+    if ($HostedMode -and [string]::IsNullOrWhiteSpace($env:UMA_BCT_API_MODEL)) {
+        throw "UMA_BCT_API_MODEL is required when UMA_BCT_API_KEY is set."
+    }
     Remove-Item Env:UMA_BCT_ALLOW_REMOTE_OLLAMA -ErrorAction SilentlyContinue
     Remove-Item Env:UMA_BCT_ALLOW_CONTAINER_OLLAMA -ErrorAction SilentlyContinue
 
-    Recover-OllamaPromotion
-    $Ollama = Find-Ollama
-    $LlamaServer = Find-LlamaServer $Ollama
-    if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama) -or $null -eq $LlamaServer) {
-        if ($PrivateDataPresent) {
-            throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of '$Inputs' and '$Outputs', then run this launcher again to repair it. Runtime log: $OllamaLog"
-        }
-        Install-Ollama
+    if (-not $HostedMode) {
+        Recover-OllamaPromotion
         $Ollama = Find-Ollama
         $LlamaServer = Find-LlamaServer $Ollama
-    }
-    if ($null -eq $Ollama) {
-        throw "Ollama could not be installed. Runtime log: $OllamaLog"
-    }
-    if (-not (Test-OllamaVersion $Ollama)) {
-        throw "Ollama is too old and could not be updated. Runtime log: $OllamaLog"
-    }
-    if ($null -eq $LlamaServer) {
-        throw "Ollama's llama-server.exe companion is missing. Runtime log: $OllamaLog"
+        if ($null -eq $Ollama -or -not (Test-OllamaVersion $Ollama) -or $null -eq $LlamaServer) {
+            if ($PrivateDataPresent) {
+                throw "The local Ollama runtime is incomplete or unsupported; both ollama.exe and llama-server.exe are required. Move private files out of '$Inputs' and '$Outputs', then run this launcher again to repair it. Runtime log: $OllamaLog"
+            }
+            Install-Ollama
+            $Ollama = Find-Ollama
+            $LlamaServer = Find-LlamaServer $Ollama
+        }
+        if ($null -eq $Ollama) {
+            throw "Ollama could not be installed. Runtime log: $OllamaLog"
+        }
+        if (-not (Test-OllamaVersion $Ollama)) {
+            throw "Ollama is too old and could not be updated. Runtime log: $OllamaLog"
+        }
+        if ($null -eq $LlamaServer) {
+            throw "Ollama's llama-server.exe companion is missing. Runtime log: $OllamaLog"
+        }
     }
 
     if (-not $PrivateDataPresent) {
@@ -689,16 +695,23 @@ try {
         throw "The application could not be installed."
     }
 
-    Start-OwnedOllama $Ollama
+    if (-not $HostedMode) {
+        Start-OwnedOllama $Ollama
+    }
 
     Push-Location $Root
     try {
         if (-not $PrivateDataPresent) {
             Assert-NoPrivateData
-            Write-Host "Checking the application and model. The first model download is large..."
+            if ($HostedMode) {
+                Write-Host "Checking the hosted client and private folders..."
+            } else {
+                Write-Host "Checking the application and model. The first model download is large..."
+            }
             $SetupLog = Join-Path $Runtime "setup.json"
             $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
                 " --results-directory " + (Quote-NativeArgument $Outputs)
+            if ($HostedMode) { $SetupArguments += " --hosted" }
             $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
             if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
@@ -720,6 +733,7 @@ try {
         # launcher opens Results only after that foreground run returns.
         $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
+        if ($HostedMode) { $Arguments += " --hosted" }
         $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location

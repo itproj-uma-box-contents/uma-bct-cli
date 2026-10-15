@@ -66,7 +66,7 @@ def arguments(root: Path, *, force=False, file_type="csv"):
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
-        date_detector="none",
+        ai_dates=False,
         model="qwen-test",
         min_transcription_confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,
@@ -97,6 +97,20 @@ class CliTest(unittest.TestCase):
 
     def test_can_disable_missing_box_detection(self):
         self.assertFalse(parse_args(["--no-missing-box-detection"]).detect_missing_boxes)
+
+    def test_ai_dates_is_a_model_selection_independent_switch(self):
+        self.assertFalse(parse_args([]).ai_dates)
+        self.assertTrue(parse_args(["--ai-dates"]).ai_dates)
+        self.assertTrue(parse_args(["--hosted", "--ai-dates"]).ai_dates)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args(["--date-detector"])
+
+    def test_date_detector_option_is_removed(self):
+        self.assertFalse(hasattr(parse_args([]), "date_detector"))
+        for option in ("--date-detector", "-u"):
+            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args([option, "regex"])
 
     def test_confidence_options_keep_their_distinct_meanings(self):
         legacy_detector = parse_args(["--min-confidence", "0.7"])

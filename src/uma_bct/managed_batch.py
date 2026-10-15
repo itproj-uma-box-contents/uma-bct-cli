@@ -28,12 +28,20 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from .adapters.hosted_client import PROVIDER_API_BASES
 from .adapters.ollama_client import timeout_from_environment
 from .atomic import open_stable_file, rename_new_file
-from .bootstrap import DATE_DETECTORS, build_pipeline
-from .constants import DATE_OUTPUT_COLUMNS, IMAGE_EXTENSIONS, LEGACY_OUTPUT_COLUMNS, OUTPUT_COLUMNS
+from .bootstrap import DATE_DETECTORS, build_pipeline, selected_date_detector
+from .constants import (
+    DATE_OUTPUT_COLUMNS,
+    IMAGE_EXTENSIONS,
+    LEGACY_OUTPUT_COLUMNS,
+    OUTPUT_COLUMNS,
+    REVIEW_DATE_OUTPUT_COLUMNS,
+)
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
+from .model_config import selected_model_metadata, selected_model_name
 from .path_safety import check_path, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
@@ -231,16 +239,19 @@ def describe_snapshot_change(expected: list[dict[str, Any]], actual: list[dict[s
 
 
 def semantic_configuration(arguments: argparse.Namespace, request_timeout: float | None) -> dict[str, Any]:
-    return {
+    configuration = {
         "detector": arguments.detector,
         "transcriber": arguments.transcriber,
-        "date_detector": getattr(arguments, "date_detector", "none"),
-        "model": arguments.model,
+        "model": selected_model_name(arguments),
+        "date_detector": selected_date_detector(arguments),
         "minimum_transcription_confidence": arguments.min_transcription_confidence,
         "minimum_detector_confidence": arguments.min_detector_confidence,
         "detect_missing_boxes": getattr(arguments, "detect_missing_boxes", True),
         "request_timeout_seconds": request_timeout,
     }
+    if getattr(arguments, "hosted_model", None) is not None:
+        configuration["backend"] = "hosted"
+    return configuration
 
 
 def truncate_utf8(value: str, maximum_bytes: int) -> str:
@@ -561,6 +572,9 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
     inputs = []
     for item in snapshot:
         inputs.append({**item, "state": "pending", "attempts": 0})
+    model = selected_model_metadata(arguments)
+    if hosted := getattr(arguments, "hosted_model", None):
+        model.update(backend="hosted", provider=hosted.provider, api_base=PROVIDER_API_BASES[hosted.provider])
     return {
         "schema_version": MANAGED_SCHEMA_VERSION,
         "application": {"name": "uma-bct-cli", "version": application_version()},
@@ -572,7 +586,7 @@ def initial_progress(arguments: argparse.Namespace, batch_directory: Path,
         "input_directory": str(arguments.path_to_inputs),
         "input_snapshot": snapshot_signature(snapshot),
         "inputs": inputs,
-        "model": {"model": arguments.model},
+        "model": model,
         "endpoint_history": [],
         "resume_count": 0,
         "run_failures": [],
@@ -661,6 +675,7 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         stored_configuration = progress.get("configuration")
         if isinstance(stored_configuration, dict):
+            legacy_date_configuration = "date_detector" not in stored_configuration
             # Older managed runs always generated missing-box suggestions.
             saved_detectors = {item["result"].get("date_detector", "none")
                                for item in progress["inputs"] if item.get("result")}
@@ -668,8 +683,13 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
                 raise ManagedBatchSelectionError(batch_directory, "Saved date extraction options are inconsistent.")
             stored_configuration = {"detect_missing_boxes": True,
                                     "date_detector": next(iter(saved_detectors), "none"), **stored_configuration}
-            if not getattr(arguments, "date_detector_explicit", True):
-                arguments.date_detector = stored_configuration["date_detector"]
+            # Preserve extraction-free legacy checkpoints and offline publication.
+            # Current batches always require the same explicit AI switch.
+            if (stored_configuration["date_detector"] == "none"
+                    and not getattr(arguments, "ai_dates", False)
+                    and (legacy_date_configuration
+                         or all(item["state"] in TERMINAL_IMAGE_STATES for item in progress["inputs"]))):
+                arguments._resume_date_detector = "none"
         current_configuration = semantic_configuration(arguments, request_timeout)
         if stored_configuration != current_configuration:
             raise ManagedBatchSelectionError(
@@ -698,6 +718,11 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
         current_keys = {input_identity(item) for item in snapshot}
         matching_batches = []
         for path, details in sorted(completed, key=completed_batch_order_key, reverse=True):
+            saved_configuration = details.get("configuration", {})
+            if (saved_configuration.get("model") != selected_model_name(arguments)
+                    or saved_configuration.get("backend", "ollama")
+                    != ("hosted" if getattr(arguments, "hosted_model", None) is not None else "ollama")):
+                continue
             source_root = details.get("input_directory")
             if not isinstance(source_root, str) or canonical_lock_name(Path(source_root)) != canonical_lock_name(
                 arguments.path_to_inputs
@@ -1054,8 +1079,17 @@ def endpoint_identity(host: str) -> dict[str, str]:
 
 def validate_model_resume(progress: dict[str, Any], current: dict[str, str], batch_directory: Path) -> None:
     previous = progress.get("model", {})
+    if current.get("backend", "ollama") != previous.get("backend", "ollama"):
+        raise ManagedBatchError(f"Cannot resume {batch_directory}: the model backend changed.")
     if current.get("model") != previous.get("model"):
         raise ManagedBatchError(f"Cannot resume {batch_directory}: the preflight model identity changed.")
+    if current.get("backend") == "hosted":
+        if (
+            previous.get("provider") != current.get("provider")
+            or previous.get("api_base") != current.get("api_base")
+        ):
+            raise ManagedBatchError(f"Cannot resume {batch_directory}: the hosted model endpoint changed.")
+        return
     previous_digest = previous.get("model_digest")
     current_digest = current.get("model_digest")
     if previous_digest and previous_digest != current_digest:
@@ -1084,14 +1118,18 @@ def build_managed_pipeline(
     pipeline = build_pipeline(
         detector_name=arguments.detector,
         transcriber_name=arguments.transcriber,
-        date_detector_name=arguments.date_detector,
-        model_name=arguments.model,
+        date_detector_name=selected_date_detector(arguments),
+        model_name=selected_model_name(arguments),
         work_directory=working_root,
         minimum_detector_confidence=arguments.min_detector_confidence,
         request_timeout_seconds=request_timeout,
+        hosted_model=getattr(arguments, "hosted_model", None),
     )
     metadata = dict(pipeline.model_metadata)
-    for field in ("model", "model_digest", "ollama_host"):
+    required = ("model", "backend", "provider", "api_base") if getattr(arguments, "hosted_model", None) else (
+        "model", "model_digest", "ollama_host"
+    )
+    for field in required:
         if not isinstance(metadata.get(field), str) or not metadata[field]:
             raise ManagedBatchError(f"Model preflight did not return {field}.")
     return pipeline, metadata
@@ -1514,7 +1552,7 @@ def stage_catalogue(
         if name != pending.name and path_entry_exists(batch_directory / name):
             raise ManagedBatchError(f"Unexpected pending catalogue format: {batch_directory / name}")
     publication = progress.setdefault("publication", {})
-    known_layouts = (OUTPUT_COLUMNS, LEGACY_OUTPUT_COLUMNS, DATE_OUTPUT_COLUMNS)
+    known_layouts = (OUTPUT_COLUMNS, LEGACY_OUTPUT_COLUMNS, DATE_OUTPUT_COLUMNS, REVIEW_DATE_OUTPUT_COLUMNS)
     stored_columns = publication.get("output_columns")
     if stored_columns is not None and stored_columns not in known_layouts:
         raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
@@ -1769,14 +1807,15 @@ def verify_managed_results(arguments: argparse.Namespace, progress: dict[str, An
             candidate, metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
             validate_model_resume(progress, metadata, batch_directory)
             progress["model"] = metadata
-            progress.setdefault("endpoint_history", []).append(metadata["ollama_host"])
+            endpoint = metadata.get("api_base") or metadata["ollama_host"]
+            progress.setdefault("endpoint_history", []).append(endpoint)
             write_progress(batch_directory, progress)
             pipeline = candidate
         return pipeline.transcriber
 
     def load_date_detector() -> Any:
         if pipeline is None:
-            name = getattr(arguments, "date_detector", "none")
+            name = selected_date_detector(arguments)
             if name in {"none", "regex"}:
                 return DATE_DETECTORS[name](None)
             # A missing model-based extraction follows the same lazy identity check.
@@ -1960,7 +1999,7 @@ def interrupted_summary(arguments: argparse.Namespace, images: list[Path], progr
             except Exception as error:
                 print(f"Could not record interruption: {warning_text(error)}", file=sys.stderr)
     value = progress or {
-        "model": {"model": arguments.model},
+        "model": selected_model_metadata(arguments),
         "inputs": [{"state": "pending"} for image in images],
     }
     return managed_public_summary(
@@ -2042,13 +2081,14 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             # endpoint class before it adds new readings to prior ones.
             pipeline = None
             if any(item["state"] not in TERMINAL_IMAGE_STATES for item in progress["inputs"]):
-                reporter.phase("Checking the local model")
+                reporter.phase("Checking the selected model")
                 pipeline, model_metadata = build_managed_pipeline(arguments, batch_directory, request_timeout)
                 if isinstance(pipeline, BoxTranscriptionPipeline):
                     pipeline.on_stage = reporter.phase
                 validate_model_resume(progress, model_metadata, batch_directory)
                 progress["model"] = model_metadata
-                progress.setdefault("endpoint_history", []).append(model_metadata["ollama_host"])
+                endpoint = model_metadata.get("api_base") or model_metadata["ollama_host"]
+                progress.setdefault("endpoint_history", []).append(endpoint)
                 write_progress(batch_directory, progress)
 
             if progress.get("phase") not in {"publishing", "finalizing", "final"}:
@@ -2084,7 +2124,7 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             except Exception as checkpoint_error:
                 print(f"Checkpoint write failed: {warning_text(checkpoint_error)}", file=sys.stderr)
         summary_value = progress or {
-            "model": {"model": arguments.model},
+            "model": selected_model_metadata(arguments),
             "inputs": [{"state": "pending"} for image in images],
             "run_failures": [{"stage": "managed_batch", "error": message}],
         }

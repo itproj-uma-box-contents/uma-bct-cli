@@ -225,7 +225,6 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Unit Type": escape_spreadsheet_formula(unit_type),
         "Unit Number": unit_number,
         "Description": description(transcription),
-        "Date Range": "",
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,

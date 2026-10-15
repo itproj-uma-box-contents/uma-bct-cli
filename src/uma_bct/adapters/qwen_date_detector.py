@@ -86,19 +86,19 @@ def parse_qwen_result(result: dict[str, any]) -> tuple[Date | DateRange, ...]:
     for date_result in result["dates"]:
         if date_result["end_date"].get("day", None) is None and date_result["end_date"].get("month", None) is None and date_result["end_date"].get("year", None) is None:
             results_with_position.append((Date(
-                day=date_result["start_date"].get("day", None), 
-                month=date_result["start_date"].get("month", None), 
-                year=date_result["start_date"].get("year", None)), 
+                day=date_result["start_date"].get("day", None),
+                month=date_result["start_date"].get("month", None),
+                year=date_result["start_date"].get("year", None)),
             date_result["starting_index"]))
         else:
             results_with_position.append((DateRange(
                 start = Date(
-                    day=date_result["start_date"].get("day", None), 
-                    month=date_result["start_date"].get("month", None), 
+                    day=date_result["start_date"].get("day", None),
+                    month=date_result["start_date"].get("month", None),
                     year=date_result["start_date"].get("year", None)),
                 end = Date(
-                    day=date_result["end_date"].get("day", None), 
-                    month=date_result["end_date"].get("month", None), 
+                    day=date_result["end_date"].get("day", None),
+                    month=date_result["end_date"].get("month", None),
                     year=date_result["end_date"].get("year", None))
             ), date_result["starting_index"]))
 

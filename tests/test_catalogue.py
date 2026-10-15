@@ -23,8 +23,7 @@ class CatalogueRulesTest(unittest.TestCase):
                 box = make_box()
                 transcription = make_transcription(box, identifiers=(identifier,), unit="7", typed=(f"{identifier} Unit 7",))
                 record = map_catalogue_record(transcription, box.image_file_path)
-                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
-                self.assertEqual(record["Date Range"], "")
+                self.assertEqual(list(record)[:4], ["Unit Type", "Unit Number", "Description", "Dates"])
                 self.assertEqual(record["Unit Type"], identifier)
                 self.assertEqual(record["Unit Number"], "0007")
                 self.assertEqual(record["Dates"], "No Dates")
@@ -45,6 +44,20 @@ class CatalogueRulesTest(unittest.TestCase):
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Unit Type"], identifier)
         self.assertEqual(record["Unit Number"], "0030")
+
+    def test_origin_heading_before_prefixed_unit_is_not_an_extra_identifier(self):
+        box = make_box()
+        for identifier in ("2008.0036", "UMA-AC-000000330", "BHP"):
+            with self.subTest(identifier=identifier):
+                transcription = make_transcription(
+                    box, identifiers=(identifier,), unit="7",
+                    typed=("Records of the Example Office", "(Example University)", f"{identifier} Unit 7"),
+                )
+                record = map_catalogue_record(transcription, box.image_file_path)
+                self.assertEqual(record["Unit Type"], f"Records of the Example Office (Example University) {identifier}")
+                self.assertEqual(record["Unit Number"], "0007")
+                self.assertNotIn("Ambiguous identifier", record["Review Flags"])
+                self.assertNotIn("Transcription mismatch", record["Review Flags"])
 
     def test_builds_unit_type_from_all_printed_label_text(self):
         box = make_box()
@@ -373,13 +386,12 @@ class CsvExportTest(unittest.TestCase):
                     "Unit Type",
                     "Unit Number",
                     "Description",
-                    "Date Range",
-                    "Transcription Confidence (%)",
-                    "Review Flags",
-                    "Cropped Box Image Link",
                     "Dates",
                     "Earliest Date",
                     "Latest Date",
+                    "Transcription Confidence (%)",
+                    "Review Flags",
+                    "Cropped Box Image Link",
                 ],
             )
             self.assertEqual(len(rows), 3)
@@ -454,8 +466,8 @@ class ExcelExportTest(unittest.TestCase):
             with csv_path.open(newline="", encoding="utf-8") as source:
                 csv_rows = list(csv.DictReader(source))
             excel_rows, _ = read_excel(excel_path)
-            self.assertEqual(excel_rows[0][:4], ["Unit Type", "Unit Number", "Description", "Date Range"])
-            for column in ("Date Range", "Dates", "Earliest Date", "Latest Date"):
+            self.assertEqual(excel_rows[0][:4], ["Unit Type", "Unit Number", "Description", "Dates"])
+            for column in ("Dates", "Earliest Date", "Latest Date"):
                 self.assertEqual(excel_rows[1][OUTPUT_COLUMNS.index(column)], csv_rows[0][column])
             self.assertEqual(csv_rows[0]["Dates"], "1950; 1960 - 1965")
             self.assertEqual(csv_rows[0]["Earliest Date"], "1950")
@@ -477,15 +489,15 @@ class ExcelExportTest(unittest.TestCase):
             self.assertEqual(rows[0], OUTPUT_COLUMNS)
             self.assertEqual([row[1] for row in rows[1:]], ["0001", "0001", "0002", "0003"])
             self.assertEqual(rows[1][2], "=SUM(1,2); https://example.org")
-            self.assertIn("Potential Duplicate", rows[1][5])
-            self.assertIn("Low confidence", rows[1][5])
-            self.assertEqual(rows[3][5], "Missing Box")
-            self.assertEqual(rows[3][6], "")
-            self.assertEqual(rows[1][6], crop.name)
+            self.assertIn("Potential Duplicate", rows[1][OUTPUT_COLUMNS.index("Review Flags")])
+            self.assertIn("Low confidence", rows[1][OUTPUT_COLUMNS.index("Review Flags")])
+            self.assertEqual(rows[3][OUTPUT_COLUMNS.index("Review Flags")], "Missing Box")
+            self.assertEqual(rows[3][OUTPUT_COLUMNS.index("Cropped Box Image Link")], "")
+            self.assertEqual(rows[1][OUTPUT_COLUMNS.index("Cropped Box Image Link")], crop.name)
             self.assertEqual(records[0]["Cropped Box Image Link"], "Box Images/" + crop.name)
-            self.assertEqual(set(links), {"G2", "G3", "G5"})
-            self.assertIn("é", links["G2"])
-            self.assertNotIn("%C3", links["G2"])
+            self.assertEqual(set(links), {"I2", "I3", "I5"})
+            self.assertIn("é", links["I2"])
+            self.assertNotIn("%C3", links["I2"])
             with ZipFile(output) as workbook:
                 self.assertNotIn(b"<f>", workbook.read("xl/worksheets/sheet1.xml"))
                 self.assertIn(b' ySplit="1"', workbook.read("xl/worksheets/sheet1.xml"))
@@ -500,8 +512,8 @@ class ExcelExportTest(unittest.TestCase):
             box = make_box(crop_path=output.parent / 'crops/"quoted".png')
             export_catalogue([make_result(BoxResult(box, make_transcription(box)))], output)
             rows, links = read_excel(output)
-            self.assertEqual(rows[1][6], '"quoted".png')
-            self.assertIn("%22quoted%22.png", links["G2"])
+            self.assertEqual(rows[1][OUTPUT_COLUMNS.index("Cropped Box Image Link")], '"quoted".png')
+            self.assertIn("%22quoted%22.png", links["I2"])
 
     def test_identical_exports_have_identical_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

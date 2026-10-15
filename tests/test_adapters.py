@@ -19,7 +19,15 @@ from uma_bct.adapters.ollama_client import (
     normalize_ollama_host,
 )
 from uma_bct.adapters.qwen_date_detector import QwenDateDetector, get_result_schema, parse_qwen_result
-from uma_bct.adapters.qwen_detector import GROUNDING_QUESTION, QwenBoxDetector, validate_grounding_proposals
+from uma_bct.adapters.qwen_detector import (
+    GEMINI_GROUNDING_SCHEMA,
+    GROUNDING_QUESTION,
+    GROUNDING_SCHEMA,
+    HOSTED_GROUNDING_QUESTION,
+    HOSTED_GROUNDING_SCHEMA,
+    QwenBoxDetector,
+    validate_grounding_proposals,
+)
 from uma_bct.adapters.qwen_response import box_object_spans, box_token_confidences, wrap_boxes
 from uma_bct.adapters.qwen_transcriber import (
     MAX_TEXT_CHARACTERS,
@@ -116,6 +124,56 @@ class QwenAdapterTest(unittest.TestCase):
             regions = detector.detect(make_image())
         self.assertEqual(regions[0].bounding_box.as_xywh(), (20, 60, 80, 180))
         self.assertEqual(len(detector.dropped_proposal_warnings), 1)
+        self.assertIs(client.calls[0][2], GROUNDING_SCHEMA)
+        self.assertEqual(client.calls[0][1], GROUNDING_QUESTION)
+        self.assertNotIn("at least about half of its face width", client.calls[0][1])
+
+    def test_hosted_x_first_detector_uses_stricter_prompt_without_gemini_coordinates(self):
+        client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}]})
+        detector = QwenBoxDetector(client, prompt_profile="hosted")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            detector.detect(make_image())
+        prompt = client.calls[0][1]
+        self.assertEqual(prompt, HOSTED_GROUNDING_QUESTION)
+        self.assertIn("at least about half of its face width", prompt)
+        self.assertIn("[x1, y1, x2, y2]", prompt)
+        self.assertNotIn("[ymin, xmin, ymax, xmax]", prompt)
+        self.assertIs(client.calls[0][2], HOSTED_GROUNDING_SCHEMA)
+
+    def test_gemini_detector_converts_y_first_coordinates_on_a_non_square_image(self):
+        client = FakeVision({"boxes": [{"bbox_2d": [100, 200, 500, 800]}, {"bbox_2d": [5, 5, 4, 20]}]})
+        detector = QwenBoxDetector(client, coordinate_order="yxyx", prompt_profile="hosted")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            regions = detector.detect(make_image())
+        self.assertEqual(regions[0].bounding_box.as_xywh(), (40, 30, 120, 120))
+        self.assertEqual(len(detector.dropped_proposal_warnings), 1)
+        self.assertIn("[ymin, xmin, ymax, xmax]", client.calls[0][1])
+        self.assertNotIn("[x1, y1, x2, y2]", client.calls[0][1])
+        self.assertIn("at least about half of its face width", client.calls[0][1])
+        self.assertIs(client.calls[0][2], GEMINI_GROUNDING_SCHEMA)
+        self.assertNotIn("description", GROUNDING_SCHEMA["properties"]["boxes"]["items"]["properties"]["bbox_2d"])
+
+    def test_gemini_detector_keeps_side_by_side_boxes_as_vertical_crops(self):
+        client = FakeVision({"boxes": [
+            {"bbox_2d": [0, 0, 1000, 330]},
+            {"bbox_2d": [0, 330, 1000, 660]},
+            {"bbox_2d": [0, 660, 1000, 1000]},
+        ]})
+        detector = QwenBoxDetector(client, coordinate_order="yxyx", prompt_profile="hosted")
+        with patch(
+            "uma_bct.adapters.qwen_detector.sanitized_detection_image",
+            return_value=contextlib.nullcontext(Path("clean.png")),
+        ):
+            regions = detector.detect(make_image())
+        self.assertEqual([region.bounding_box.as_xywh() for region in regions], [
+            (0, 0, 66, 300), (66, 0, 66, 300), (132, 0, 68, 300),
+        ])
 
     def test_detector_rejects_an_entirely_invalid_response(self):
         for response in (
@@ -281,6 +339,7 @@ class QwenAdapterTest(unittest.TestCase):
         prompt = crop_question(make_box())
         for field in ("record_identifiers", "unit", "typed", "handwritten"):
             self.assertIn(field, prompt)
+        self.assertNotIn("Physical-box checks:", prompt)
 
     def test_qwen_prompts_require_one_boxes_envelope(self):
         for prompt in (GROUNDING_QUESTION, QUESTION, crop_question(make_box())):
@@ -512,22 +571,23 @@ class OllamaClientTest(unittest.TestCase):
             )
         self.assertEqual(pipeline.detector.name, "qwen")
         self.assertEqual(pipeline.fallback_detector.name, "opencv")
+        self.assertEqual(pipeline.date_detector.name, "regex")
         client.preflight.assert_called_once_with()
 
 
 class FillPrefixTest(unittest.TestCase):
     """fill_prefix reconstructs a truncated end-year (e.g. 1942-9 -> 1949)."""
- 
+
     def test_deduces_the_end_value_from_the_start_values_prefix(self):
         self.assertEqual(fill_prefix("1942", "9"), "1949")
         self.assertEqual(fill_prefix("1942", "49"), "1949")
- 
+
     def test_falls_back_to_the_end_value_when_the_suffix_does_not_increase(self):
         # 41 is not a "greater suffix" than 45, so it is treated as a
         # complete (smaller) year rather than an abbreviation of 1945.
         self.assertEqual(fill_prefix("1945", "41"), "41")
         self.assertEqual(fill_prefix("1945", "1"), "1")
- 
+
     def test_returns_the_other_value_when_one_side_is_empty(self):
         self.assertEqual(fill_prefix("", "1990"), "1990")
         self.assertEqual(fill_prefix("1990", ""), "1990")
@@ -536,7 +596,7 @@ class FillPrefixTest(unittest.TestCase):
 class RegexDateDetectorTest(unittest.TestCase):
     def setUp(self):
         self.detector = RegexDateDetector()
- 
+
     def test_extracts_numeric_dates_in_supported_formats(self):
         cases = (
             ("12/05/1990", Date(day=12, month=5, year=1990)),
@@ -548,7 +608,7 @@ class RegexDateDetectorTest(unittest.TestCase):
         for text, expected in cases:
             with self.subTest(text=text):
                 self.assertEqual(self.detector.extract_dates(text), (expected,))
- 
+
     def test_extracts_month_name_dates_case_insensitively(self):
         cases = (
             ("12 May 1990", Date(day=12, month=5, year=1990)),
@@ -571,7 +631,7 @@ class RegexDateDetectorTest(unittest.TestCase):
         for text, expected in cases:
             with self.subTest(text=text):
                 self.assertEqual(self.detector.extract_dates(text), (expected,) if expected else ())
- 
+
     def test_ordinal_formats_recognise_month_and_year_but_not_the_literal_day(self):
         # "1st"/"2nd" are baked into these two formats as literal text
         # rather than a captured day placeholder, so today's implementation
@@ -580,13 +640,13 @@ class RegexDateDetectorTest(unittest.TestCase):
         for text in ("1st May 1990", "2nd May 1990"):
             with self.subTest(text=text):
                 self.assertEqual(self.detector.extract_dates(text), (Date(month=5, year=1990),))
- 
+
     def test_configured_year_range_is_enforced(self):
         self.assertEqual(self.detector.extract_dates("1499"), ())
         self.assertEqual(self.detector.extract_dates("2040"), ())
         self.assertEqual(self.detector.extract_dates("1500"), (Date(year=1500),))
         self.assertEqual(self.detector.extract_dates("2039"), (Date(year=2039),))
- 
+
     def test_prefers_the_longest_match_and_drops_contained_submatches(self):
         # "1990" and "05/1990" are both matches contained inside the full
         # dd/mm/yyyy match, and must not be reported alongside it.
@@ -594,7 +654,7 @@ class RegexDateDetectorTest(unittest.TestCase):
             self.detector.extract_dates("12/05/1990"),
             (Date(day=12, month=5, year=1990),),
         )
- 
+
     def test_extracts_several_dates_in_left_to_right_order(self):
         text = "Received 12/05/1990, filed 01/1991"
         self.assertEqual(
@@ -604,10 +664,10 @@ class RegexDateDetectorTest(unittest.TestCase):
                 Date(month=1, year=1991),
             ),
         )
- 
+
     def test_returns_empty_tuple_when_no_date_is_present(self):
         self.assertEqual(self.detector.extract_dates("undated item"), ())
- 
+
     def test_custom_range_formats_build_a_date_range(self):
         cases = (
             ("12-15/05/1990", DateRange(Date(12, 5, 1990), Date(15, 5, 1990))),
@@ -619,7 +679,7 @@ class RegexDateDetectorTest(unittest.TestCase):
         for text, expected in cases:
             with self.subTest(text=text):
                 self.assertEqual(self.detector.extract_dates(text), (expected,))
- 
+
     def test_year_range_shorthand_fills_the_missing_prefix_from_the_start_year(self):
         self.assertEqual(
             self.detector.extract_dates("1942-9"),
@@ -629,7 +689,7 @@ class RegexDateDetectorTest(unittest.TestCase):
             self.detector.extract_dates("1942-59"),
             (DateRange(Date(year=1942), Date(year=1959)),),
         )
- 
+
     def test_generic_ranges_combine_any_two_configured_date_formats(self):
         for delimiter in ("-", " to "):
             text = f"12/05/1990{delimiter}15/06/1991"
@@ -650,8 +710,8 @@ def date_entry(**changes):
     }
     value.update(changes)
     return value
- 
- 
+
+
 # Build a date-range result entry with useful defaults.
 def range_entry(**changes):
     value = {
@@ -662,14 +722,14 @@ def range_entry(**changes):
     }
     value.update(changes)
     return value
- 
- 
+
+
 class QwenDateDetectorTest(unittest.TestCase):
     # Check that an entry with an empty end_date becomes a plain Date.
     def test_entry_with_empty_end_date_becomes_a_date(self):
         result = {"dates": [date_entry(start_date={"day": 10, "month": 12, "year": 1950})]}
         self.assertEqual(parse_qwen_result(result), (Date(day=10, month=12, year=1950),))
- 
+
     # Check that an entry with any end_date component becomes a DateRange.
     def test_entry_with_a_populated_end_date_becomes_a_date_range(self):
         result = {"dates": [range_entry(start_date={"month": 3, "year": 1930}, end_date={"month": 5, "year": 1933})]}
@@ -677,12 +737,12 @@ class QwenDateDetectorTest(unittest.TestCase):
             parse_qwen_result(result),
             (DateRange(start=Date(month=3, year=1930), end=Date(month=5, year=1933)),),
         )
- 
+
     # Check that missing start/end fields are left as None rather than guessed.
     def test_missing_date_components_are_left_as_none(self):
         result = {"dates": [date_entry(start_date={"year": 1850})]}
         self.assertEqual(parse_qwen_result(result), (Date(day=None, month=None, year=1850),))
- 
+
     # Check that an end_date is only treated as present if at least one of its
     # three components is non-None (an empty dict must not become DateRange()).
     def test_end_date_with_all_components_absent_is_treated_as_no_range(self):
@@ -690,7 +750,7 @@ class QwenDateDetectorTest(unittest.TestCase):
         parsed = parse_qwen_result(result)
         self.assertEqual(parsed, (Date(year=1950),))
         self.assertIsInstance(parsed[0], Date)
- 
+
     # Check that results are reordered into ascending starting_index order,
     # regardless of the order the model returned them in.
     def test_results_are_sorted_by_starting_index(self):
@@ -709,11 +769,11 @@ class QwenDateDetectorTest(unittest.TestCase):
                 Date(year=2021),
             ),
         )
- 
+
     # Check that an empty "dates" list produces an empty tuple.
     def test_empty_dates_list_produces_empty_tuple(self):
         self.assertEqual(parse_qwen_result({"dates": []}), ())
- 
+
     # Check that a mix of individual dates and ranges from the prompt's own
     # worked example round-trips as expected.
     def test_handles_a_realistic_mixed_response(self):
@@ -732,14 +792,14 @@ class QwenDateDetectorTest(unittest.TestCase):
         self.assertEqual(parsed[1], Date(day=10, month=12, year=1950))
         self.assertEqual(parsed[2], DateRange(start=Date(month=3, year=1930), end=Date(month=5, year=1933)))
         self.assertEqual(parsed[3], DateRange(start=Date(year=2021), end=Date(year=2023)))
- 
+
     # Check that the schema's starting_index upper bound is derived from the
     # length of the input string, so the model can't point past the text.
     def test_starting_index_max_is_derived_from_string_length(self):
         schema = get_result_schema("12345")
         date_schema = schema["properties"]["dates"]["items"]["properties"]
         self.assertEqual(date_schema["starting_index"]["max"], 4)
- 
+
     # Check the schema always requires the four fields the parser depends on.
     def test_required_fields_match_what_the_parser_reads(self):
         schema = get_result_schema("some text")
@@ -747,29 +807,29 @@ class QwenDateDetectorTest(unittest.TestCase):
             set(schema["properties"]["dates"]["items"]["required"]),
             {"raw_text", "starting_index", "start_date", "end_date"},
         )
- 
+
     # Check that the detector defaults to the "qwen" name used elsewhere
     # (e.g. by build_pipeline) to select it.
     def test_name_defaults_to_qwen(self):
         self.assertEqual(QwenDateDetector(FakeVision({"dates": []})).name, "qwen")
- 
+
     # Check that extract_dates returns an empty tuple for text with no dates.
     def test_extract_dates_returns_empty_tuple_when_no_dates_found(self):
         detector = QwenDateDetector(FakeVision({"dates": []}))
         self.assertEqual(detector.extract_dates("undated item"), ())
- 
+
     # Check that extract_dates parses a single complete date from the client's response.
     def test_extract_dates_parses_a_single_date(self):
         response = {"dates": [date_entry(start_date={"day": 10, "month": 12, "year": 1950})]}
         detector = QwenDateDetector(FakeVision(response))
         self.assertEqual(detector.extract_dates("10/12/1950"), (Date(day=10, month=12, year=1950),))
- 
+
     # Check that extract_dates parses a date range from the client's response.
     def test_extract_dates_parses_a_date_range(self):
         response = {"dates": [range_entry(start_date={"year": 2021}, end_date={"year": 2023})]}
         detector = QwenDateDetector(FakeVision(response))
         self.assertEqual(detector.extract_dates("2021-23"), (DateRange(start=Date(year=2021), end=Date(year=2023)),))
- 
+
     # Check that extract_dates preserves left-to-right order across several
     # dates and ranges even when the model lists them out of order.
     def test_extract_dates_orders_multiple_results_by_position_in_the_text(self):
@@ -790,7 +850,7 @@ class QwenDateDetectorTest(unittest.TestCase):
                 DateRange(start=Date(month=3, year=1930), end=Date(month=5, year=1933)),
             ),
         )
- 
+
     # Check that the detector's own name can still be overridden if needed,
     # since QwenDateDetector is a plain dataclass field rather than a constant.
     def test_name_can_be_overridden(self):

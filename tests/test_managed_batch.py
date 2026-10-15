@@ -22,6 +22,7 @@ from uma_bct.constants import (
     DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
     LEGACY_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
+    REVIEW_DATE_OUTPUT_COLUMNS,
 )
 from uma_bct.domain import BoxResult
 from uma_bct.export import export_catalogue
@@ -52,7 +53,7 @@ def managed_arguments(root: Path, *, reprocess: bool = False, detect_missing_box
     return argparse.Namespace(
         detector="qwen",
         transcriber="qwen",
-        date_detector="none",
+        ai_dates=False,
         model="qwen-test",
         min_transcription_confidence=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         min_detector_confidence=DEFAULT_MIN_DETECTOR_CONFIDENCE,
@@ -124,14 +125,14 @@ class ManagedBatchTest(unittest.TestCase):
         detect_missing_boxes: bool = True, verification: str | None = None, patches=(),
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         file_type: str | None = "csv",
-        date_detector: str = "none",
+        date_detector: str = "regex",
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
         arguments = managed_arguments(root, reprocess=reprocess, detect_missing_boxes=detect_missing_boxes,
                                       file_type=file_type)
         arguments.verification = verification
-        arguments.date_detector = date_detector
+        arguments.ai_dates = date_detector == "qwen"
         arguments.min_transcription_confidence = min_transcription_confidence
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -167,7 +168,7 @@ class ManagedBatchTest(unittest.TestCase):
             rows, links = read_excel(catalogue)
             self.assertEqual(rows[0], OUTPUT_COLUMNS)
             self.assertEqual(rows[1][1], "0004")
-            self.assertIn("Shelf%20Photo", links["G2"])
+            self.assertIn("Shelf%20Photo", links["I2"])
             edited = catalogue.read_bytes() + b"reviewer edit"
             catalogue.write_bytes(edited)
             pipeline = ManagedPipeline()
@@ -274,10 +275,12 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(pipeline.calls, [])
             self.assertEqual(Path(summary["catalogue_output"]).name, CATALOGUE_FILE_NAME)
 
-    def test_legacy_staging_preserves_both_historical_catalogue_layouts(self):
+    def test_legacy_staging_preserves_historical_catalogue_layouts(self):
         for columns, date_detector, file_type in (
             (LEGACY_OUTPUT_COLUMNS, "none", "csv"), (LEGACY_OUTPUT_COLUMNS, "none", "excel"),
             (DATE_OUTPUT_COLUMNS, "regex", "csv"),
+            (REVIEW_DATE_OUTPUT_COLUMNS, "regex", "csv"),
+            (REVIEW_DATE_OUTPUT_COLUMNS, "regex", "excel"),
         ):
             with self.subTest(columns=columns, file_type=file_type), self.prepared_root("01.jpg") as root:
                 def stop_review(*args, **kwargs):
@@ -307,8 +310,7 @@ class ManagedBatchTest(unittest.TestCase):
                 catalogue_bytes = pending.read_bytes()
                 # An omitted CLI option keeps the original extraction method on resume.
                 arguments = managed_arguments(root, file_type=file_type)
-                arguments.date_detector = "regex"
-                arguments.date_detector_explicit = False
+                arguments.ai_dates = False
                 stdout, stderr = io.StringIO(), io.StringIO()
                 with (contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr),
                       patch("uma_bct.managed_batch.build_pipeline", side_effect=AssertionError("must not load"))):
@@ -316,7 +318,7 @@ class ManagedBatchTest(unittest.TestCase):
                 self.assertEqual(status, 0, stderr.getvalue())
                 summary = json.loads(stdout.getvalue())
                 self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), catalogue_bytes)
-                self.assertEqual(arguments.date_detector, date_detector)
+                self.assertEqual(getattr(arguments, "_resume_date_detector", "regex"), date_detector)
 
     def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
@@ -326,11 +328,33 @@ class ManagedBatchTest(unittest.TestCase):
             batch = Path(interrupted["batch_directory"])
             original_progress = (batch / PROGRESS_FILE_NAME).read_bytes()
             pipeline = ManagedPipeline()
-            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, date_detector="regex")
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, pipeline, date_detector="qwen")
             self.assertEqual(status, 2)
             self.assertIn("processing configuration changed", stderr)
             self.assertEqual(pipeline.calls, [])
             self.assertEqual((batch / PROGRESS_FILE_NAME).read_bytes(), original_progress)
+
+    def test_ai_date_batch_requires_the_ai_switch_again_on_resume(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            arguments = managed_arguments(root)
+            arguments.ai_dates = True
+            images = sorted(arguments.path_to_inputs.glob("*.jpg"))
+            first = ManagedPipeline(interrupt_name="02.jpg")
+            with (patch("uma_bct.managed_batch.build_pipeline", return_value=first) as builder,
+                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
+                self.assertEqual(run_managed_batch(arguments, images, arguments.results_directory), 130)
+                self.assertEqual(builder.call_args.kwargs["date_detector_name"], "qwen")
+            status, _, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline(), date_detector="regex")
+            self.assertEqual(status, 2, stderr)
+            self.assertIn("processing configuration changed", stderr)
+            resumed = managed_arguments(root)
+            resumed.ai_dates = True
+            pipeline = ManagedPipeline()
+            with (patch("uma_bct.managed_batch.build_pipeline", return_value=pipeline) as builder,
+                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
+                self.assertEqual(run_managed_batch(resumed, images, resumed.results_directory), 0)
+                self.assertEqual(builder.call_args.kwargs["date_detector_name"], "qwen")
+            self.assertEqual(pipeline.calls, ["02.jpg"])
 
 
     def test_added_photo_during_run_is_deferred_and_only_it_runs_next_time(self):
@@ -1467,7 +1491,7 @@ class ManagedBatchTest(unittest.TestCase):
         box = make_box(image=image, box_id="1", crop_path=Path("/test/test.jpg"))
         date = Date(day=10,month=1,year=2005)
         date_range = DateRange(Date(day=10,month=12,year=1901),Date(day=10,month=5,year=1920))
-        
+
         results = [
             ImageResult(
                 image, "qwen", "qwen", ("qwen",), "qwen", "failed", (), (), model_metadata, date_detector="none"
@@ -1477,7 +1501,7 @@ class ManagedBatchTest(unittest.TestCase):
             ),
             ImageResult(
                 image, "qwen", "qwen", ("qwen",), "qwen", "complete", (BoxResult(box, make_transcription(box, dates=(date, date_range))),), (), model_metadata, date_detector="none"
-            ),   
+            ),
         ]
 
         for result in results:

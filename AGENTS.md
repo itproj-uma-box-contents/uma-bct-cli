@@ -49,8 +49,10 @@ Input/output validation -> model preflight -> box detection
 ## Client catalogue rules
 
 - Keep the first four columns: `Unit Type`, `Unit Number`, `Description`,
-  `Date Range`. Current exports then add `Transcription Confidence (%)`,
-  `Review Flags`, and `Cropped Box Image Link`.
+  `Dates`. Then add `Earliest Date`, `Latest Date`,
+  `Transcription Confidence (%)`, `Review Flags`, and `Cropped Box Image Link`.
+  Use regex date extraction by default; `--ai-dates` enables the selected local
+  or hosted model. No `--date-detector` CLI option is supported.
 - `Unit Type` preserves all printed label text in reading order, including
   headings and record-origin text, excluding only the unit-number phrase.
   Collapse line breaks and repeated whitespace to single spaces.
@@ -62,8 +64,8 @@ Input/output validation -> model preflight -> box detection
   text visible and flag multiple identifiers. Do not misread printed origin
   headings as extra identifiers.
 - `Description` joins handwriting and explicit auxiliary content/condition
-  annotations with semicolons. Exclude identity-only text. `Date Range` is
-  currently blank. Never invent ambiguous text or dates: leave blank or flagged.
+  annotations with semicolons. Exclude identity-only text. `Dates` contains
+  extracted dates. Never invent ambiguous text or dates: leave blank or flagged.
 - Keep one row per physical box, including duplicates. Sort by complete
   `Unit Type` case-insensitively, then numeric `Unit Number`; incomplete rows stay
   stable at the end. Flag matching identities as `Potential Duplicate`.

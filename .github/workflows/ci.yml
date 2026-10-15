@@ -54,7 +54,7 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
-          uv export --quiet --locked --no-dev --group client-bootstrap --no-emit-project --no-header --format requirements-txt --output-file "$RUNNER_TEMP/client-constraints.txt"
+          uv export --quiet --locked --no-dev --extra hosted --group client-bootstrap --no-emit-project --no-header --format requirements-txt --output-file "$RUNNER_TEMP/client-constraints.txt"
           tail -n +3 client-constraints.txt > "$RUNNER_TEMP/committed-constraints.txt"
           diff -u "$RUNNER_TEMP/committed-constraints.txt" "$RUNNER_TEMP/client-constraints.txt"
       - if: steps.changes.outputs.docs_only != 'true'

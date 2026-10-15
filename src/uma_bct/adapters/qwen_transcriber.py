@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 from ..domain import Box, BoxTranscription
@@ -154,16 +155,53 @@ def validate_transcription_result(value: Any) -> list[BoxRecord]:
     return [validate_record(item, index) for index, item in enumerate(records, 1)]
 
 
-def crop_question(box: Box) -> str:
+def crop_context(box: Box) -> str:
     x, y, width, height = box.bounding_box.as_xywh()
     return f"""This is a clean crop from a photo of archive boxes.
 
 Original photo: {box.source_image.width} x {box.source_image.height} pixels.
-Crop: x={x}, y={y}, width={width}, height={height}; centre={box.position}.
+Crop: x={x}, y={y}, width={width}, height={height}; centre={box.position}."""
+
+
+def crop_question(box: Box) -> str:
+    return f"""{crop_context(box)}
 
 Report the central archive box. Report multiple boxes only when multiple complete
 front faces occupy comparable central areas; ignore fragments at crop edges.
 {FIELDS}
+
+{RULES}"""
+
+
+HOSTED_PHYSICAL_BOX_RULES = """Physical-box checks:
+- Report only substantially visible archive-box front faces. A side panel, lid,
+  shelf, gap, shadow, or loose label is not a separate box. A narrow edge strip
+  with no label area or handwriting is a fragment.
+- If no qualifying front face is visible, return {"boxes": []}. Never create an
+  empty placeholder record for a non-box region or an edge fragment.
+- A blank record (blank fields, [] lists) is allowed ONLY for a complete front
+  face that is fully visible and genuinely has no text. A face that is cut off
+  by the image or crop edge and shows no label or handwriting is a fragment,
+  not a blank box.
+- For a face cut off at the edge, keep it only if its label or handwriting is
+  at least partly visible; transcribe just what is visible and do not invent
+  missing text.
+- Never invent missing boxes to complete a sequence. Missing-number suggestions
+  are handled after transcription.
+- Do not copy text from a neighbouring face into the target box's record."""
+
+HOSTED_FULL_IMAGE_QUESTION = f"{QUESTION}\n\n{HOSTED_PHYSICAL_BOX_RULES}"
+
+
+def hosted_crop_question(box: Box) -> str:
+    return f"""{crop_context(box)}
+
+Report the central archive box IF one is present. Report multiple boxes only
+when multiple qualifying front faces occupy comparable central areas.
+
+{FIELDS}
+
+{HOSTED_PHYSICAL_BOX_RULES}
 
 {RULES}"""
 
@@ -194,6 +232,8 @@ def to_domain(box: Box, item: BoxRecord, token_confidence: int | None) -> BoxTra
 class QwenTextTranscriber:
     client: VisionModelClient
     name: str = "qwen"
+    crop_prompt: Callable[[Box], str] = field(default=crop_question, kw_only=True, repr=False)
+    full_image_prompt: str = field(default=QUESTION, kw_only=True, repr=False)
 
     def request(self, box: Box, prompt: str) -> list[BoxTranscription]:
         # Validate the model's structure before mapping it to domain objects.
@@ -206,19 +246,19 @@ class QwenTextTranscriber:
         return [to_domain(box, record, confidence) for record, confidence in zip(records, confidences, strict=True)]
 
     def transcribe(self, box: Box) -> list[BoxTranscription]:
-        return self.request(box, crop_question(box))
+        return self.request(box, self.crop_prompt(box))
 
     def transcribe_full_image(self, box: Box) -> list[BoxTranscription]:
-        return self.request(box, QUESTION)
+        return self.request(box, self.full_image_prompt)
 
     def verify(self, box: Box, *, full_image: bool = False) -> list[BoxTranscription]:
-        prompt = QUESTION if full_image else crop_question(box)
+        prompt = self.full_image_prompt if full_image else self.crop_prompt(box)
         return self.request(box, prompt + "\nIndependently check every visible character, especially digits and handwriting. "
                             "Read the image carefully a second time before returning your transcription.")
 
     def resolve_discrepancy(self, box: Box, first: list[BoxTranscription],
                             second: list[BoxTranscription], *, full_image: bool = False) -> list[BoxTranscription]:
-        prompt = QUESTION if full_image else crop_question(box)
+        prompt = self.full_image_prompt if full_image else self.crop_prompt(box)
         candidates = json.dumps({"first": [item.to_dict() for item in first],
                                  "second": [item.to_dict() for item in second]}, ensure_ascii=False)
         return self.request(box, prompt + "\nTwo readings disagree. Check their differences against the image. "

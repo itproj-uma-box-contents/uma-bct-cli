@@ -7,10 +7,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary
+from uma_bct.terminal import TerminalProgress, human_summary, print_run_summary, print_selected_model
 
 
 class TerminalProgressTest(unittest.TestCase):
+    def test_selected_model_uses_stderr_and_sanitizes_control_characters(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            print_selected_model(
+                {"model": "example\nmodel", "backend": "hosted\x1b", "api_key": "secret"},
+                fallback_model="fallback",
+            )
+            print_selected_model({}, fallback_model="local-model")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            stderr.getvalue(), "Selected model: example?model (hosted?)\nSelected model: local-model (ollama)\n"
+        )
+        self.assertNotIn("secret", stderr.getvalue())
+
     def setUp(self):
         terminal = patch.dict(os.environ, {"TERM": "xterm-256color"})
         terminal.start()

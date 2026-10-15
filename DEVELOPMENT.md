@@ -90,6 +90,14 @@ explicit `-o`, `-b`, and `--force`; `--reprocess` is valid only with this mode.
 Use `uma-bct setup --path-to-inputs PATH --results-directory PATH` to prepare
 custom managed locations.
 
+For hosted development, install the optional client with
+`uv sync --locked --dev --extra hosted`. A nonempty `UMA_BCT_API_KEY` plus a
+provider-qualified `UMA_BCT_API_MODEL` selects the same hosted client for box
+detection and transcription. Local Qwen remains the default when the key is
+empty. The [README Gemini walkthrough](README.md#test-gemini-without-paying)
+uses an invented photo and a Free Tier key; do not use private client photos
+for that smoke test. Unit tests use a fake SDK and never make paid API calls.
+
 ## API documentation
 
 `pdoc` builds a browsable API doc site from the package's docstrings. To
@@ -111,53 +119,50 @@ Open `dist/api-docs/uma_bct.html` in a browser to view it.
 ## Client bundle
 
 New launchers use `Add Photos Here/`, `Results/`, and a private
-`.uma-bct-runtime/` directory. On the first run they:
+`.uma-bct-runtime/` directory. They verify the wheel and hash-pinned
+`client-constraints.txt`, install the managed Python 3.12 runtime, and open
+the photo and result folders. With an empty API key, they also download and
+verify pinned Ollama, start an owned service on an OS-selected numeric
+loopback port, and load-probe the pinned Qwen model. With a nonempty key, they
+check the hosted client and skip the Ollama download, service, and model pull.
 
-1. Verify the supplied wheel and hash-pinned dependency file.
-2. Download and verify pinned uv and Ollama builds for the current platform.
-3. Install a managed Python 3.12 runtime and the UMA BCT wheel.
-4. Validate the Ollama executable and its `llama-server` companion.
-5. Start an owned Ollama child on an OS-selected numeric loopback port.
-6. Download and load-probe the pinned model with the production context size.
-7. Open `Add Photos Here/`, process or resume the photos, and open `Results/`.
+Runtime downloads finish before the launcher asks the user to add private
+photographs. Later local runs reuse the runtime and can run offline; hosted
+runs need internet access. The owned Ollama process is stopped and reaped on
+every local exit path; services from other folders and anything already using
+port 11434 are neither reused nor terminated. Startup is retried on fresh
+loopback ports, and failures point to `.uma-bct-runtime/ollama.log`. An
+incomplete runtime is repaired only when the selected photo and result folders
+are empty. A legacy bundle with data only in `inputs/` and `outputs/` continues
+to use them in place. Data in both directory pairs is an error and is never
+merged. Windows uses the checksum-pinned portable Ollama archive for local
+mode and verifies the Authenticode signatures on both required executables;
+it does not run the desktop installer or alter foreign services.
 
-Downloads finish before the launcher asks the user to add private photographs.
-Later runs reuse the runtime, input, and result folders in place and can run
-offline. The owned Ollama process is stopped and reaped on every exit path;
-services from other folders and anything already using port 11434 are neither
-reused nor terminated. Startup is retried on fresh loopback ports, and failures
-point to `.uma-bct-runtime/ollama.log`. An incomplete runtime is repaired only
-when the selected photo and result folders are empty. A legacy bundle with data
-only in `inputs/` and `outputs/` continues to use them in place. Data in both
-directory pairs is an error and is never merged. Windows uses the
-checksum-pinned portable Ollama archive and verifies the Authenticode signatures on both required
-executables; it does not run the desktop installer or alter foreign services.
-
-`client-constraints.txt` is generated from `uv.lock`; do not edit it by
-hand. It is required so every client launcher installs the same hash-verified
-dependency versions.
+`client-constraints.txt` is generated from `uv.lock`, including the optional
+hosted client. Do not edit it by hand. Every launcher installs the same
+hash-verified dependency versions.
 
 ## Processing and privacy
 
 ```text
-local file/model preflight
-  -> one-token model load probe (16,384 context, thinking disabled)
-  -> Qwen box detection
+input and output validation
+  -> selected model preflight (local Qwen or hosted HTTPS client)
+  -> one shared vision client for box detection and transcription
   -> OpenCV detection fallback
-  -> review crops
-  -> Qwen transcription
-  -> one full-image recovery when localization or all crops fail
+  -> review crops and full-image recovery when needed
   -> conservative catalogue mapping
   -> per-photo atomic managed checkpoint
   -> recoverable CSV and final-details publication
 ```
 
-Managed progress/details keep input SHA-256 fingerprints, the model identity
-and actual per-run loopback endpoint, detector route, final box readings,
-warnings, and failures. They deliberately do not contain per-attempt timing or
-proposal telemetry. Direct CLI use continues
-to default to `127.0.0.1:11434`; only the client launchers select an isolated
-port.
+Managed progress/details keep input SHA-256 fingerprints, backend and model
+identity, endpoint history, detector route, final box readings, warnings, and
+failures. They never store API keys. A managed batch cannot resume with a
+different backend, model, provider, or hosted HTTPS origin. They deliberately
+do not contain per-attempt timing or proposal telemetry. Direct local CLI use
+continues to default to `127.0.0.1:11434`; local client launchers select an
+isolated port.
 
 Managed processing holds an OS-backed `.uma-bct.lock` in the results root.
 Exclusive acquisition safely recovers a well-formed lock left by a dead
@@ -165,18 +170,21 @@ process; malformed, linked, non-regular, or racing locks remain blocked. Direct
 mode retains its existing catalogue-lock semantics.
 
 Managed batches do not publish a catalogue while photos are unattempted. After
-all photos become terminal, original sources and crop hashes are revalidated, hidden CSV and HTML files
-are staged, and their digests are checkpointed before no-clobber publication.
+all photos become terminal, original sources and crop hashes are revalidated,
+the hidden CSV or Excel catalogue is staged, and its digest is checkpointed
+before no-clobber publication.
 `Run Progress.json` is then promoted to `Run Details.json`. Forced direct runs
 retain timestamped prior files. If the manifest commit fails after CSV
 replacement, the prior CSV is restored atomically or a newly created CSV is
 removed, then a uniquely named failed-run manifest is attempted. A rollback
 failure produces partial status and reports the retained recovery path.
 
-Only numeric loopback Ollama is allowed by default. The bundled Compose service
-opts into its exact `ollama` hostname. An approved managed endpoint requires
-`UMA_BCT_ALLOW_REMOTE_OLLAMA=1` and HTTPS because image pixels leave the
-workstation. Native launchers and Compose set `OLLAMA_NO_CLOUD=1`; cloud-tagged
+Only numeric loopback Ollama is allowed by default. The bundled local Compose
+service opts into its exact `ollama` hostname. An approved managed Ollama
+endpoint requires `UMA_BCT_ALLOW_REMOTE_OLLAMA=1` and HTTPS because image
+pixels leave the workstation. Hosted OpenAI, Anthropic, and Gemini use fixed
+HTTPS origins and the explicit key opt-in documented in the README. Native
+launchers and the local Compose service set `OLLAMA_NO_CLOUD=1`; cloud-tagged
 models are unsupported. A separately managed local Ollama used by the direct
 CLI must have cloud features disabled as well.
 
@@ -198,7 +206,9 @@ UMA_BCT_UID="$(id -u)" UMA_BCT_GID="$(id -g)" \
 ```
 
 Inputs are mounted read-only, outputs are written as the host user, and Ollama
-is not exposed on a host port.
+is not exposed on a host port. The `hosted` Compose profile has no Ollama
+dependency. Use it only with a key and the README's privacy opt-in; the free
+Gemini smoke test should use synthetic photos.
 
 ## Build the client deliverables
 
@@ -209,7 +219,7 @@ been installed.
 
 ```bash
 uv sync --locked --dev --python 3.12
-uv export --quiet --locked --no-dev --group client-bootstrap \
+uv export --quiet --locked --no-dev --extra hosted --group client-bootstrap \
   --no-emit-project --format requirements-txt \
   --output-file client-constraints.txt
 uv build --no-build-isolation
