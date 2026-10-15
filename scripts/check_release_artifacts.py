@@ -13,7 +13,7 @@ import sys
 import tarfile
 import zipfile
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".zip")
 PRIVATE_DIRECTORIES = {
@@ -104,7 +104,9 @@ def unsafe_reason(
     # paths; a hostile archive may not use the host OS's separator.
     normalized = name.replace("\\", "/")
     path = PurePosixPath(normalized)
-    if path.is_absolute() or ".." in path.parts:
+    # A path can be relative on POSIX but escape onto a Windows drive or
+    # alternate data stream. Reject both forms on every build platform.
+    if path.is_absolute() or PureWindowsPath(normalized).drive or ".." in path.parts or any(":" in part for part in path.parts):
         return "unsafe archive path"
     if duplicate:
         return "duplicate archive entry"
@@ -128,6 +130,8 @@ def unsafe_reason(
     if private := parts.intersection(PRIVATE_DIRECTORIES):
         return f"private directory {sorted(private)[0]!r}"
     folded = path.name.casefold()
+    if folded == ".ds_store" or "__macosx" in parts or folded.startswith("._"):
+        return "machine-local Finder metadata"
     if folded == "review.html" or (folded.endswith(".review.html") or ".review.previous-" in folded) or folded == ".uma-bct-settings.json":
         return "generated review output or settings"
     if folded.endswith(".uma-bct.lock") or folded == ".uma-bct-launcher.lock":

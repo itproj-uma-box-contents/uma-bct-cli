@@ -7,6 +7,7 @@ from typing import Any
 def component_to_string(component: int | None, width: int) -> str:
     return f"{component:0{width}}" if component is not None else ""
 
+
 @dataclass(frozen=True)
 class Date:
     day: int | None = None
@@ -17,22 +18,30 @@ class Date:
         string = component_to_string(self.day, 2)
         if self.month:
             if self.day:
-                string+="/"
-            string+=component_to_string(self.month, 2)
+                string += "/"
+            string += component_to_string(self.month, 2)
         if self.year:
             if self.month:
-                string+="/"
-            string+=component_to_string(self.year, 4)
+                string += "/"
+            string += component_to_string(self.year, 4)
         return string if string else "None"
 
     def is_valid(self) -> bool:
+        # Only None represents an omitted component. Booleans are integers
+        # in Python, but neither they nor zero are valid date components.
+        components = (self.year, self.month, self.day)
+        if any(value is not None and type(value) is not int for value in components):
+            return False
         try:
-            datetime(self.year if self.year else 2000,
-                    self.month if self.month else 1,
-                    self.day if self.day else 1)
-        except ValueError:
+            datetime(
+                self.year if self.year is not None else 2000,
+                self.month if self.month is not None else 1,
+                self.day if self.day is not None else 1,
+            )
+        except (ValueError, OverflowError):
             return False
         return True
+
 
 @dataclass(frozen=True)
 class DateRange:
@@ -57,16 +66,16 @@ class DateRange:
                     return False
         return True
 
+
 def deserialize_dates(values: Iterable[dict[str, Any]]) -> tuple[Date | DateRange, ...]:
     """Restore structured dates in both photo and verification checkpoints."""
     return tuple(
-        DateRange(Date(**value["start"]), Date(**value["end"])) if "start" in value else Date(**value)
-        for value in values
+        DateRange(Date(**value["start"]), Date(**value["end"])) if "start" in value else Date(**value) for value in values
     )
 
 
 def get_earliest_date(dates: tuple[Date | DateRange, ...]) -> Date:
-    #convert date ranges to two dates
+    # convert date ranges to two dates
     all_dates = []
     for date in dates:
         if isinstance(date, Date):
@@ -75,14 +84,20 @@ def get_earliest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates:
-        return min(all_dates, key = lambda date: (date.year if date.year is not None else 5000,
-                                                  date.month if date.month is not None else 13,
-                                                  date.day if date.day is not None else 31))
+        return min(
+            all_dates,
+            key=lambda date: (
+                date.year if date.year is not None else 5000,
+                date.month if date.month is not None else 13,
+                date.day if date.day is not None else 31,
+            ),
+        )
     else:
         return Date()
 
+
 def get_latest_date(dates: tuple[Date | DateRange, ...]) -> Date:
-    #convert date ranges to two dates
+    # convert date ranges to two dates
     all_dates = []
     for date in dates:
         if isinstance(date, Date):
@@ -91,8 +106,13 @@ def get_latest_date(dates: tuple[Date | DateRange, ...]) -> Date:
             all_dates.append(date.start)
             all_dates.append(date.end)
     if all_dates:
-        return max(all_dates, key = lambda date: (date.year if date.year is not None else 0,
-                                                  date.month if date.month is not None else 0,
-                                                  date.day if date.day is not None else 0))
+        return max(
+            all_dates,
+            key=lambda date: (
+                date.year if date.year is not None else 0,
+                date.month if date.month is not None else 0,
+                date.day if date.day is not None else 0,
+            ),
+        )
     else:
         return Date()

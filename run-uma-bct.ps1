@@ -192,7 +192,13 @@ function Assert-NoPrivateData {
 
 function Open-LocalFolder([string] $Path) {
     if ($env:UMA_BCT_NO_OPEN -ne "1") {
-        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+        try {
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+        } catch {
+            # Folder opening is a convenience. Keep the processing outcome
+            # intact and give the operator the path, as the Unix launcher does.
+            [Console]::Error.WriteLine("Could not open the folder automatically. Open it in your file manager: $Path")
+        }
     }
 }
 
@@ -721,7 +727,7 @@ try {
         if (@(Get-InputImages).Count -eq 0) {
             Write-Host "Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened."
             Open-LocalFolder $Inputs
-            if ([Environment]::UserInteractive) {
+            if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
                 Read-Host "Press Enter after the photos have finished copying"
             }
         }

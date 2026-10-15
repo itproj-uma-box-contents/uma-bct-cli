@@ -54,6 +54,20 @@ def read_input_image(image: InputImage) -> np.ndarray:
     return read_image(image.readable_file_path)
 
 
+def write_png(path: Path, pixels: np.ndarray) -> bool:
+    """Write review pixels without Windows' narrow OpenCV filename handling."""
+
+    if sys.platform != "win32":
+        return cv2.imwrite(str(path), pixels)
+    # Python opens Unicode filenames correctly. Encode only the pixels so
+    # this route keeps the same metadata-free PNG output as cv2.imwrite.
+    success, encoded = cv2.imencode(".png", pixels)
+    if not success:
+        return False
+    path.write_bytes(encoded.tobytes())
+    return True
+
+
 def pillow_image(path: Path) -> np.ndarray:
     """Decode the main still image, applying orientation and removing alpha."""
 
@@ -121,7 +135,7 @@ def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
         temporary_directory = Path(directory)
         temporary_directory.chmod(0o700)
         processing_path = temporary_directory / "source.png"
-        if not cv2.imwrite(str(processing_path), pixels):
+        if not write_png(processing_path, pixels):
             raise OSError(f"Could not create normalized image: {file_path}")
         del pixels
         processing_path.chmod(0o600)
@@ -247,7 +261,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
     image_directory.chmod(0o700)
     image_path = image_directory / "full_image.png"
     check_path(image_path, "Full-image review copy")
-    if not cv2.imwrite(str(image_path), read_input_image(image)):
+    if not write_png(image_path, read_input_image(image)):
         raise OSError(f"Could not write full-image review copy: {image_path}")
     check_path(image_path, "Full-image review copy")
     image_path.chmod(0o600)
@@ -300,7 +314,7 @@ class OpenCVBoxCropper:
             crop_path = crop_directory / f"box_{index:03d}.png"
             crop = original[y1:y2, x1:x2].copy()
             check_path(crop_path, "Review crop")
-            if not cv2.imwrite(str(crop_path), crop):
+            if not write_png(crop_path, crop):
                 raise OSError(f"Could not write box crop: {crop_path}")
             check_path(crop_path, "Review crop")
             crop_path.chmod(0o600)

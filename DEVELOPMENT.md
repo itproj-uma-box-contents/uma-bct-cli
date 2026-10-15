@@ -56,6 +56,11 @@ Docker smoke tests run natively on both Linux architectures. Linux client hosts
 must provide glibc 2.28 or newer; musl is not supported. macOS client hosts must
 run macOS 14 or newer.
 
+Installed-package smoke tests use the same hash-pinned dependency set as the
+client launchers, including hosted support. `scripts/smoke_hosted_install.py`
+imports the real hosted SDK and exercises all three adapters with synthetic
+replies; it makes no provider requests.
+
 Run the source CLI with:
 
 ```bash

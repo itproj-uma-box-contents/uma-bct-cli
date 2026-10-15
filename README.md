@@ -142,6 +142,10 @@ configured provider when `--hosted` is present. No dates are shown as `No Dates`
 with `None` for the earliest and latest date. Check extracted dates against the
 crop during human review.
 
+If date extraction fails, the transcription is retained and its row is marked
+`Date extraction failed`. The run is partial so a failed date request cannot
+appear to be a successfully undated box.
+
 An unfinished managed batch requires the same `--ai-dates` setting on resume.
 
 ### Unit Type and Unit Number

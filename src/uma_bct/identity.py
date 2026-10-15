@@ -32,6 +32,12 @@ UNIT_PREFIX = r"(?:unit|box(?:\s*(?:no\.?|number))?|no\.?)"
 UNIT_NUMBER = re.compile(rf"^(?:{UNIT_PREFIX}\s*[:#-]?\s*)?([0-9]{{1,4}})$", re.IGNORECASE | re.ASCII)
 # Find a unit label embedded in a transcription line and capture its number.
 CONTEXTUAL_UNIT = re.compile(rf"(?<!\w)(?:{UNIT_PREFIX})\s*[:#-]?\s*([0-9]{{1,4}})(?!\w)", re.IGNORECASE | re.ASCII)
+# A range, decimal or list cannot corroborate just its first number. "of 9"
+# is deliberately absent: that phrase is a sequence total, not another unit.
+COMPOUND_UNIT_SUFFIX = re.compile(
+    rf"^\s*(?:[/.,&+\-–—]|\b(?:and|or|to)\b)\s*(?:{UNIT_PREFIX}\s*[:#-]?\s*)?(?P<number>[0-9])",
+    re.IGNORECASE | re.ASCII,
+)
 # Match the complete printed unit-number phrase so it can be omitted from Unit Type.
 # A sequence total such as "of 9" describes the photographed run, not the unit type.
 PRINTED_UNIT_TEXT = re.compile(
@@ -173,11 +179,26 @@ def unit_type_text(lines: Iterable[str]) -> str:
     # Preserve headings and imperfect IDs exactly as printed. Only an explicit
     # Unit or Box phrase is removed before visual lines become one CSV cell.
     for line in visual_lines(lines):
-        without_unit = PRINTED_UNIT_TEXT.sub(" ", line)
+        without_unit = line if has_compound_unit(line) else PRINTED_UNIT_TEXT.sub(" ", line)
         value = " ".join(without_unit.split())
         if value and IDENTITY_SEPARATORS.fullmatch(value) is None:
             parts.append(value)
     return " ".join(parts)
+
+
+def has_compound_unit(line: str) -> bool:
+    """Recognize a labelled unit whose following text adds another number."""
+
+    for match in CONTEXTUAL_UNIT.finditer(line):
+        suffix = COMPOUND_UNIT_SUFFIX.match(line[match.end():])
+        if suffix is None:
+            continue
+        # Label order varies: "Unit 7 - 1960.0009" still names one box.
+        # Exempt complete known identifiers, never a partial or malformed ID.
+        following_number = match.end() + suffix.start("number")
+        if KNOWN_IDENTIFIER_TOKEN.match(line, following_number) is None:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -199,7 +220,7 @@ def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterabl
     for line in (*typed, *handwritten):
         matches = tuple(CONTEXTUAL_UNIT.finditer(line))
         candidates.update(match.group(1).zfill(4) for match in matches)
-        if matches and AMBIGUOUS_UNIT.search(line):
+        if matches and (AMBIGUOUS_UNIT.search(line) or has_compound_unit(line)):
             ambiguous = True
 
     for line in handwritten:

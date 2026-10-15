@@ -956,6 +956,9 @@ def remove_working_directory(batch_directory: Path, relative_value: str | None) 
     relative = PurePosixPath(relative_value)
     if len(relative.parts) != 2 or relative.parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Working directory is outside the managed work root: {relative_value!r}")
+    # The leaf can be a real directory while .working or an ancestor redirects
+    # outside this batch. Recheck the whole path before recursive deletion.
+    check_path(working, "Managed working directory")
     try:
         metadata = working.lstat()
     except FileNotFoundError:

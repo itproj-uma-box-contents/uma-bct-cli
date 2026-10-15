@@ -998,6 +998,35 @@ class ClientDeliveryTest(unittest.TestCase):
         subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True, capture_output=True, text=True)
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_folder_open_failure_is_a_warning(self):
+        source = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
+        start = source.index("function Open-LocalFolder")
+        function = source[start:source.index("\n}\n", start) + 3]
+        command = (
+            "$ErrorActionPreference='Stop'; $env:UMA_BCT_NO_OPEN='0'; "
+            "function Start-Process { throw 'synthetic folder failure' }\n"
+            f"{function}\nOpen-LocalFolder 'C:\\Private Files\\Results'\nexit 0"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Could not open the folder automatically", result.stderr)
+        self.assertIn("C:\\Private Files\\Results", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_does_not_prompt_with_redirected_input(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, _events):
+            (root / "inputs/shelf.jpg").unlink()
+            result = subprocess.run(
+                launcher_command(launcher), env=environment, input="", capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("No supported photos", result.stderr)
+            self.assertNotIn("Press Enter", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_uses_dynamic_ports_retries_and_cleans_up(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         owns_listener = False

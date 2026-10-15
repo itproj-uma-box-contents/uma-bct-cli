@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from .constants import (
     AMBIGUOUS_IDENTIFIER_FLAG,
+    DATE_EXTRACTION_FAILED_FLAG,
     INVALID_UNIT_FLAG,
     MISSING_IDENTIFIER_FLAG,
     MISSING_UNIT_FLAG,
@@ -210,6 +211,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(unit_flag)
     if transcription.needs_review or identifier_mismatch or unit_mismatch:
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
+    if transcription.date_extraction_failed:
+        flags.append(DATE_EXTRACTION_FAILED_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
     # Formula links are reserved for validated managed crops. Other paths are
@@ -233,7 +236,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Latest Date": get_latest_date(transcription.dates).to_string(),
     }
     if not spreadsheet_safe:
-        # HTML escapes at its own boundary; do not display CSV's protective apostrophe.
+        # Raw comparisons need the visible text, without CSV's protective apostrophe.
         record["Unit Type"] = unit_type
         record["Description"] = "; ".join(
             line for line in (*non_empty_lines(transcription.handwritten_lines),

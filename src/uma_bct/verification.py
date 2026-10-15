@@ -145,7 +145,10 @@ def reconcile(first: BoxTranscription, second: BoxTranscription,
                 if key not in unresolved:
                     unresolved.append(key)
     if "handwritten_lines" in selected:
+        # Dates and their failure flag describe the selected handwriting.
+        # Never carry an earlier extraction failure onto a corroborated correction.
         selected["dates"] = second.dates
+        selected["date_extraction_failed"] = second.date_extraction_failed
     return replace(first, **selected, confidence=min(item.confidence for item in contributors),
                    needs_review=bool(disputed) or any(item.needs_review for item in contributors)), disputed, unresolved
 

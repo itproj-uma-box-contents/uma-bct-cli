@@ -131,5 +131,5 @@ def _run_setup(*, root: Path | None, model_name: str, input_directory: Path | No
     if status == 0:
         reporter.phase("Setup complete.")
     reporter.close()
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(json.dumps(result, indent=2, ensure_ascii=True))
     return status

@@ -15,10 +15,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
-import cv2
-
 from ..domain import BoundingBox, DetectedRegion, InputImage
-from ..imaging import read_input_image
+from ..imaging import read_input_image, write_png
 from ..ports import VisionModelClient
 from .qwen_response import response_boxes
 
@@ -159,7 +157,7 @@ def sanitized_detection_image(image: InputImage):
 
     with tempfile.TemporaryDirectory(prefix="uma-bct-detection-") as directory:
         image_path = Path(directory) / "source.png"
-        if not cv2.imwrite(str(image_path), read_input_image(image)):
+        if not write_png(image_path, read_input_image(image)):
             raise OSError("Could not create a sanitized detection image.")
         image_path.chmod(0o600)
         yield image_path

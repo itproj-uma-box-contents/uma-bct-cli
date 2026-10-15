@@ -780,16 +780,16 @@ class QwenDateDetectorTest(unittest.TestCase):
         result = {
             "dates": [
                 date_entry(starting_index=0, start_date={"day": 10, "month": 12, "year": 1950}),
-                date_entry(starting_index=39 - 100, start_date={"month": 5, "year": 1921}),  # out of order on purpose
+                date_entry(starting_index=14, start_date={"month": 5, "year": 1921}),
                 range_entry(starting_index=39, start_date={"month": 3, "year": 1930}, end_date={"month": 5, "year": 1933}),
                 range_entry(starting_index=62, start_date={"year": 2021}, end_date={"year": 2023}),
             ]
         }
         parsed = parse_qwen_result(result)
         self.assertEqual(len(parsed), 4)
-        # Sorted by starting_index: the -61 entry comes first.
-        self.assertEqual(parsed[0], Date(month=5, year=1921))
-        self.assertEqual(parsed[1], Date(day=10, month=12, year=1950))
+        # Source positions must be nonnegative and preserve reading order.
+        self.assertEqual(parsed[0], Date(day=10, month=12, year=1950))
+        self.assertEqual(parsed[1], Date(month=5, year=1921))
         self.assertEqual(parsed[2], DateRange(start=Date(month=3, year=1930), end=Date(month=5, year=1933)))
         self.assertEqual(parsed[3], DateRange(start=Date(year=2021), end=Date(year=2023)))
 
@@ -798,7 +798,7 @@ class QwenDateDetectorTest(unittest.TestCase):
     def test_starting_index_max_is_derived_from_string_length(self):
         schema = get_result_schema("12345")
         date_schema = schema["properties"]["dates"]["items"]["properties"]
-        self.assertEqual(date_schema["starting_index"]["max"], 4)
+        self.assertEqual(date_schema["starting_index"]["maximum"], 4)
 
     # Check the schema always requires the four fields the parser depends on.
     def test_required_fields_match_what_the_parser_reads(self):
@@ -820,13 +820,13 @@ class QwenDateDetectorTest(unittest.TestCase):
 
     # Check that extract_dates parses a single complete date from the client's response.
     def test_extract_dates_parses_a_single_date(self):
-        response = {"dates": [date_entry(start_date={"day": 10, "month": 12, "year": 1950})]}
+        response = {"dates": [date_entry(raw_text="10/12/1950", start_date={"day": 10, "month": 12, "year": 1950})]}
         detector = QwenDateDetector(FakeVision(response))
         self.assertEqual(detector.extract_dates("10/12/1950"), (Date(day=10, month=12, year=1950),))
 
     # Check that extract_dates parses a date range from the client's response.
     def test_extract_dates_parses_a_date_range(self):
-        response = {"dates": [range_entry(start_date={"year": 2021}, end_date={"year": 2023})]}
+        response = {"dates": [range_entry(raw_text="2021-23", start_date={"year": 2021}, end_date={"year": 2023})]}
         detector = QwenDateDetector(FakeVision(response))
         self.assertEqual(detector.extract_dates("2021-23"), (DateRange(start=Date(year=2021), end=Date(year=2023)),))
 
@@ -836,9 +836,10 @@ class QwenDateDetectorTest(unittest.TestCase):
         text = "10/12/1950. In 5/1921, Confrence 3.1930 to 5.1933"
         response = {
             "dates": [
-                range_entry(starting_index=34, start_date={"month": 3, "year": 1930}, end_date={"month": 5, "year": 1933}),
-                date_entry(starting_index=0, start_date={"day": 10, "month": 12, "year": 1950}),
-                date_entry(starting_index=15, start_date={"month": 5, "year": 1921}),
+                range_entry(raw_text="3.1930 to 5.1933", starting_index=text.index("3.1930"),
+                            start_date={"month": 3, "year": 1930}, end_date={"month": 5, "year": 1933}),
+                date_entry(raw_text="10/12/1950", starting_index=0, start_date={"day": 10, "month": 12, "year": 1950}),
+                date_entry(raw_text="5/1921", starting_index=text.index("5/1921"), start_date={"month": 5, "year": 1921}),
             ]
         }
         detector = QwenDateDetector(FakeVision(response))

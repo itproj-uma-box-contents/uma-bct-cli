@@ -112,6 +112,11 @@ class ArtifactSafetyTest(unittest.TestCase):
             "custom-results/Run Progress.json",
             "custom-results/Run Details.json",
             "../escape.py",
+            "C:/escape.py",
+            "C:escape.py",
+            "package/module.py:stream",
+            "package/.DS_Store",
+            "__MACOSX/._README.md",
         ):
             with self.subTest(name=name):
                 self.assertIsNotNone(unsafe_reason(name))

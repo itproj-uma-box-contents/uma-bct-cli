@@ -23,6 +23,7 @@ from typing import Any, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
 from ..ports import ModelResponse
+from .qwen_response import valid_logprob
 
 DEFAULT_MODEL = "qwen3-vl:8b-instruct-q4_K_M"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -173,11 +174,15 @@ def chunk_token_logprobs(chunk: Any) -> list[tuple[str, float]]:
     """Read the (token, logprob) pairs behind one streamed chunk, if any."""
 
     pairs: list[tuple[str, float]] = []
-    for entry in response_field(chunk, "logprobs") or ():
+    entries = response_field(chunk, "logprobs")
+    if not isinstance(entries, (list, tuple)):
+        return pairs
+    for entry in entries:
         token = response_field(entry, "token")
         logprob = response_field(entry, "logprob")
-        if isinstance(token, str) and isinstance(logprob, (int, float)):
-            pairs.append((token, float(logprob)))
+        if not isinstance(token, str) or not valid_logprob(logprob):
+            return []
+        pairs.append((token, float(logprob)))
     return pairs
 
 
@@ -200,7 +205,14 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
             content_logprobs.extend(chunk_token_logprobs(chunk))
         elif chunk_thinking:
             thinking_logprobs.extend(chunk_token_logprobs(chunk))
-    return ("".join(content).strip(), "".join(thinking).strip(), tuple(content_logprobs), tuple(thinking_logprobs))
+    # Partial or mismatched metadata must not score a different text stream.
+    # The transcription itself remains usable with unavailable confidence.
+    content_text, thinking_text = "".join(content), "".join(thinking)
+    if "".join(token for token, _ in content_logprobs) != content_text:
+        content_logprobs = []
+    if "".join(token for token, _ in thinking_logprobs) != thinking_text:
+        thinking_logprobs = []
+    return content_text.strip(), thinking_text.strip(), tuple(content_logprobs), tuple(thinking_logprobs)
 
 
 def bounded_response_error(value: str) -> str:
@@ -304,6 +316,11 @@ class OllamaVisionModel:
     host: str | None = None
 
     def __post_init__(self) -> None:
+        # A loopback server can still forward cloud-tagged requests. Reject
+        # them before preflight or setup can contact an externally owned server.
+        tag = self.model.rsplit("/", 1)[-1].partition(":")[2].casefold()
+        if "cloud" in tag.split("-"):
+            raise ValueError("Ollama cloud-tagged models are unsupported; select a local model.")
         if self.timeout_seconds is not None and (not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
             raise ValueError("Ollama request timeout must be a positive number.")
 
