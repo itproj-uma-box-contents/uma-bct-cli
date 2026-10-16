@@ -534,6 +534,17 @@ class ClientDeliveryTest(unittest.TestCase):
             forwarded = (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()
             self.assertEqual(forwarded[4:], list(arguments))
 
+    def test_launchers_preserve_attached_model_tags_for_processing(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, _events):
+            arguments = ("-mcustom:8b", "--json")
+            result = run_launcher(launcher, environment, arguments=arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            forwarded = (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(forwarded[4:], list(arguments))
+            self.assertFalse((root / "setup-arguments.txt").exists())
+
     def test_launcher_metadata_does_not_need_a_runtime_or_touch_the_workspace(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"
         for option, expected in (("--help", "--format"), ("--version", "0.1.0")):
@@ -1269,9 +1280,9 @@ class ClientDeliveryTest(unittest.TestCase):
                     try:
                         self.assertTrue(prompted.wait(15), "".join(output))
                         self.assertFalse((root / "app-host.txt").exists())
-                        self.assertIn(str(root / "inputs"), "".join(output))
-                        self.assertIn(str(root / "outputs"), "".join(output))
-                        self.assertEqual(opened_folders.read_text().splitlines()[-1], str(root / "inputs"))
+                        self.assertIn(str(root.resolve() / "inputs"), "".join(output))
+                        self.assertIn(str(root.resolve() / "outputs"), "".join(output))
+                        self.assertEqual(opened_folders.read_text().splitlines()[-1], str(root.resolve() / "inputs"))
                         reader.join(timeout=2)
                         process.communicate(input="\n", timeout=15)
                         self.assertEqual(process.returncode, 0)
@@ -1350,6 +1361,37 @@ class ClientDeliveryTest(unittest.TestCase):
             )
 
     @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
+    def test_windows_launcher_keeps_arguments_from_a_calling_powershell_script(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
+            root, launcher, environment, _events = fixture
+            caller = root / "caller" / launcher.name
+            caller.parent.mkdir()
+            environment["UMA_BCT_TEST_LAUNCHER"] = str(launcher)
+            cases = (
+                (caller, root, "$PSScriptRoot"),
+                (caller.relative_to(root), root, "$PSScriptRoot"),
+                (Path(caller.name), caller.parent, "(Split-Path -Parent $env:UMA_BCT_TEST_LAUNCHER)"),
+            )
+            # The process's -File arguments belong to this different script,
+            # even if cd makes its relative filename point at the callee.
+            for caller_path, working_directory, destination in cases:
+                with self.subTest(caller=caller_path):
+                    caller.write_text(
+                        f"Set-Location -LiteralPath {destination}\n"
+                        "& $env:UMA_BCT_TEST_LAUNCHER --request-timeout 75 -c 50 --json\nexit $LASTEXITCODE\n",
+                        encoding="utf-8",
+                    )
+                    result = subprocess.run(
+                        [*launcher_command(caller_path), "--format", "csv"], env=environment, cwd=working_directory,
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
+                        ["--request-timeout", "75", "-c", "50", "--json"],
+                    )
+
+    @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
     def test_windows_native_quoting_preserves_empty_values_quotes_and_backslashes(self):
         source = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
         start = source.index("function Quote-NativeArgument")
@@ -1418,7 +1460,7 @@ class ClientDeliveryTest(unittest.TestCase):
             shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
 
             result = subprocess.run(
-                ["cmd.exe", "/d", "/c", str(command), "--format", "Excel", "--reprocess", "--json"],
+                ["cmd.exe", "/d", "/c", str(command), "--format", "Excel", "--reprocess", "-mcustom:8b", "--json"],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -1429,7 +1471,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertTrue(events.is_file())
             self.assertEqual(
                 (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
-                ["--format", "Excel", "--reprocess", "--json"],
+                ["--format", "Excel", "--reprocess", "-mcustom:8b", "--json"],
             )
             self.assertNotIn("Press Enter", result.stdout + result.stderr)
 

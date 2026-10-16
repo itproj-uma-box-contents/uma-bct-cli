@@ -4,6 +4,22 @@ Set-StrictMode -Version Latest
 # are strings. Capture them once before any helper's local $args is used.
 $CliArguments = @($args | ForEach-Object { [string] $_ })
 
+# powershell.exe -File splits attached values such as -mmodel:8b before
+# filling $args. A calling script's arguments must never replace its callee's.
+if ([string]::IsNullOrEmpty($MyInvocation.ScriptName)) {
+    $NativeArguments = [Environment]::GetCommandLineArgs()
+    for ($Index = 1; $Index -lt $NativeArguments.Length - 1; $Index++) {
+        if ($NativeArguments[$Index] -iin @("-Command", "-EncodedCommand")) { break }
+        if ($NativeArguments[$Index] -ieq "-File") {
+            $InvokedScript = Get-Item -LiteralPath $NativeArguments[$Index + 1] -ErrorAction SilentlyContinue
+            if ($null -ne $InvokedScript -and $InvokedScript.FullName -ieq $MyInvocation.MyCommand.Path) {
+                $CliArguments = @($NativeArguments | Select-Object -Skip ($Index + 2))
+            }
+            break
+        }
+    }
+}
+
 # Keep runtime, input, and result paths anchored to this extracted bundle.
 # The launcher reserves it before any repair or model setup begins.
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
