@@ -196,6 +196,35 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), expected)
             self.assertFalse(pending.exists())
 
+    def test_completed_csv_requires_explicit_reprocessing_for_a_new_excel_batch(self):
+        with self.prepared_root("01.jpg") as root:
+            status, first, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 0, stderr)
+            csv_path = Path(first["catalogue_output"])
+            edited = csv_path.read_bytes() + b"\nreviewer note"
+            csv_path.write_bytes(edited)
+
+            # A format option must not overwrite a completed or edited batch.
+            pipeline = ManagedPipeline()
+            status, reused, stderr = self.run_managed_batch_and_capture_output(root, pipeline, file_type="excel")
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(reused["catalogue_output"], str(csv_path))
+            self.assertEqual(pipeline.calls, [])
+            self.assertEqual(csv_path.read_bytes(), edited)
+            self.assertIn("--format excel --reprocess", stderr)
+
+            # Explicit reprocessing creates a separate workbook and preserves
+            # the original CSV, including changes made during human review.
+            pipeline = ManagedPipeline()
+            status, fresh, stderr = self.run_managed_batch_and_capture_output(
+                root, pipeline, file_type="excel", reprocess=True,
+            )
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(pipeline.calls, ["01.jpg"])
+            self.assertEqual(Path(fresh["catalogue_output"]).name, "Catalogue.xlsx")
+            self.assertNotEqual(fresh["batch_directory"], first["batch_directory"])
+            self.assertEqual(csv_path.read_bytes(), edited)
+
     def test_new_batch_defaults_to_csv_without_html_or_verification(self):
         with self.prepared_root("01.jpg") as root:
             pipeline = ManagedPipeline()

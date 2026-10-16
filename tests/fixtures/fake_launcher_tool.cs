@@ -50,8 +50,18 @@ public static class FakeLauncherTool
         }
     }
 
-    private static int RunApplication()
+    private static int RunApplication(string[] args)
     {
+        File.WriteAllLines(Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_ARGUMENTS"), args);
+        if (args.Length > 0 && args[0] == "setup")
+        {
+            File.WriteAllLines(Environment.GetEnvironmentVariable("UMA_BCT_FAKE_SETUP_ARGUMENTS"), args);
+        }
+        string standardOutput = Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_STDOUT");
+        if (!String.IsNullOrEmpty(standardOutput))
+        {
+            Console.WriteLine(standardOutput);
+        }
         // A long-running fake CLI records the forwarded interrupt, making
         // launcher shutdown observable without starting a real model.
         if (Environment.GetEnvironmentVariable("UMA_BCT_FAKE_APP_WAIT") == "1")
@@ -165,6 +175,10 @@ public static class FakeLauncherTool
             {
                 Console.WriteLine("uv 0.12.9");
             }
+            else
+            {
+                Console.WriteLine("synthetic installer output");
+            }
             return 0;
         }
         if (role == "python.exe")
@@ -173,7 +187,7 @@ public static class FakeLauncherTool
         }
         if (role == "uma-bct.exe")
         {
-            return RunApplication();
+            return RunApplication(args);
         }
         if (role != "ollama.exe" || args.Length == 0)
         {

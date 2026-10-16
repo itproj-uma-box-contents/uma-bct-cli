@@ -371,6 +371,8 @@ class CliTest(unittest.TestCase):
             ([], "outputs/catalogue.csv"),
             (["--file-type", "EXCEL"], "outputs/catalogue.xlsx"),
             (["--file-type", "CSV"], "outputs/catalogue.csv"),
+            (["--format", "Excel"], "outputs/catalogue.xlsx"),
+            (["--format=CSV"], "outputs/catalogue.csv"),
             (["-o", "custom.csv"], "custom.csv"),
             (["-o", "custom.XLSX"], "custom.XLSX"),
         ):
@@ -381,12 +383,28 @@ class CliTest(unittest.TestCase):
             ["-o", "catalogue.pdf"],
             ["-o", "catalogue.xlsx", "--file-type", "csv"],
             ["-o", "catalogue.csv", "--file-type", "excel"],
+            ["-o", "catalogue.csv", "--format", "excel"],
+            ["--format", "pdf"],
         ):
             with self.subTest(options=options), patch("uma_bct.cli.run_batch") as run:
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                     main(options)
                 self.assertEqual(raised.exception.code, 2)
                 run.assert_not_called()
+
+    def test_setup_passes_an_explicit_local_model_without_changing_the_default(self):
+        for option in ("--model", "-m"):
+            with self.subTest(option=option), patch("uma_bct.cli.run_setup", return_value=0) as setup, \
+                 patch("uma_bct.cli.keep_awake", return_value=contextlib.nullcontext()):
+                self.assertEqual(main(["setup", option, "qwen3-vl:4b"]), 0)
+                setup.assert_called_once_with(model_name="qwen3-vl:4b")
+
+    def test_setup_does_not_silently_ignore_an_abbreviated_model_option(self):
+        with patch("uma_bct.cli.run_setup") as setup, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                main(["setup", "--mo", "qwen3-vl:4b"])
+            self.assertEqual(error.exception.code, 2)
+            setup.assert_not_called()
 
     def test_default_run_shows_a_readable_summary(self):
         with temporary_root() as root:

@@ -90,7 +90,7 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
         help="catalogue .xlsx or .csv path (default: outputs/catalogue.csv)",
     )
     parser.add_argument(
-        "--file-type", type=str.casefold, choices=("excel", "csv"), default=None,
+        "--format", "--file-type", dest="file_type", type=str.casefold, choices=("excel", "csv"), default=None,
         help="catalogue format (default: CSV, or the explicit output filename's extension)",
     )
     parser.add_argument(
@@ -182,8 +182,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     output_format.add_argument("--human", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
-    setup = subcommands.add_parser("setup", help="prepare folders and the pinned model")
+    setup = subcommands.add_parser("setup", help="prepare folders and the local model", allow_abbrev=False)
     setup.add_argument("--hosted", action="store_true", help="check the configured hosted model instead of local Ollama")
+    setup.add_argument("-m", "--model", default=DEFAULT_MODEL, help="local model to prepare (default: %(default)s)")
     setup.add_argument("--path-to-inputs", type=Path, default=None, help="directory to prepare for input photos")
     setup.add_argument("--results-directory", type=Path, default=None, help="directory to prepare for managed results")
     return parser
@@ -206,7 +207,7 @@ def resolve_output_arguments(arguments: argparse.Namespace, parser: argparse.Arg
         if output_suffix not in {".csv", ".xlsx"}:
             parser.error("output path must end in .xlsx or .csv")
         if arguments.file_type is not None and output_suffix != suffix:
-            parser.error("--file-type conflicts with the output filename's extension")
+            parser.error("--format/--file-type conflicts with the output filename's extension")
 
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
@@ -352,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
         if raw_arguments[0] != "setup":
             parser.error("setup must be the first argument")
         setup_arguments: dict[str, object] = {}
+        # ZIP processing and its first-run setup must select the same model.
+        # Omitted options retain the existing pinned-model setup behavior.
+        if option_was_supplied(raw_arguments, ("-m", "--model")):
+            setup_arguments["model_name"] = arguments.model
         if arguments.path_to_inputs is not None:
             setup_arguments["input_directory"] = arguments.path_to_inputs
         if arguments.results_directory is not None:

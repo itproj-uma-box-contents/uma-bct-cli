@@ -334,6 +334,18 @@ class VerificationTest(unittest.TestCase):
             stream.readline.assert_not_called()
             self.assertTrue(choose_verification(argparse.Namespace(json=True), "always", has_records=True))
 
+    def test_any_redirected_stream_disables_the_optional_prompt(self):
+        for redirected in ("stdin", "stdout", "stderr"):
+            with self.subTest(redirected=redirected), patch("sys.stdin") as stdin, \
+                 patch("sys.stdout") as stdout, patch("sys.stderr") as stderr:
+                streams = {"stdin": stdin, "stdout": stdout, "stderr": stderr}
+                stdin.readline.return_value = "y\n"
+                for stream in streams.values():
+                    stream.isatty.return_value = True
+                streams[redirected].isatty.return_value = False
+                self.assertFalse(choose_verification(argparse.Namespace(json=False), "ask", has_records=True))
+                stdin.readline.assert_not_called()
+
     def test_verification_requires_a_cli_option_even_with_saved_or_environment_preferences(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             args = argparse.Namespace(results_directory=Path(directory), verification=None, json=False)
@@ -347,8 +359,8 @@ class VerificationTest(unittest.TestCase):
                 args.verification = "never"
                 self.assertEqual(configured_mode(args), "never")
             args.verification = "ask"
-            with patch("sys.stdin") as stdin, patch("sys.stderr") as stderr:
-                stdin.isatty.return_value = stderr.isatty.return_value = True
+            with patch("sys.stdin") as stdin, patch("sys.stderr") as stderr, patch("sys.stdout") as stdout:
+                stdin.isatty.return_value = stderr.isatty.return_value = stdout.isatty.return_value = True
                 stdin.readline.return_value = "y\n"
                 self.assertTrue(choose_verification(args, "ask", has_records=True))
             self.assertEqual(settings.read_text(encoding="utf-8"), '{"verification": "always"}')

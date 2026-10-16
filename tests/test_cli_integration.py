@@ -107,7 +107,7 @@ def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool
 
 class CliIntegrationTest(unittest.TestCase):
     def command(self, root, *, optional_features=True):
-        options = ["--file-type", "excel", "--verification", "always"] if optional_features else []
+        options = ["--format", "Excel", "--verification", "always"] if optional_features else []
         return [sys.executable, "-m", "uma_bct", "-i", str(root / "inputs"),
                 "--results-directory", str(root / "results"), *options, "--json"]
 

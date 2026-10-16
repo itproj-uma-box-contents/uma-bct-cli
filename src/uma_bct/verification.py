@@ -41,7 +41,9 @@ def choose_verification(arguments: argparse.Namespace, mode: str, *, has_records
         return False
     if mode == "always":
         return True
-    if getattr(arguments, "json", False) or not sys.stdin.isatty() or not sys.stderr.isatty():
+    # Keep the launcher and verification prompt rules consistent when any
+    # stream is redirected for automation or captured reports.
+    if getattr(arguments, "json", False) or not all(stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr)):
         return False
     print("\nFirst pass finished. Check each crop again? This adds model processing time.", file=sys.stderr)
     choices = "[y] once, [N] finish"

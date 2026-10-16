@@ -2079,6 +2079,17 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             )
             for catalogue in summary["catalogue_outputs"]:
                 print(f"Saved catalogue: {catalogue}", file=sys.stderr)
+            # Completed catalogues may contain reviewer edits. Explain why an
+            # explicit format request reuses them instead of silently converting.
+            requested_format = getattr(arguments, "file_type", None)
+            requested_suffix = ".xlsx" if requested_format == "excel" else ".csv"
+            if requested_format and any(Path(path).suffix.casefold() != requested_suffix
+                                        for path in summary["catalogue_outputs"]):
+                print(
+                    "Saved catalogues keep their original format. "
+                    f"To create a separate {requested_format} batch, use --format {requested_format} --reprocess.",
+                    file=sys.stderr,
+                )
             exit_code = 0 if summary["status"] == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None

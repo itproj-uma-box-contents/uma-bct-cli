@@ -187,3 +187,14 @@ jobs:
       - run: docker compose config --quiet
       - run: docker build --target production -t uma-bct-cli:ci .
       - run: docker run --rm uma-bct-cli:ci --help
+      - name: Check hosted Compose selects the hosted client
+        shell: bash
+        run: |
+          # Empty credentials must fail before any image or provider request.
+          status=0
+          UMA_BCT_IMAGE=uma-bct-cli:ci docker compose --profile hosted run --rm --no-deps \
+            -e UMA_BCT_API_KEY= -e UMA_BCT_API_MODEL= hosted \
+            > "$RUNNER_TEMP/hosted-smoke.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/hosted-smoke.log"
+          test "$status" -eq 2
+          grep -Fq "UMA_BCT_API_KEY is required with --hosted" "$RUNNER_TEMP/hosted-smoke.log"
