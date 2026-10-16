@@ -174,6 +174,11 @@ Exclusive acquisition safely recovers a well-formed lock left by a dead
 process; malformed, linked, non-regular, or racing locks remain blocked. Direct
 mode retains its existing catalogue-lock semantics.
 
+Path validation assumes a trusted, single-user workspace: keep its directories
+in place while processing or recovery is active. Existing symlinks and junctions
+are rejected before recovery mutations. These checks do not isolate filesystem
+operations from an untrusted process concurrently replacing parent directories.
+
 Managed batches do not publish a catalogue while photos are unattempted. After
 all photos become terminal, original sources and crop hashes are revalidated,
 the hidden CSV or Excel catalogue is staged, and its digest is checkpointed

@@ -16,7 +16,7 @@ from uma_bct.domain import BoxResult
 from uma_bct.export import catalogue_records, export_catalogue
 from uma_bct.managed_batch import deserialize_result, serialize_result
 from uma_bct.ports import ModelResponse
-from uma_bct.util.date_util import Date
+from uma_bct.util.date_util import Date, DateRange
 from uma_bct.verification import reading, reconcile, verify_image
 
 
@@ -101,6 +101,33 @@ class DateValidationTest(unittest.TestCase):
                 self.assertEqual(detector.extract_dates(text), ())
         self.assertEqual(detector.extract_dates("Records (1950), filed 1952."), (Date(year=1950), Date(year=1952)))
 
+    def test_regex_does_not_extract_a_prefix_or_suffix_of_a_dotted_identifier(self):
+        detector = RegexDateDetector()
+        for text in ("1980.0950", "12008.1990", "Reference 1980.0950"):
+            with self.subTest(text=text):
+                self.assertEqual(detector.extract_dates(text), ())
+
+        # Full calendar dates and configured dotted ranges still consume the
+        # whole token; only partial matches inside dotted numbers are blocked.
+        for text, expected in (
+            ("12.05.1990", Date(day=12, month=5, year=1990)),
+            ("12/5", Date(day=12, month=5)),
+            ("1950.1960", DateRange(Date(year=1950), Date(year=1960))),
+            ("1.May 1950", Date(month=5, year=1950)),
+            ("1.January 1950 - December 1950",
+             DateRange(Date(month=1, year=1950), Date(month=12, year=1950))),
+            ("12-15/May", DateRange(Date(day=12, month=5), Date(day=15, month=5))),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(detector.extract_dates(text), (expected,))
+
+        box = make_box()
+        transcription = make_transcription(box, identifiers=("1980.0950",), unit="7", handwritten=("1980.0950",))
+        transcription = replace(transcription, dates=detector.extract_dates(transcription.get_handwritten_text()))
+        row = catalogue_records([make_result(BoxResult(box, transcription))])[0]
+        self.assertEqual((row["Description"], row["Dates"], row["Earliest Date"], row["Latest Date"]),
+                         ("", "No Dates", "None", "None"))
+
 
 class DateFailureTest(unittest.TestCase):
     def failed_result(self, *, full_image=False):
@@ -144,7 +171,11 @@ class DateFailureTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = self.failed_result()
+            # Windows CI keeps the checkout and temp directory on different
+            # drives. A portable catalogue and its crop must share one root.
+            box = make_box(crop_path=root / "Box Images/box.png")
+            transcription = replace(make_transcription(box), date_extraction_failed=True)
+            result = make_result(BoxResult(box, transcription), status="partial")
             export_catalogue([result], root / "catalogue.csv")
             export_catalogue([result], root / "catalogue.xlsx")
             with (root / "catalogue.csv").open(encoding="utf-8-sig", newline="") as source:
@@ -153,6 +184,7 @@ class DateFailureTest(unittest.TestCase):
             excel_row = dict(zip(rows[0], rows[1], strict=True))
             self.assertEqual(csv_row["Review Flags"], excel_row["Review Flags"])
             self.assertIn("Date extraction failed", csv_row["Review Flags"])
+            self.assertEqual(csv_row["Cropped Box Image Link"], "Box Images/box.png")
 
     def test_verification_date_failure_keeps_original_reading_and_evidence(self):
         box = make_box()

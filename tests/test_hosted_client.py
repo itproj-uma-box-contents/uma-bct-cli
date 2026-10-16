@@ -137,6 +137,20 @@ class HostedVisionModelTest(unittest.TestCase):
         self.assertEqual(metadata["api_base"], PROVIDER_API_BASES["gemini"])
         sdk.completion.assert_not_called()
 
+    def test_malformed_probability_metadata_keeps_the_valid_reply(self):
+        content = '{"boxes":[]}'
+        malformed = (42, "invalid metadata", {"token": content},
+                     [{"token": content, "logprob": -(10 ** 400)}])
+        for provider in PROVIDER_API_BASES:
+            for logprobs in malformed:
+                with self.subTest(provider=provider, metadata=type(logprobs).__name__):
+                    sdk = self.sdk(content=content, logprobs=logprobs, params=("logprobs",))
+                    client = HostedVisionModel(HostedModelConfig(model=f"{provider}/example", api_key="synthetic-key"))
+                    with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+                        result = client.query(self.image_path, "Synthetic check.", self.schema, logprobs=True)
+                    self.assertEqual(result.value, {"boxes": []})
+                    self.assertEqual(result.token_logprobs, ())
+
     def test_client_load_suppresses_sdk_stdout_feedback(self):
         sdk = self.sdk()
         sdk.suppress_debug_info = False

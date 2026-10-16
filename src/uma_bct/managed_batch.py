@@ -834,6 +834,7 @@ def dispose_or_restore_quarantine(
 ) -> None:
     """Remove only recorded bytes, restoring a file changed during cleanup."""
 
+    check_path(target, f"{purpose} restoration target")
     fingerprint_file(quarantine, purpose)
     descriptor: int | None = None
     try:
@@ -875,6 +876,8 @@ def dispose_or_restore_quarantine(
 
 
 def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes, purpose: str) -> None:
+    check_path(quarantine, f"{purpose} recovery file")
+    check_path(target, f"{purpose} restoration target")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(quarantine, flags, 0o600)
     try:
@@ -901,6 +904,10 @@ def quarantine_active_file(
     allowed: tuple[dict[str, Any], ...],
     purpose: str,
 ) -> None:
+    # Validate every destination before moving or disposing of evidence.
+    # An existing quarantine can take the restoration branch immediately.
+    for candidate in (path, quarantine, target):
+        check_path(candidate, purpose)
     if path_entry_exists(quarantine):
         dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
     if not path_entry_exists(path):
@@ -998,6 +1005,11 @@ def harmless_extra_file(path: Path, *, desktop_only: bool = False) -> bool:
 def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     """Keep proven photo commits and reset only the photo active at interruption."""
 
+    # Active crop recovery runs before working-directory cleanup. Reject an
+    # already redirected layout before either path can mutate saved evidence.
+    for directory in (batch_directory, batch_directory / WORKING_DIRECTORY_NAME,
+                      batch_directory / BOX_IMAGES_DIRECTORY_NAME):
+        check_path(directory, "Managed recovery directory")
     effective_phase = (
         progress.get("interrupted_phase") if progress.get("phase") == "interrupted" else progress.get("phase")
     )

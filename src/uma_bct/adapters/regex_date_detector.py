@@ -23,7 +23,7 @@ MONTH_STRINGS = {
     12: ["dec", "december"],
 }
 
-# A list of date formats, ensure substring are after thier parent string (i.e. yyyy before yy)
+# Replace longer placeholders before their suffixes, such as yyyy before yy.
 DATE_COMPONENT_REGEXES = {
     "dd": "(?:[12][0-9])|(?:3[01])|(?:0?[1-9])",
     "mm": "(?:1[012])|(?:0?[1-9])",
@@ -68,9 +68,11 @@ DEFAULT_CUSTOM_RANGE_FORMATS = (
 )
 
 
-# take two integers of length n, and use the first to deduce the second, secifically in the context of date ranges, i.e. given 1942-49 or 1942-9 obtain 1949
-# only continues if second number is a greater suffixs, i.e. 1945-41, 1945-1 don't work, they return end instead
 def fill_prefix(start: str, end: str) -> str:
+    """Expand an increasing shorthand suffix: 1942-49 or 1942-9 ends in 1949.
+
+    A non-increasing suffix stays unchanged, so reversed ranges are rejected.
+    """
     if start == "":
         return end
     if end == "":
@@ -80,6 +82,24 @@ def fill_prefix(start: str, end: str) -> str:
         return start[: len(start) - len(end)] + end
     else:
         return end
+
+
+def complete_numeric_token(match: re.Match[str]) -> bool:
+    """Reject date fragments inside digit-dot-digit tokens, such as record IDs."""
+
+    text = match.string
+    start, end = match.span()
+    if start == end:
+        return False
+    # A month name after numbered punctuation ("1.May 1950") remains valid;
+    # only an adjacent digit-dot-digit sequence makes the match incomplete.
+    starts_inside_number = (
+        start >= 2 and text[start].isdigit() and text[start - 1] == "." and text[start - 2].isdigit()
+    )
+    ends_inside_number = (
+        end + 1 < len(text) and text[end - 1].isdigit() and text[end] == "." and text[end + 1].isdigit()
+    )
+    return not starts_inside_number and not ends_inside_number
 
 
 @dataclass
@@ -95,44 +115,45 @@ class RegexDateDetector:
     date_delineator_regex: str = field(init=False)
 
     def __post_init__(self) -> None:
-        # consturct regex for range deliniators
+        # Build alternatives for the configured range separators.
         self.range_delineator_regex = " ?(?:" + re.escape(self.date_range_delineators[0])
         for i in range(1, len(self.date_range_delineators)):
             self.range_delineator_regex += "|" + re.escape(self.date_range_delineators[i])
         self.range_delineator_regex += ") ?"
 
-        # consturct regex for date deliniators
+        # Date separators are separate from the separators between two dates.
         self.date_delineator_regex: str = " ?(?:" + re.escape(self.date_delineators[0])
         for i in range(1, len(self.date_delineators)):
             self.date_delineator_regex += "|" + re.escape(self.date_delineators[i])
         self.date_delineator_regex += ") ?"
 
-    # makes a date format safe for use in other functions
     def escape_date_format(self, format: str) -> str:
+        """Mark date placeholders before escaping literal regex characters."""
         result = format.replace(ESCAPE_SQEUNCE, ESCAPE_SQEUNCE + ESCAPE_SQEUNCE)
         result = result.replace(DATE_DELINIATOR_SYMBOL, ESCAPE_SQEUNCE + DATE_DELINIATOR_SYMBOL)
         result = result.replace(RANGE_DELINIATOR_SYMBOL, ESCAPE_SQEUNCE + RANGE_DELINIATOR_SYMBOL)
-        for date_compnent in DATE_COMPONENT_REGEXES:
-            result = result.replace(date_compnent, ESCAPE_SQEUNCE + date_compnent)
+        for component in DATE_COMPONENT_REGEXES:
+            result = result.replace(component, ESCAPE_SQEUNCE + component)
         return re.escape(result)
 
-    # gets the dictionary which maps date components to thier respective regexes
     def get_date_component_to_regex_map(self) -> dict[str, str]:
+        """Map date components and separators to their matching patterns."""
         return DATE_COMPONENT_REGEXES | {
             DATE_DELINIATOR_SYMBOL: self.date_delineator_regex,
             RANGE_DELINIATOR_SYMBOL: self.range_delineator_regex,
         }
 
-    # converts a date format to a regex which matches it
     def date_format_to_regex(self, format: str) -> str:
+        """Give repeated date components distinct named capture groups."""
         regex = self.escape_date_format(format)
-        for date_compnent, regex_component in self.get_date_component_to_regex_map().items():
-            if date_compnent in DATE_COMPONENT_REGEXES:
-                # Create the capture groups keeping track of what component they are
+        for component, regex_component in self.get_date_component_to_regex_map().items():
+            if component in DATE_COMPONENT_REGEXES:
+                # A range can contain the same component twice; number each
+                # occurrence so its start and end values stay distinguishable.
                 i = 1
                 while i != 0:
                     new_regex = regex.replace(
-                        self.escape_date_format(date_compnent), f"(?P<{date_compnent}{i}>{regex_component})", 1
+                        self.escape_date_format(component), f"(?P<{component}{i}>{regex_component})", 1
                     )
                     if new_regex == regex:
                         i = 0
@@ -140,13 +161,13 @@ class RegexDateDetector:
                         i += 1
                     regex = new_regex
             else:
-                regex = regex.replace(self.escape_date_format(date_compnent), f"(?:{regex_component})")
-        # Match complete numeric tokens, not year-shaped fragments of box
-        # numbers or longer identifiers. Punctuation remains a valid boundary.
+                regex = regex.replace(self.escape_date_format(component), f"(?:{regex_component})")
+        # Match whole numeric components rather than fragments of longer IDs.
+        # Dotted-token boundaries are checked separately after matching.
         return r"(?<!\d)(?:" + regex + r")(?!\d)"
 
-    # turns a match result from a date format regex to a date of the form dd/mm/yyyy or a date range dd/mm/yyyy-dd/mm/yyyy
     def standardise_match_result(self, match: re.Match) -> Date | DateRange:
+        """Map captured components to one date or the endpoints of a range."""
         dates = [{"d": "", "m": "", "y": ""}, {"d": "", "m": "", "y": ""}]
 
         def add_to_dates(part, value):
@@ -155,7 +176,8 @@ class RegexDateDetector:
             else:
                 dates[1][part] = value
 
-        # populate two dates, assume the first day/month/year you encounter is for the first date, and second for the second date
+        # First occurrences describe the start date; repeated components
+        # describe the end date.
         for part, value in match.groupdict().items():
             if "yyyy" in part:
                 add_to_dates("y", value)
@@ -175,21 +197,19 @@ class RegexDateDetector:
             elif "dd" in part:
                 add_to_dates("d", value)
 
-        # If first year is short and of reasonable size, assume its in the 2000s
+        # Preserve the established interpretation of complete dates with
+        # two-digit years 01-29; partial dates keep their printed precision.
         if dates[0]["d"] != "" and dates[0]["m"] != "" and len(dates[0]["y"]) == 2 and 0 < int(dates[0]["y"]) < 30:
             dates[0]["y"] = "20" + dates[0]["y"]
 
         if dates[1]["y"] != "" or dates[1]["m"] != "" or dates[1]["d"] != "":
-            # Deduce second date from first
-
-            # Complete day range
+            # Expand an abbreviated day only when both dates share a month.
             if dates[1]["y"] == dates[0]["y"] and dates[1]["m"] == dates[0]["m"] and dates[1]["d"] != "":
                 dates[1]["d"] = fill_prefix(dates[0]["d"], dates[1]["d"])
 
-            # Complete year range
+            # Expand an abbreviated year, then carry forward omitted parts.
             dates[1]["y"] = fill_prefix(dates[0]["y"], dates[1]["y"])
 
-            # Complete empty
             for component in dates[1]:
                 if dates[1][component] == "":
                     dates[1][component] = dates[0][component]
@@ -222,31 +242,31 @@ class RegexDateDetector:
         dates: list[re.Match] = []
         matches: list[re.Match] = []
 
-        # find all possible dates, added in order given in documentation:
-
-        # Check indiviaul dates
+        # Collect single dates first so equal-length matches keep that priority.
         for format in self.date_formats:
             date_regex = self.date_format_to_regex(format)
             matches.extend(re.finditer(date_regex, string, flags=re.IGNORECASE))
 
-        # Check custon range formats
+        # Explicit range formats take precedence over generic combinations.
         for format in self.custom_range_formats:
             date_range_regex = self.date_format_to_regex(format)
             matches.extend(re.finditer(date_range_regex, string, flags=re.IGNORECASE))
 
-        # Check generic ranges
+        # Any two configured date formats can form a generic range.
         for format1 in self.date_formats:
             for format2 in self.date_formats:
                 date_range_regex = self.date_format_to_regex(format1 + "~" + format2)
                 matches.extend(re.finditer(date_range_regex, string, flags=re.IGNORECASE))
 
-        # find dates, prioritising longer matches, stable search ensure priority matches that given in documentation
+        # Keep complete dotted dates/ranges, but never extract only the year
+        # from a longer dotted identifier such as 1980.0950.
+        matches = [match for match in matches if complete_numeric_token(match)]
+        # Stable sorting preserves the format priorities for equal lengths.
         matches.sort(key=lambda x: len(x.group(0)), reverse=True)
         i = 0
 
-        # select matches
         while i < len(matches):
-            # remove substrings (i.e dd/mm/yyyy contains the reduntant match dd/mm)
+            # A full date must not also produce its contained day/month match.
             if self.standardise_match_result(matches[i]).is_valid():
                 dates.append(matches[i])
 
@@ -255,7 +275,7 @@ class RegexDateDetector:
                     matches.pop(j)
             i += 1
 
-        # sort back to original order
+        # Restore left-to-right reading order after selecting complete matches.
         dates.sort(key=lambda x: x.start())
 
         return tuple(self.standardise_match_result(date) for date in dates)

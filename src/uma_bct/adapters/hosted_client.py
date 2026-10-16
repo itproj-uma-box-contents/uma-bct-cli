@@ -21,6 +21,7 @@ from typing import Any
 from ..model_config import HostedModelConfig
 from ..ports import ModelResponse
 from .ollama_client import DEFAULT_REQUEST_TIMEOUT_SECONDS, parse_model_response, response_field
+from .qwen_response import valid_logprob
 
 PROVIDER_API_BASES = {
     "openai": "https://api.openai.com/v1",
@@ -125,19 +126,15 @@ def _token_logprobs(choice: Any, content: str) -> tuple[tuple[str, float], ...]:
 
     logprobs = response_field(choice, "logprobs")
     entries = response_field(logprobs, "content")
-    if not entries:
+    if not isinstance(entries, (list, tuple)) or not entries:
         return ()
     pairs: list[tuple[str, float]] = []
     for entry in entries:
         token = response_field(entry, "token")
         probability = response_field(entry, "logprob")
-        if (
-            not isinstance(token, str)
-            or not isinstance(probability, (int, float))
-            or isinstance(probability, bool)
-            or not math.isfinite(probability)
-            or probability > 0
-        ):
+        # Optional metadata must not discard otherwise usable text. Apply
+        # the same finite, non-positive probability checks as the local client.
+        if not isinstance(token, str) or not valid_logprob(probability):
             return ()
         pairs.append((token, float(probability)))
     return tuple(pairs) if "".join(token for token, _ in pairs) == content else ()
