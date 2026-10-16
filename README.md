@@ -1,71 +1,130 @@
 # UMA Box Contents Transcription
 
-This tool turns archive-box photos into a reviewable catalogue on your
-computer. By default, the supplied launcher keeps photos, crops, model weights,
-and results local. Hosted mode sends sanitized image pixels to the selected API.
+Turn archive-box photos into a catalogue for human review. The default launcher keeps
+photos, crops, model weights, and results on your computer. Optional hosted mode sends
+sanitized image pixels to the selected API.
+
+[Run the ZIP](#run-the-tool) · [Review results](#catalogue-and-human-review) · [Hosted
+models](#hosted-model-opt-in) · [Develop](#development) · [Build the
+ZIP](#build-the-client-deliverables)
+
+## CLI arguments
+
+Add these options after `uma-bct`, `sh run-uma-bct.sh`, or the Windows launcher. For
+example, `sh run-uma-bct.sh --format excel` creates an Excel catalogue for a new
+batch. Format names ignore case: `--format Excel` works too.
+
+| Option | What it does | Default / example |
+| --- | --- | --- |
+| `--format csv` / `--format excel` | Choose CSV or an Excel `.xlsx` workbook for a new batch. `--file-type` is the same option. | CSV; `--format excel` |
+| `--verification never\|always\|ask` | Skip verification, run a blind second reading, or ask after transcription. A third reading is used only for substantive differences. | `never`; `ask` prompts only interactively |
+| `--ai-dates` | Extract dates with the selected local or hosted model. | Local regex extraction |
+| `-c`, `--min-transcription-confidence INTEGER` | Flag scores below this percentage; keep the rows. Accepts 0–100. | `50`; `-c 80` |
+| `--min-detector-confidence FLOAT` | Filter OpenCV box proposals on a 0–1 scale. `--min-confidence` is the older alias. | `0.60` |
+| `--no-missing-box-detection` | Disable suggested rows for internal unit-number gaps. `--no-missing-box` is an alias. | Suggestions enabled |
+| `-d`, `--detector qwen\|opencv` | Choose the primary detector; OpenCV is experimental. | `qwen` |
+| `-t`, `--transcriber qwen` | Select the shared vision transcriber, including when a hosted model is selected. | `qwen` is the only choice |
+| `-m`, `--model MODEL` | Select a local Ollama model. For hosted models, use `UMA_BCT_API_MODEL`. | Pinned `qwen3-vl:8b-instruct-q4_K_M` |
+| `--hosted` | Use the provider and key from `UMA_BCT_API_MODEL` and `UMA_BCT_API_KEY`. Direct CLI runs require this opt-in. | Local; ZIP launchers add it when a key is set |
+| `--request-timeout SECONDS` | Set a positive timeout for each model request. | `UMA_BCT_OLLAMA_TIMEOUT_SECONDS`, otherwise `600` |
+| `--reprocess` | Create a separate managed batch for already completed photos; preserve earlier results. Requires managed mode. | Reuse completed work |
+| `--json` | Write one JSON summary to stdout; send progress and warnings to stderr. Never prompt. | Readable report |
+| `--human` | Keep the readable report; accepted for older commands. Cannot be combined with `--json`. | Already the default |
+| `-h`, `--help` | Show help and exit. ZIP launchers do not download or start a runtime for this. | No processing |
+| `--version` | Show the version and exit without processing or ZIP runtime setup. | No processing |
+
+These path and setup options are for the **direct CLI only**. The ZIP launchers use
+`Add Photos Here` and `Results` (or the existing legacy layout) and reject custom
+paths, direct output options, and `setup`.
+
+| Direct CLI option | What it does | Default / example |
+| --- | --- | --- |
+| `-i`, `--path-to-inputs PATH` | Read one image or a flat directory of images. | `inputs/` |
+| `-o`, `--path-to-outputs PATH` | Set the CSV or Excel filename; `--path-to-output` is an alias. Its extension must agree with an explicit format option. | `outputs/catalogue.csv`; `-o catalogue.xlsx` selects Excel |
+| `-b`, `--path-to-box-images PATH` | Set the review-crop folder; `--work-dir` is an alias. | `crops/` beside the catalogue |
+| `--results-directory PATH` | Create or resume managed `Batch ...` folders. Cannot be combined with `-o`, `-b`, or `--force`. | Direct output without this option |
+| `-f`, `--force` | Replace an existing direct catalogue while retaining timestamped prior files. | Refuse an existing output |
+| `setup` | Prepare folders and a local model. Accepts `--path-to-inputs`, `--results-directory`, `-m` / `--model MODEL`, and `--hosted` for a hosted dependency check instead. | `uma-bct setup`; pinned model by default; returns JSON |
+
+There is no `--date-detector` option. For custom managed folders:
+
+```bash
+uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
+uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
+```
+
+### File extensions
+
+Animated or multi-page inputs use the first frame or page unless noted below.
+
+| Extension | How it is used |
+| --- | --- |
+| `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` | Input photos. Extensions are matched without regard to case. |
+| `.tif`, `.tiff`, `.gif`, `.avif` | Input images; animated or multi-page files use the first frame or page. |
+| `.heic`, `.heif` | Input photos; use the container's primary image. |
+| `.dng` | Develop the full RAW image, not its smaller embedded preview. |
+| `.csv` | Default catalogue; no saved column widths or text wrapping. |
+| `.xlsx` | Excel catalogue, selected with `--format excel` or a direct `.xlsx` output path. |
+| `.png` in `Box Images/` | Review crops linked from the catalogue. |
+| `.json` | Run details, unfinished progress, and benchmark evidence. Keep batch metadata intact. |
+| `.zip` | The client delivery bundle; unzip it before running. |
 
 ## Run the tool
 
-1. Download and unzip `archive-box-transcription.zip` into a private folder
-   that is not synced to iCloud, OneDrive, Dropbox, or a network drive.
-2. Start UMA BCT:
+1. Download and unzip `archive-box-transcription.zip` into a private folder that
+   is not synced to iCloud, OneDrive, Dropbox, or a network drive.
+2. On Windows, double-click `Run UMA BCT.cmd`. On macOS or Linux, open Terminal
+   in the unzipped folder and run `sh run-uma-bct.sh`.
+3. Every interactive launch opens `Add Photos Here`, prints the full photo and
+   results paths, and waits for Enter. Add photos directly to that folder, then
+   return to the terminal and press Enter. If the folder does not open, use the
+   printed path. Copying a photo here is local, not an internet upload.
 
-   - **Windows:** double-click `Run UMA BCT.cmd`.
-   - **macOS or Linux:** open Terminal in the unzipped folder and run
-     `sh run-uma-bct.sh`.
+Run the shell script with `sh`; do not source it with `.` or `source`. To select
+Excel, including when you return to an existing unzipped folder:
 
-3. Put the photos directly in `Add Photos Here`, then return to the launcher
-   and press Enter if prompted.
+```bash
+sh run-uma-bct.sh --format excel
+```
 
-The launcher prints the photo folder's full path. If it does not open
-automatically, open that path yourself before pressing Enter.
+On Windows PowerShell: `& '.\Run UMA BCT.cmd' --format excel`. Existing completed CSV
+batches stay intact and are reused. To make a **new Excel batch** from the same
+photos, run `sh run-uma-bct.sh --format excel --reprocess` (or add the same two
+options to the Windows launcher). Selecting Excel does not convert old CSV files.
+Unfinished batches retain their saved format when the option is omitted; an explicit
+different format is rejected.
 
-The terminal updates one live progress display with the current photo and box,
-completed photo count, and elapsed time. Captured logs show short milestones
-instead. When the run ends, a short report shows photo outcomes, catalogue
-rows, elapsed time, and the Results location. Keep the terminal open until that
-report appears.
+The first run needs internet to install a verified private runtime and, in local mode,
+the large model. Downloads finish before you are asked for photos. Later local runs
+can work offline; hosted runs need internet. JSON and unattended runs never prompt.
+`--help` and `--version` exit without preparing the runtime.
 
-During model setup and photo processing, the CLI requests protection against
-automatic idle sleep and releases it when the CLI exits. macOS confirms the
-request before work starts. If the computer rejects it, the terminal shows the
-failing operation and the available operating-system error, and the run continues.
-On Linux, helper error output and exit codes explain problems such as denied
-permissions, a missing system bus, or an unavailable `systemd-inhibit`. A helper
-that exits during processing also produces a warning. Windows reports a native
-error when supplied, or states that no extended error was provided. These
-diagnostics go to stderr and remain visible in captured terminal logs. Keep the laptop lid open: manual sleep or low battery
-can still interrupt work. Some screen saver or lock policies may still turn
-off the display while processing continues. If a warning appears, adjust the
-computer's power settings before a long batch.
+Supported computers: Windows 10 22H2+ on x86-64; macOS 14+ on Intel or Apple silicon;
+Linux with glibc 2.28+ on x86-64 or arm64. Windows ARM, musl Linux, and older systems
+are unsupported. Allow at least 16 GB of memory and enough free disk space on a
+trusted, single-user workstation. CPU inference works but is slow.
 
-The first run needs an internet connection because it installs the verified
-private runtime and, in local mode, downloads the large model. The launcher
-finishes online preparation before asking for photographs. Later local runs
-reuse that runtime and can work offline; hosted runs need internet access.
+Keep the terminal open until the final report. Live progress shows the current photo
+and box, completed photo count, and elapsed time; captured stderr shows short
+milestones. The final report lists photo outcomes, catalogue rows, elapsed time, and
+results paths. Older offline runtimes without the live-display dependency still
+process photos using milestone lines. Fresh bundles install live-display support
+before photos are added.
 
-Supported computers are Windows 10 22H2 or newer on x86-64, macOS 14 or newer
-on Intel or Apple silicon, and Linux with glibc 2.28 or newer on x86-64 or
-arm64. Windows ARM, musl-based Linux, and older operating systems are not
-supported. Allow at least 16 GB of memory and use a trusted, single-user
-workstation with enough free disk space.
-
-In local mode, each launcher starts a new, launcher-owned Ollama service on a
-temporary numeric loopback port. It never reuses or terminates another
-folder's service or an unrelated service on port 11434. The foreground CLI is interrupted first
-when the launcher is stopped; cleanup is bounded and targets only processes
-that launcher started.
+During setup and processing, the CLI requests protection against automatic idle sleep
+and releases it on exit. macOS confirms the request before work starts. Keep the
+laptop lid open: manual sleep or low battery can still interrupt work, and lock or
+screen-saver policies may turn off the display. Power-control errors do not change
+transcription status. Warnings on stderr name the operation and available native
+error; Windows states when no extended error is available. Linux reports helper
+stderr/exit codes (for example, permission, system-bus, or `systemd-inhibit` failures)
+and warns if the helper exits during work. Readiness waits and cleanup are bounded,
+with no admin prompt or persistent diagnostic file. Adjust power settings before a
+long batch if a warning appears.
 
 ## Photos and results
 
-Supported input types are `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.webp`,
-`.heic`, `.heif`, `.dng`, `.avif`, `.bmp`, and `.gif`. Extensions are matched
-case-insensitively. HEIC and HEIF containers use their primary image; animated
-or multi-page formats use the first frame or page. DNG files are developed from
-the full RAW image rather than a lower-resolution embedded preview. Adding a
-photo to `Add Photos Here` is a local file copy, not an internet upload.
-
-Every run creates or resumes a readable batch:
+Each managed run creates or resumes a readable batch:
 
 ```text
 Archive Box Transcription/
@@ -79,88 +138,56 @@ Archive Box Transcription/
         PXL_230150462 - Box 02.png
 ```
 
-An unfinished batch instead contains `Run Progress.json` and has no catalogue
-until every source photo and any requested verification have a terminal outcome. Start the same launcher again
-to resume it. Photos already committed as complete, partial, or failed are
-reused; the photo active at interruption is processed again. Photos added while a batch runs are left for the next launch. A later launch processes
-only new or changed photos, using the saved run details to identify earlier work.
-Each batch has its own catalogue; older catalogues are not combined or overwritten.
-If the current photos span several completed batches, the report lists all relevant
-results and includes failures from earlier batches. Recorded catalogue row counts
-refer to the original published files, which can also contain photos since removed
-from the input folder; the report separately counts transcribed boxes for current
-photos. Later spreadsheet edits are not recounted.
-Do not remove, rename, or edit an original photo while its batch is unfinished;
-if that happens, the CLI preserves progress and explains which inputs to restore.
+An unfinished batch has `Run Progress.json` and no catalogue until every photo and
+requested verification has a terminal outcome. Restart the same launcher to resume:
+committed complete, partial, or failed photos are reused; the interrupted photo is
+processed again. Photos added during a run wait for the next launch. Later launches
+process only new or changed photos. Each batch keeps its own catalogue; older
+catalogues are neither combined nor overwritten.
 
-An unfinished batch also requires its original processing options. If it was
-started with the former 80% transcription review threshold, resume it with
-`--min-transcription-confidence 80`; the current default is 50%.
+Do not rename, remove, or edit source photos while a batch is unfinished. The CLI
+preserves progress and names the inputs to restore if they change. Resume also
+requires the original processing options, including `--ai-dates`. A batch started with
+the former 80% review threshold needs `--min-transcription-confidence 80`; the current
+default is 50%. Keep run details and crop files intact. You may edit a completed
+catalogue and save corrected copies or notes beside it; later launches preserve them
+and report a changed catalogue.
 
-You may edit a completed catalogue or save corrected copies and notes beside
-it. Later launches preserve those files and report a changed catalogue. Keep the
-run details and crop files intact: they record which photographs were processed.
+A partial batch publishes its selected format if it has usable rows; a zero-row batch
+publishes only failed `Run Details.json`. Completed photos do not repeat model work
+unless you use `--reprocess`. Reports covering several completed batches list all
+relevant results and include earlier failures. Publication row counts describe the
+original files, which may include photos since removed from the input folder. A
+separate count covers boxes in current photos; spreadsheet edits are not recounted.
 
-A partial terminal batch publishes its selected catalogue format when it has at least one
-usable row. A batch with no usable rows publishes only failed `Run Details.json`.
-Leaving an already completed photo set in place does not repeat model work.
-Advanced direct-CLI users may pass `--reprocess` with `--results-directory` to
-create a separate new batch intentionally.
+Legacy bundles with data only in `inputs/` and `outputs/` keep using those folders.
+New runs create `outputs/Batch ...`; existing top-level catalogues, manifests, and
+crops stay untouched. If both legacy and friendly directory pairs contain data, the
+launcher stops and names both. It never merges, moves, or deletes them.
 
-CSV is the default output. Use `--file-type excel` or explicitly pass
-`-o catalogue.xlsx` to select Excel. `--file-type csv` selects CSV explicitly.
-Format names are case-insensitive; a format flag and an explicit filename must
-agree. Direct runs default to `outputs/catalogue.csv`. For example, to select
-Excel and enable verification:
+Direct runs default to `inputs/`, `outputs/catalogue.csv`, and `outputs/crops/`. For
+Excel with verification: `uma-bct --format excel --verification always`. Direct
+interruption exits cleanly (130 for Ctrl+C); use `--results-directory` for resumable
+work. Direct runs have the same final report as launcher runs.
 
-```bash
-uma-bct --file-type excel --verification always
-```
+## Catalogue and human review
 
-Existing catalogues are preserved, and unfinished batches keep their original
-format when resumed. Choosing a different format does not convert completed
-batches; use `--reprocess` to create a new managed batch if needed.
-
-Both formats use these columns:
+Both CSV and Excel keep this column order:
 
 ```text
-Unit Type
-Unit Number
-Description
-Dates
-Earliest Date
-Latest Date
-Transcription Confidence (%)
-Review Flags
-Cropped Box Image Link
+Unit Type, Unit Number, Description, Dates, Earliest Date, Latest Date,
+Transcription Confidence (%), Review Flags, Cropped Box Image Link
 ```
-
-`Dates` contains dates extracted from transcribed handwriting; `Earliest Date`
-and `Latest Date` give the bounds. Extraction uses a local regex by default.
-Pass `--ai-dates` to use the selected model: local Qwen normally, or the
-configured provider when `--hosted` is present. No dates are shown as `No Dates`,
-with `None` for the earliest and latest date. Check extracted dates against the
-crop during human review.
-
-If date extraction fails, the transcription is retained and its row is marked
-`Date extraction failed`. The run is partial so a failed date request cannot
-appear to be a successfully undated box.
-
-An unfinished managed batch requires the same `--ai-dates` setting on resume.
 
 ### Unit Type and Unit Number
 
-`Unit Type` contains all printed text visible on the box label in reading
-order, except for the unit-number phrase. Printed names, headings, logos,
-labels such as `Creator:`, and record identifiers are included. Visual line
-breaks and repeated whitespace are converted to single spaces in the catalogue cell.
-
-`Unit Number` contains only the detected box or unit number, normalized to four
-digits. The tool recognizes `Unit`, `Box`, `Box No.`, `Box Number`, and `No.`
-labels. A sequence total in a phrase such as `Box 7 of 9` is not part of the
-unit number.
-
-For example:
+`Unit Type` contains the model's `typed` transcription: all printed label text in
+reading order except the unit-number phrase. Names, headings, logos, `Creator:`
+labels, and identifiers remain. Line breaks and repeated whitespace become single
+spaces. `Unit Number` is one unambiguous number padded to four digits. Recognized
+labels are `Unit`, `Box`, `Box No.`, `Box Number`, and `No.`; the total in `Box 7 of
+9` is excluded. Missing, invalid, or conflicting numbers stay blank and flagged,
+including conflicts with handwritten identity evidence.
 
 | Printed label text | Unit Type | Unit Number |
 | --- | --- | --- |
@@ -169,128 +196,123 @@ For example:
 | `Printing & Allied Trades` / `Employers' Association` / `of Victoria` / `1975.0064 Unit 8` | `Printing & Allied Trades Employers' Association of Victoria 1975.0064` | `0008` |
 | `Victorian Chamber of Mines` / `107/56` / `Box 7 of 9` | `Victorian Chamber of Mines 107/56` | `0007` |
 
-When the unit phrase shares a line with other text, only that phrase is
-removed. For example, `1975.0064 Unit 8` contributes `1975.0064` to `Unit Type`.
-A label containing only `Unit 8` has a blank `Unit Type` and is flagged for
-review.
+Only the unit phrase is removed from a shared line: `1975.0064 Unit 8` leaves
+`1975.0064`. A label containing only `Unit 8` has a blank, flagged `Unit Type`.
+Recognized identifiers include `YYYY.NNNN`, `YY/N`, and `UMA-(AC|SR)E?-\d{8,9}`; other
+printed identifiers remain too. Malformed dotted text such as `1960.009` remains
+visible with `Ambiguous identifier` and `Transcription mismatch`. Multiple valid
+identifiers remain visible and receive `Multiple identifiers`; printed origin headings
+are not extra identifiers.
 
-The model's `typed` transcription is the source for `Unit Type`. Handwriting
-and explicit content or condition annotations are instead considered for
-`Description`; identifier-only and unit-only text is not repeated there.
-Malformed dotted identifiers such as `1960.009` remain visible in `Unit Type`
-but receive `Ambiguous identifier` and `Transcription mismatch` review flags.
-If more than one valid identifier is visible, all printed text remains in
-`Unit Type` and the row receives `Multiple identifiers`.
+`Description` joins handwriting and explicit content or condition annotations with
+semicolons, excluding identity-only text. `Dates` comes from handwriting; `Earliest
+Date` and `Latest Date` give its bounds. Local regex is the default; `--ai-dates` uses
+the selected local or hosted model. When no dates are found, `Dates` is `No Dates`,
+with `None` for the bounds. Failed extraction keeps the transcription, adds
+`Date extraction failed`, and makes the run partial. Check dates against the crop.
+
+Rows sort case-insensitively by complete `Unit Type`, then numeric `Unit Number`;
+incomplete rows stay stable at the end. Separate physical boxes retain separate rows,
+even with matching identities; those matches receive `Potential Duplicate`.
 
 ### Missing-box detection
 
-Missing-box detection is enabled by default. After the photographed boxes are
-transcribed, rows are sorted case-insensitively by `Unit Type` and then
-numerically by `Unit Number`. If two consecutive rows have the same complete
-`Unit Type` and their unit numbers contain an internal gap, the tool inserts a
-blank review row for each missing number.
+Missing-box suggestions are enabled by default. Only internal gaps of at most 100
+missing units between valid numbers in the same complete `Unit Type` group (ignoring
+case) receive rows. Different headings, identifiers, or other label text create
+different groups; nothing is inferred before the lowest or after the highest observed
+number. Suggestions are not proof that physical boxes are missing.
 
-For example, observed rows `HOME, Roderick Weir 2008.0036 / 0001` and
-`HOME, Roderick Weir 2008.0036 / 0003` produce an inserted `0002` row. The
-inserted row keeps the shared `Unit Type`, has `Missing Box` in `Review Flags`,
-and leaves transcription confidence, description, and cropped-image link
-blank.
+For example, `HOME, Roderick Weir 2008.0036 / 0001` and the same type with `0003`
+produce a `0002` row. It retains the type, has `Missing Box`, and leaves description,
+confidence, and crop link blank. Use `--no-missing-box-detection` to disable this.
+Readings `0001`, `0003`, `0005` suggest `0002`, `0004`; incorrect readings `0002`,
+`0003` contain no gap and cannot recover the true sequence. Correct localization and
+visible unit numbers first; disable suggestions when inspecting raw rows.
 
-Detection is deliberately conservative:
+### Confidence, crops, and verification
 
-- It only fills gaps between observed unit numbers; it does not infer missing
-  boxes before the lowest or after the highest observed number.
-- Both surrounding rows must have the same complete `Unit Type`, ignoring
-  letter case, and valid numeric unit numbers.
-- Gaps larger than 100 units are not filled.
-- Differing printed headings, identifiers, or other label text create different
-  `Unit Type` groups, so no missing row is inferred between them.
-- Inserted rows are review suggestions, not proof that a physical box is
-  missing.
+`Low confidence` means strictly below 50% by default; exactly 50% is not low. `-c`
+changes this review threshold without removing rows. Unavailable token confidence
+exports as `0` and requires review, not a claim of measured failure. Available scores
+use the least probable content token; they are not calibrated OCR accuracy or directly
+comparable between model families. `Transcription mismatch` also covers
+`needs_review`, including unavailable confidence, so it may appear alongside `Low
+confidence` on correctly transcribed synthetic text. Review flags alone do not make
+processing partial; unresolved work does.
 
-Advanced CLI users can disable this behavior with
-`--no-missing-box-detection` (or its shorter alias `--no-missing-box`).
+Excel crop filenames are clickable in desktop Excel and LibreOffice and open with the
+system's associated image app. Managed CSV batches keep controlled, relative
+`HYPERLINK` formulas for compatible imports. Keep the catalogue and crop folder
+together when moving results. If links fail, open the named file in `Box Images`;
+Apple Numbers and Google Sheets cannot open these private local links.
 
-### Review results and open crops
+Verification is off by default. `--verification always` adds a blind second reading of
+the same images with the same selected model, local or hosted. `--verification ask`
+asks after the first pass: **y** verifies this run; Enter finishes. The checking
+prompt does not see the first answer. Only substantive differences receive a third
+request; detection is not repeated.
 
-The catalogue adds `Low confidence` to scores below 50% by default;
-a score of exactly 50% does not receive that flag. Set
-`--min-transcription-confidence INTEGER` (or `-c INTEGER`) to choose a review
-threshold from 0 to 100. This flags rows for review and keeps every transcription
-in the catalogue. The separate `--min-detector-confidence` option controls the
-OpenCV detection threshold on a 0-to-1 scale and defaults to 0.60.
+A correction requires that third reading to corroborate an earlier candidate. Printed
+text, identifiers, and unit number are reconciled together, including handwritten
+identity claims. Unresolved differences, whole or partial content deletions, and
+ambiguous box matches keep the first reading with review flags. Agreement never raises
+confidence or proves accuracy. Run details preserve all readings, and managed runs
+checkpoint them for resume. A failed model request keeps the first reading and marks
+partial processing; a checkpoint failure stops the run. Only `--verification` enables
+it for new runs; `UMA_BCT_VERIFICATION` and `.uma-bct-settings.json` do not.
+Unfinished batches retain their recorded choice; older unfinished batches without that
+choice continue without verification. Finish an unfinished batch before changing its
+choice. Completed batches are reused unless `--reprocess` is set. JSON, redirected
+stdin/stdout/stderr, and unattended runs never prompt; use `always` to request verification
+there.
 
-Excel workbooks contain clickable crop filenames in `Cropped Box Image Link`.
-Each link opens the image file using your system's associated application in
-desktop Excel or LibreOffice. Keep the workbook and crop folder together when
-moving results. If your spreadsheet application cannot open a local link, open
-the named crop directly from the batch's `Box Images` folder. Apple Numbers and
-Google Sheets cannot open these private local-file links. CSV cannot save column
-widths or text wrapping; managed CSV batches retain their controlled relative
-`HYPERLINK` formulas for compatible Excel and LibreOffice imports.
+Before import, check every source photo for missed boxes or false detections, then
+every row against its crop. Check flags and confidence, preserve separate physical
+boxes, and review unflagged rows too. Accuracy gains require reviewed references, not
+agreement between model answers.
 
-### Optional transcription verification
-
-Verification is disabled by default. Use `--verification always` to add a
-second reading of the same images within the same run using the same Qwen model.
-Use `--verification ask` to request an interactive choice after the first pass:
-choose **y** for this run or Enter to finish. The model receives
-a distinct checking prompt without seeing the first answer. Only crops with
-substantive differences receive a third request. Detection is not repeated.
-
-A correction requires the third reading to corroborate an earlier candidate.
-Unresolved differences, whole or partial content deletions, and ambiguous matches between boxes
-keep the original text and receive review flags. Printed text, identifiers, and
-unit number are reconciled together, including handwritten identity claims. Every row still needs human review:
-agreement between model readings does not prove correctness or raise confidence.
-
-Run details preserve the original and comparison readings. Managed runs checkpoint
-completed readings; restart the launcher to resume an interrupted check. A failed
-verification request preserves the first
-reading and produces a partial result with a review flag.
-
-Users can select `--verification always`, `--verification never`, or
-`--verification ask`. Only the CLI option enables verification for a new run;
-`UMA_BCT_VERIFICATION` and saved `.uma-bct-settings.json` preferences do not enable it.
-An unfinished batch keeps its recorded verification choice; finish it
-before changing that option. Older unfinished
-batches continue without verification. Already completed batches are reused;
-use `--reprocess` to intentionally start another complete run.
-
-`--json`, redirected stdin/stderr, and unattended runs never prompt. They verify
-only when verification was requested with `always`. Verification improves the opportunity
-to find discrepancies; measured accuracy gains require human-reviewed references.
-
-Before importing the catalogue, review each row against its crop and source
-photo. The catalogue is sorted by `Unit Type` and `Unit Number`:
-
-- Compare every row with its `Cropped Box Image Link` evidence.
-- Check every non-empty `Review Flags` value and the
-  `Transcription Confidence (%)`. Every transcription still needs human review.
-- Keep separate rows for separate physical boxes, even when their unit type and
-  number match.
+Current limitations: transcription and reading order depend on the selected model.
+`Carton`, `Container`, and `Package` are not unit labels; `Unit 8A`, ranges, unclear,
+and crossed-out unit numbers are not ordinary accepted numbers. Only malformed dotted
+standard-looking identifiers are explicitly detected; malformed UMA or slash values
+may pass as arbitrary identifiers. The parser cannot distinguish incidental `Research
+Unit 8` from a unit claim, so it removes `Unit 8`. Printed logos, headings, and
+`Creator:` labels remain under the all-printed-text rule.
 
 ## Compatibility and privacy
 
+Never commit, package, upload, put in Docker contexts, or use on hosted CI: private
+photos (`Archive box photos/`, `add_repository_photos/`, `Add Photos Here/`,
+`inputs/`), crops, catalogues, manifests, review pages, private expectations, model
+weights, Ollama state, or `.uma-bct-runtime/`. Photos may carry GPS EXIF. Keep them
+local and ignored; uploading private photos or derived content requires written client
+approval. Keep credentials out of logs, manifests, command arguments, shell-history
+lines, and committed files. Do not enable LiteLLM debug dumps for private photos or
+keys.
+
+Only numeric loopback Ollama endpoints are accepted by default; direct CLI use
+defaults to `http://127.0.0.1:11434`. Remote Ollama needs written approval, HTTPS, and
+`UMA_BCT_ALLOW_REMOTE_OLLAMA=1` because image pixels leave the workstation. Compose
+opts into only its exact internal `ollama` hostname. Launchers and local Compose set
+`OLLAMA_NO_CLOUD=1`; cloud-tagged models are unsupported. Disable cloud features on
+separately managed local Ollama too, so loopback cannot proxy private images off the
+workstation. Native Ollama is preferred; Docker is optional.
+
 ### Hosted model opt-in
 
-Set `UMA_BCT_API_KEY` and `UMA_BCT_API_MODEL` in the process environment and
-pass `--hosted` to use a hosted vision model. The flag is the explicit privacy
-opt-in: sanitized detection and crop PNGs leave the workstation over HTTPS.
-Original photo files and EXIF metadata are not sent. Only direct OpenAI
-(`openai/`), Claude (`anthropic/`), and Gemini (`gemini/`) API origins are
-accepted. Confirm your organisation permits this disclosure and review the
-chosen provider's data handling and charges before adding private photos.
-Never put a key in command arguments, a committed file, or a shell history line.
+Set `UMA_BCT_API_KEY` and provider-qualified `UMA_BCT_API_MODEL` in the process
+environment. Direct CLI use also requires `--hosted`; without it, local Qwen runs even
+when those variables are set. Only direct OpenAI (`openai/`), Claude (`anthropic/`),
+and Gemini (`gemini/`) API origins are accepted. Sanitized detection and crop PNG
+pixels leave over HTTPS; original files and EXIF do not. Obtain the required approval
+and check provider handling and charges before using private photos.
 
-For a direct CLI install, use `uv sync --locked --extra hosted` (or install
-`uma-bct-cli[hosted]`), then set the environment variables and run
-`uv run --locked uma-bct --hosted --json --force`. The `uma-bct --hosted`
-flag selects the model; without it, local Qwen runs even when API variables
-are set.
-For the supplied launcher, its verified dependencies already include the hosted
-client; setting the key in the launcher's environment makes it pass `--hosted`
-to the CLI. For example, in Bash:
+A source checkout can install hosted support with `uv sync --locked --extra hosted`
+(or install `uma-bct-cli[hosted]` directly), then run `uv run --locked uma-bct
+--hosted --json --force`. ZIP launchers already include the hosted client and add
+`--hosted` when a nonempty key is set; an empty key keeps local Qwen even with a
+hosted model name. For a ZIP in Bash:
 
 ```bash
 export UMA_BCT_API_MODEL=anthropic/your-vision-model
@@ -301,105 +323,66 @@ export UMA_BCT_API_KEY
 sh run-uma-bct.sh
 ```
 
-On Windows PowerShell, set `$env:UMA_BCT_API_MODEL` and
-`$env:UMA_BCT_API_KEY` in the same terminal before running
-`./run-uma-bct.ps1`. An empty key keeps the local Qwen workflow even when a
-hosted model name is set. In direct CLI use, `--hosted` requires a nonempty key
-and a provider-qualified model; `--model` remains a local Ollama option.
-Hosted setup checks the installed
-client without making a paid API call, and the launcher does not start Ollama.
-The first image request verifies the key and model with the provider.
+In PowerShell, set `$env:UMA_BCT_API_MODEL` and `$env:UMA_BCT_API_KEY` in the same
+terminal before `./run-uma-bct.ps1`; the Gemini example below reads the key safely.
+Direct `--hosted` requires both a nonempty key and qualified model; `--model` is local
+only. Explicit `--hosted` without a key fails before local bootstrap. Hosted setup
+checks the installed client without paid calls or Ollama. After
+preflight, stderr reports `Selected model: <model> (<backend>)`; the first image
+request determines actual key/model access. The opt-in Compose command is `docker
+compose --profile hosted run --rm hosted`, with no Ollama dependency.
 
-Hosted requests report the exception type and HTTP status, with fixed diagnostic
-hints that do not expose provider reply text or credentials. Temporary HTTP
-500/502/503/504 failures receive at most two retries with exponential backoff and
-jitter. Authentication, model-selection, and quota errors are not retried.
-Gemini requests use the versioned `/v1beta` API base; the manifest retains the
-provider's HTTPS origin. LiteLLM's feedback banner is suppressed to keep JSON
-stdout clean.
+Errors report exception type, HTTP status, and fixed hints without provider reply text
+or credentials. HTTP 500/502/503/504 gets at most two retries with exponential backoff
+and jitter; authentication, model-selection, and quota errors are not retried. Gemini
+uses `/v1beta`, while manifests retain its HTTPS origin. A Gemini HTTP 400 explicitly
+rejecting optional log probabilities gets one retry without them. Missing
+probabilities export confidence `0` with flags, without preventing CSV output.
+LiteLLM's feedback banner is suppressed to keep JSON stdout clean. Managed resume
+requires the same backend, provider, model, and HTTPS origin; changing models after
+completion creates a separate batch.
 
-After model preflight, the CLI prints `Selected model: <model> (<backend>)` on
-stderr before processing photos. For hosted models, preflight checks configuration
-and dependencies; the first API request still determines model access.
-
-The same variables work with the opt-in Compose service:
-`docker compose --profile hosted run --rm hosted`. That service has no Ollama
-dependency. Hosted APIs may omit token probabilities; the corresponding
-transcription confidence is treated as unavailable and sent for review. A
-Gemini request that explicitly rejects optional log probabilities with HTTP 400
-is retried once without that parameter. Unavailable confidence is currently
-exported as `0` with review flags; it does not prevent CSV output or mean that
-the transcription has been measured as completely wrong. Available scores use
-the least probable content token, and are not calibrated OCR accuracy scores
-that can be compared directly between different model families. A
-managed batch resumes only with the same backend, provider, model, and HTTPS
-origin. Changing models after completion creates a separate batch.
-
-The shared detector uses each model family's coordinate convention: Qwen uses
-`[xmin, ymin, xmax, ymax]`, while Gemini uses `[ymin, xmin, ymax, xmax]`, both
-normalized to 0-1000. Gemini coordinates are converted to X-first corners before
-pixel cropping; see Google's [bounding-box guide](https://ai.google.dev/gemini-api/docs/image-understanding#bounding-box-detection).
-The `qwen` stage name also appears in hosted manifests. Its detector confidence
-of `1.0` is a placeholder for accepted geometry, not a measured probability of
-correct detection. `--min-detector-confidence` filters OpenCV proposals only.
-Thin fragments and empty or unreadable crop responses still require review.
-
-Hosted-model prompts request one rectangle per substantially visible physical
-box front and exclude shelves, side panels, labels, and thin edge fragments.
-Their edge rules omit narrow, textless box fragments; the local Qwen prompts
-retain their original wording. OpenAI and Anthropic use X-first coordinates,
-while Gemini uses Y-first coordinates with the same hosted selection rules.
-Transcription can return `{"boxes": []}` for a non-box crop; this produces a
-processing warning without a catalogue row. A genuine box with unreadable text
-retains its row for review. These prompts do not impose a fixed box count or
-guarantee correct localization; assess the latest run's crops and manifest rather
-than a crop directory from an earlier run.
-
-The current `Transcription mismatch` flag also covers `needs_review`, including
-unavailable token confidence. It can therefore appear alongside `Low confidence`
-on a correctly transcribed synthetic label. Review flags and successful API
-access do not establish transcription accuracy. `partial` status means some
-processing work remained unresolved; confidence review flags alone do not make
-an image partial.
+Qwen, OpenAI, and Anthropic use `[xmin, ymin, xmax, ymax]`; Gemini uses `[ymin, xmin,
+ymax, xmax]`, converted to X-first before cropping. Coordinates are normalized to
+0–1000; see Google's [bounding-box
+guide](https://ai.google.dev/gemini-api/docs/image-understanding#bounding-box-detection).
+Hosted manifests still name the shared stages `qwen`. Detector confidence `1.0` means
+accepted geometry, not measured detection probability; the detector threshold filters
+OpenCV only. Hosted prompts request one rectangle per substantially visible physical
+box front, excluding shelves, side panels, labels, and narrow textless fragments;
+local Qwen retains its original prompts. A non-box response `{"boxes": []}` gives a
+warning without a row; a real unreadable box retains its row. These rules do not
+guarantee localization or impose a fixed count. Review thin fragments and the latest
+run's crops and manifest, not a previous run's crop directory.
 
 ### Test Gemini without paying
 
-Use `gemini/gemini-3.5-flash-lite` for the verified Free Tier smoke-test example.
-On 2026-10-07, a Windows run using a Google AI Studio key without billing
-successfully generated a text reply and processed one invented box image through
-detection, transcription, and CSV export. The exported Unit Type was `1960.0009`
-and Unit Number was `0004`, with unavailable confidence exported as `0` and
-review flags. This verifies that workflow on that project; it does not establish
-reliable handwriting recognition or guarantee future service availability.
-That smoke test predates the Gemini coordinate-order correction; rerun it after
-updating, and use a non-square image with several boxes to assess localization.
+**Historical check, 2026-10-07:** a Windows Google AI Studio project without billing
+used `gemini/gemini-3.5-flash-lite` for a text reply and one invented image through
+detection, transcription, and CSV export. It returned Unit Type `1960.0009`, Unit
+Number `0004`, and unavailable confidence `0` with flags. This predates the Gemini
+coordinate-order fix: rerun with a non-square, multi-box image to assess localization.
+It is not handwriting accuracy evidence or a guarantee of current availability,
+prices, or quotas. Later 3.8 Flash generation probes timed out in PowerShell and
+Python despite successful model lookup and token counting; the same key and network
+generated successfully with 3.5. A free-tier listing is not a passed test.
 
-Google currently lists [`gemini-3.5-flash-lite`](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite)
-with free input and output tokens. It accepts image input and returns text.
-Free-tier access and quotas depend on your project; check its **Billing Tier**
-and [active rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
-in Google AI Studio before testing. Keep the project on the Free Tier to avoid
-paid API usage. The model here reads images; it is not the separate image
-*generation* model. See the [model capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite/)
-and [billing guide](https://ai.google.dev/gemini-api/docs/billing).
+The saved notes cite Google's [pricing
+page](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite) listing free
+input/output tokens for 3.5 Flash Lite, an image-input/text-output model, and a free
+tier for `gemini-3.8-flash`. Verify the project's **Billing Tier** and [active rate
+limits](https://ai.google.dev/gemini-api/docs/rate-limits) in AI Studio before
+testing; keep it on Free Tier to avoid paid use. See [model
+capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite/) and
+[billing](https://ai.google.dev/gemini-api/docs/billing). This reads images; it is not
+the separate image-generation model. Free Tier content may be used to improve Google's
+products: **use invented images only, never client or confidential photos**. Get a key
+in [AI Studio](https://aistudio.google.com/apikey), confirm its project tier, and
+follow the [key guide](https://ai.google.dev/gemini-api/docs/api-key).
 
-Google also lists `gemini-3.8-flash` with a free tier, but the Windows generation
-probes timed out in both PowerShell and Python while model lookup and token
-counting succeeded. The same key and network generated successfully with
-`gemini-3.5-flash-lite`. Use the verified model for this smoke test rather than
-treating the 3.8 free-tier listing as a successful test result.
-
-Google states that Free Tier content may be used to improve its products.
-**Use only invented test images with a Free Tier key. Never use UMA client photos
-or other confidential material for this test.** Obtain a Gemini API key in
-[Google AI Studio](https://aistudio.google.com/apikey). The key belongs to a
-project, so confirm that project's tier before using it. See Google's
-[API key guide](https://ai.google.dev/gemini-api/docs/api-key).
-
-From the repository root, this Bash example makes one synthetic archive-box
-image in a private temporary directory, then runs the full detection and
-transcription workflow. Enter the key at the hidden prompt; it will not appear
-in the shell history:
+The following requires a **source checkout**, not only the client ZIP. From its root,
+Bash creates an invented box in a private temporary directory and runs the full
+workflow. The hidden key prompt avoids shell history:
 
 ```bash
 uv sync --locked --extra hosted
@@ -432,20 +415,17 @@ uv run --locked uma-bct --hosted --json \
   --path-to-box-images "$test_root/crops"
 ```
 
-The JSON summary names the actual model and the run manifest. Open
-`$test_root/catalogue.run.json` to check `model.backend` is `hosted` and
-`model.model` is `gemini/gemini-3.5-flash-lite`; review `catalogue.csv` and its crop
-if a row was produced. A synthetic drawing may be missed or transcribed
-imperfectly, so inspect `status`, `failures`, and `images` in the manifest
-rather than treating catalogue accuracy as the API connection check. If a
-warning says `Hosted model request failed`, check the key, model name, and quota
-in AI Studio. One photo can make several API requests through detection,
-transcription, and fallback. When finished, run
+The JSON summary names the actual model and manifest. In
+`$test_root/catalogue.run.json`, check `model.backend` is `hosted` and `model.model`
+is `gemini/gemini-3.5-flash-lite`; review the CSV and crop if a row exists. Synthetic
+drawings can be missed or misread, so inspect `status`, `failures`, and `images`
+instead of using catalogue accuracy as the connection check. For `Hosted model request
+failed`, check key, model, and quota in AI Studio. Each photo normally needs one
+detection request plus one per crop, with extra fallback/retry requests. Finish with
 `unset UMA_BCT_API_KEY UMA_BCT_API_MODEL` in Bash.
 
-On Windows, create an invented PNG in Paint and save it in a new temporary
-folder. In PowerShell, set the model and enter the key without putting it in
-command history, then point the same CLI at that PNG:
+On Windows, make an invented PNG in Paint in a new temporary folder. From a source
+checkout, use PowerShell and replace both paths below:
 
 ```powershell
 uv sync --locked --extra hosted
@@ -457,13 +437,10 @@ uv run --locked uma-bct --hosted --json `
   --path-to-outputs 'C:\path\to\gemini-test.csv'
 ```
 
-Replace both paths with your own temporary paths. The CSV and its run manifest
-must not already exist, unless you use `--force`. The
-[direct CLI options](#compatibility-and-privacy) are the same on every platform.
-
-If the API is failing, first isolate access from image processing. With the key
-still set in the same PowerShell terminal, these requests send only an invented
-text prompt to Google and bypass LiteLLM and Ollama:
+The CSV and manifest must not exist unless you use `--force`. CLI options are the same
+on every platform. If access fails, keep the key in that terminal and isolate it from
+image processing with these direct Google requests, which bypass LiteLLM and Ollama
+and send only invented text:
 
 ```powershell
 $headers = @{ 'x-goog-api-key' = $env:UMA_BCT_API_KEY }
@@ -486,28 +463,14 @@ $reply = Invoke-RestMethod -Method Post `
 $reply.candidates.content.parts.text
 ```
 
-The model list establishes model names, not free-tier quota eligibility. Confirm
-the selected model's active quota in AI Studio. A 404 can indicate an unavailable
-model or an incorrect endpoint; 401/403 requires checking the key and access;
-429 requires checking the project's minute, token, and daily limits; and 503
-requires waiting or trying another available free-tier vision model. A project
-with no free quota for the selected model cannot be repaired by rapid retries.
-Each photo normally needs one detection call plus one call per crop, with
-additional calls for fallbacks and retries.
-
-Successful API calls can still produce bad crops or incorrect unit readings.
-Missing-box suggestions use internal gaps between the transcribed numbers in
-each matching Unit Type group. For example, readings `0001`, `0003`, and `0005`
-produce suggestions `0002` and `0004`; incorrect readings `0002` and `0003`
-contain no gap and cannot recover the original sequence. Correct localization
-and review of visible unit numbers come first. Use `--no-missing-box-detection`
-when inspecting raw transcription rows separately from gap suggestions.
-
-After a successful direct request, rerun the full CLI on one invented image and
-inspect the JSON summary and CSV. The `qwen` detector/transcriber names refer to
-the shared components; a selected hosted backend sends both stages
-to Gemini without contacting Ollama. Do not enable LiteLLM debug dumps for
-private photographs or keys. When finished:
+The list confirms names, not free quota. Check active quota in AI Studio: 404 can mean
+wrong endpoint/unavailable model; 401/403 means key/access; 429 means minute, token,
+or daily limits; 503 means wait or try another available free-tier vision model. Rapid
+retries cannot fix a project with no free quota. After a successful direct request,
+rerun the full CLI on one invented image and inspect JSON and CSV. Successful calls
+can still give bad crops or unit readings. Shared `qwen` stages use Gemini for both
+detection and transcription when hosted, without Ollama. Clean up the PowerShell key
+and related variables when finished:
 
 ```powershell
 Remove-Item Env:UMA_BCT_API_KEY
@@ -515,54 +478,199 @@ Remove-Item Env:UMA_BCT_API_MODEL
 Remove-Variable headers, secret -ErrorAction SilentlyContinue
 ```
 
-Older extracted bundles with private data only in `inputs` and `outputs` remain
-supported in place. New legacy runs create `outputs/Batch ...`; existing
-top-level catalogues, manifests, and crops are not changed. If both the friendly
-and legacy directory pairs contain data, the launcher stops and names both; it
-never merges, moves, or deletes private files.
+## Development
 
-An older offline runtime without the live display dependency still processes
-photos and shows short milestone lines. A fresh extracted bundle installs the
-live display before photographs are added.
+This section and the build/benchmark commands require a **source checkout** with
+`pyproject.toml`, tests, and scripts. The client ZIP includes this README for
+reference, plus its wheel and launchers; clients need no manual Python packages.
 
-Only numeric loopback Ollama endpoints are accepted by default. Direct CLI use
-still defaults to `127.0.0.1:11434`. A developer may use an approved managed
-endpoint only with HTTPS and `UMA_BCT_ALLOW_REMOTE_OLLAMA=1`; image pixels then
-leave the workstation, so written approval is required. The bundled Compose
-service opts into only its exact internal `ollama` hostname and disables
-Ollama Cloud. Cloud-tagged models are unsupported. Anyone managing a separate
-local Ollama service for direct CLI use must disable its cloud features so a
-loopback API cannot proxy private images off the workstation.
+Install `uv`, open a new terminal so it is on `PATH`, then check `uv --version`:
 
-Advanced users can prepare custom locations with:
+| Platform | Install command |
+| --- | --- |
+| macOS with Homebrew | `brew install uv` |
+| macOS/Linux without Homebrew | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Windows PowerShell with WinGet | `winget install --id=astral-sh.uv -e` |
+
+If it is still not found, close and reopen the terminal. `uv` installs/selects Python
+3.12 below; a separate Python install is normally unnecessary. From the repository
+root, run the locked, model-free checks:
 
 ```bash
-uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
-uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
+uv sync --locked --dev --python 3.12
+uv run ruff check .
+uv run coverage run -m unittest discover -s tests -v
+uv run coverage report
 ```
 
-Direct CLI runs show the same readable final report as the launcher. Interrupted
-direct runs exit cleanly (130 for Ctrl+C); use managed batches for resumable work. Add
-`--json` when a script needs one JSON summary on stdout; progress and warnings
-still go to stderr. The `--human` flag remains accepted for older commands.
+Run source commands with `uv run uma-bct --help`, `uv run uma-bct setup`, and `uv run
+uma-bct`. For hosted development, use `uv sync --locked --dev --extra hosted` plus the
+variables and explicit `--hosted` flag above. Tests use fake SDKs and synthetic
+images: no paid requests or model installation. Use only invented photos for the Free
+Tier walkthrough.
 
-`--results-directory` cannot be combined with `-o`, `-b`, or `--force`.
-Without it, direct output paths and existing aliases remain available. The bundled
-Docker workflow also produces Excel by default.
+CI runs the full suite and all three CLI entry paths on Windows x86-64, macOS
+Intel/arm64, and Linux x86-64/arm64, with explicit GitHub-hosted runner images. Docker
+smoke tests run natively on both Linux architectures. Installed-package smokes use the
+launchers' hash-pinned dependencies, including hosted support;
+`scripts/smoke_hosted_install.py` imports the real SDK and tests all three adapters
+using synthetic replies without provider requests.
 
-Current limitations:
+For API docs with live reload from docstrings, run `uv run pdoc uma_bct`. For a static site, run
+`uv run pdoc uma_bct -o dist/api-docs` and open `dist/api-docs/uma_bct.html`. This
+output is generated and ignored.
 
-- Results depend on Qwen accurately transcribing all printed text and
-  preserving its reading order.
-- Labels such as `Carton 7`, `Container 7`, and `Package 7` are not recognized
-  as unit numbers.
-- Values such as `Unit 8A`, ranges, and unclear or crossed-out unit numbers are
-  not accepted as ordinary unit numbers.
-- Only malformed dotted standard-looking identifiers are explicitly detected.
-  Malformed UMA-style or slash-style values may still be accepted as arbitrary
-  identifiers.
-- The parser cannot semantically distinguish incidental text such as
-  `Research Unit 8` from an actual unit claim; `Unit 8` would be removed from
-  `Unit Type`.
-- Printed logos, headings, and labels such as `Creator:` are included because
-  the rule is all printed label text.
+### Client runtime
+
+Launchers verify the wheel and hash-pinned `client-constraints.txt`, install private
+Python 3.12 in `.uma-bct-runtime/`, and open the photo/results folders. Local mode
+downloads verified pinned Ollama and load-probes pinned Qwen; hosted mode checks the
+client and skips the Ollama download, service, and model pull. Constraints come from
+`uv.lock`, including hosted dependencies; never edit them by hand.
+
+Each local launch owns a new Ollama service on an OS-selected numeric loopback port.
+It neither reuses nor terminates other folders' services or a foreign port-11434
+service. Startup retries fresh ports; failures point to `.uma-bct-runtime/ollama.log`.
+Stopping the launcher interrupts the foreground CLI first, then stops/reaps only owned
+processes with bounded cleanup on all exit paths. An incomplete runtime is repaired
+only when the selected photo/result folders are empty. Windows uses the
+checksum-pinned portable Ollama archive, verifies both executables' Authenticode
+signatures, and never runs the desktop installer or alters foreign services.
+
+`--model MODEL` selects the local model for first-run setup as well as processing;
+direct setup also accepts `uma-bct setup --model MODEL`. Choose an available model
+before adding photos. Changing `--model` does not bypass the rule that runtime/model
+repair requires empty photo/results folders.
+
+### Processing, checkpoints, and recovery
+
+```text
+validate inputs/outputs -> model preflight -> shared vision detection
+  -> experimental OpenCV fallback -> crops and bounded full-image recovery
+  -> transcription -> optional verification -> conservative catalogue mapping
+  -> per-photo atomic checkpoint -> recoverable catalogue and run details
+```
+
+Keep successful boxes when another crop or photo fails; use one full-image recovery
+when localization or all crop transcriptions fail. Managed metadata keeps source
+SHA-256 fingerprints, backend/model identity, endpoint history, detector routes, final
+readings, warnings, and failures, but no keys, per-attempt timing, or proposal
+telemetry. History uses source directory, filename, and fingerprint; different
+filenames are not deduplicated by identical pixels. Snapshots exclude later additions.
+Application-owned manifests, crops, and unfinished publications stay validated while
+completed catalogue edits and reviewer files are preserved.
+
+Managed processing holds an OS-backed `.uma-bct.lock` in the results root. Exclusive
+acquisition recovers a well-formed dead-process lock; malformed, linked, non-regular,
+or racing locks remain blocked. Direct mode keeps its catalogue-lock behavior. Paths
+assume a trusted, single-user workspace: keep directories in place during
+work/recovery. Existing symlinks and junctions are rejected before recovery mutations;
+this does not isolate operations from an untrusted process replacing parent
+directories concurrently.
+
+After all photos and requested checks are terminal, sources and crop hashes are
+revalidated, the hidden CSV/Excel is staged, and its digest is checkpointed before
+publication without overwriting existing files. `Run Progress.json` becomes `Run
+Details.json`. In forced direct runs, a manifest failure after CSV replacement
+restores the prior CSV atomically or removes the new one, then attempts a uniquely
+named failed-run manifest. Failed rollback gives partial status and a recovery path.
+
+`verification.py` owns mode choice, bounded readings, and reconciliation;
+`BoxResult.verification` stores optional evidence. First-pass commits are separate
+from verification checkpoints. Application version/model checks protect resumed
+inference. Publication-only recovery and cached second/third readings do not load a
+model; identity is checked lazily before a missing reading. Old records without
+verification remain readable. Legacy HTML metadata adds no publication/integrity
+requirements; new runs generate no HTML and preserve completed manifests.
+
+Completed summaries use the newest applicable outcome per current input.
+`catalogue_outputs` and `run_manifests` list all contributing results; singular paths
+remain populated for one batch. `catalogue_records` and `catalogue_record_counts`
+retain publication row counts. `current_input_records` counts physical-box rows for
+current photos only, excluding missing-box suggestions and later CSV edits.
+
+### Optional Docker workflow
+
+From a source checkout, the optional local container workflow is:
+
+```bash
+mkdir -p inputs outputs
+docker compose config --quiet
+UMA_BCT_UID="$(id -u)" UMA_BCT_GID="$(id -g)" \
+  docker compose run --rm app
+```
+
+Docker defaults to CSV. Inputs mount read-only, outputs use the host user, and Ollama
+has no exposed host port. The `hosted` profile has no Ollama dependency; use `docker
+compose --profile hosted run --rm hosted` only with the environment key/model and
+hosted approval described above. Free-tier checks use synthetic photos.
+
+## Build the client deliverables
+
+From the source checkout root, after installing `uv`, run this full sequence:
+
+```bash
+uv sync --locked --dev --python 3.12
+uv export --quiet --locked --no-dev --extra hosted --group client-bootstrap \
+  --no-emit-project --format requirements-txt \
+  --output-file client-constraints.txt
+uv build --no-build-isolation
+uv run python scripts/build_client_bundle.py dist
+uv run python scripts/check_release_artifacts.py dist
+```
+
+The final check must report that the release artifact privacy check passed. Send only
+`dist/archive-box-transcription.zip` through approved private sharing; the client
+downloads, unzips, and runs it. Do not send the standalone wheel, source archive,
+repository, private photos, or catalogue outputs. `build/` and `dist/` are
+generated/ignored. Delivery scripts build the ZIP, check artifact privacy, and safely
+unpack Linux Ollama. Release and container-image publishing is deferred.
+
+Before delivery, install wheel and sdist outside the checkout and smoke-test `uma-bct
+--help`, `uma-bct --version`, and `python -m uma_bct --help`. Run the full suite and
+platform matrix. Launcher changes need deterministic ownership fixtures in
+`tests/test_client_delivery.py`: foreign port-11434 services, dynamic ports, missing
+companions, bind retries, startup failure, exit codes, and owned cleanup, without a
+model. Batch changes need interruption/resume, source/crop integrity, publication
+recovery, formula safety, naming collisions, and zero-row tests.
+
+Check synthetic spreadsheet links on macOS, Windows, and Linux with Unicode, spaces,
+`#`, and `%`, also after moving the batch. Check CSV imports in Excel and LibreOffice
+separately; Numbers users open named crops directly. Never upload private photos for
+browser tests or run inference on hosted CI. The real-model gate stays local and is
+handled separately by the test engineer.
+
+## Verification and local accuracy references
+
+From a source checkout, prepare a local reference draft from a run manifest:
+
+```bash
+uv run python scripts/verification_benchmark.py prepare \
+  --manifest "/private/results/Run Details.json" \
+  --output "add_repository_photos/verification-release-gate/reference-draft.json"
+```
+
+Review every source photo, correct fields, add missed boxes, remove false detections,
+and set each photo's `review_status` to `reviewed`. Unreviewed drafts cannot be
+scored. Compare a verification run with approved references:
+
+```bash
+uv run python scripts/verification_benchmark.py compare \
+  --reference "add_repository_photos/verification-release-gate/reference-draft.json" \
+  --manifest "/private/results/Run Details.json" \
+  --output "add_repository_photos/verification-release-gate/comparison.json"
+```
+
+The comparison reports physical-box counts, missing/unexpected boxes, exact field
+matches before/after verification, and newly incorrect fields. It uses stable box IDs:
+confirm they still refer to the same physical boxes after detection changes. Record
+elapsed time from the CLI report plus model/options beside the comparison. Model
+agreement and draft labels are not accuracy evidence.
+
+The local release set is all 21 images in `add_repository_photos/` plus these 11 JPEGs
+in `Archive box photos/` (numeric suffixes of `PXL_*.jpg`): `230150462`, `230251945`,
+`230445954`, `230518743`, `230624828`, `230737955`, `230824065`, `230850841`,
+`231116923`, `231212408`, `231905575`. These directories are optional for
+contributors; report the gate as not run if photos/model are unavailable. Keep photos,
+drafts, human corrections, review notes, and benchmark output in ignored private
+directories. Report outstanding checks explicitly.
