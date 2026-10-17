@@ -325,6 +325,7 @@ class ManagedBatchTest(unittest.TestCase):
                 progress = read_json_file(progress_path, "Run progress")
                 progress["configuration"].pop("date_detector")
                 progress["publication"].pop("output_columns", None)
+                progress["publication"].pop("mapping_version", None)
                 result = progress["inputs"][0]["result"]
                 if date_detector == "none":
                     result.pop("date_detector")
@@ -349,6 +350,65 @@ class ManagedBatchTest(unittest.TestCase):
                 summary = json.loads(stdout.getvalue())
                 self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), catalogue_bytes)
                 self.assertEqual(getattr(arguments, "_resume_date_detector", "regex"), date_detector)
+
+    def test_legacy_compound_unit_staging_preserves_bytes_and_rejects_unbacked_changes(self):
+        class CompoundPipeline(ManagedPipeline):
+            def process(self, path):
+                result = super().process(path)
+                record = result.records[0]
+                transcription = replace(record.transcription, typed_lines=("1960.0009", "Unit 4/5"))
+                return replace(result, records=(replace(record, transcription=transcription),))
+
+        saved_versions = {"versioned_legacy": 1, "current": 2, "unknown": 99, "null": None, "boolean": True}
+        for file_type in ("csv", "excel"):
+            for scenario in ("legacy", "versioned_legacy", "tampered", "current", "unknown", "null", "boolean"):
+                with self.subTest(file_type=file_type, scenario=scenario), self.prepared_root("01.jpg") as root:
+                    _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                        root, CompoundPipeline(), file_type=file_type,
+                        patches=(patch("uma_bct.managed_batch.file_digest", side_effect=KeyboardInterrupt),),
+                    )
+                    batch = Path(interrupted["batch_directory"])
+                    progress_path = batch / PROGRESS_FILE_NAME
+                    progress = read_json_file(progress_path, "Run progress")
+                    progress["publication"].pop("mapping_version", None)
+                    if scenario in saved_versions:
+                        progress["publication"]["mapping_version"] = saved_versions[scenario]
+                    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+                    # Encode the exact historical row independently of today's identity rules.
+                    reference = "Box Images/01 - Box 01.png"
+                    legacy = {
+                        "Unit Type": "1960.0009 /5", "Unit Number": "0004", "Description": "",
+                        "Dates": "No Dates", "Earliest Date": "None", "Latest Date": "None",
+                        "Transcription Confidence (%)": 95, "Review Flags": "", "Cropped Box Image Link": reference,
+                    }
+                    if file_type == "csv":
+                        legacy["Cropped Box Image Link"] = f'=HYPERLINK("{reference}","01 - Box 01.png")'
+                    pending = batch / progress["publication"]["pending_catalogue"]
+                    with patch("uma_bct.export.catalogue_records", return_value=[legacy]):
+                        export_catalogue([], pending)
+                    expected = pending.read_bytes()
+                    if scenario == "tampered":
+                        pending.write_bytes(expected + b"unbacked edit")
+                    saved_bytes = pending.read_bytes()
+
+                    # Recovery must use saved readings and preserve any file it cannot prove.
+                    with patch("uma_bct.managed_batch.build_managed_pipeline", side_effect=AssertionError("model loaded")):
+                        status, summary, stderr = self.run_managed_batch_and_capture_output(
+                            root, CompoundPipeline(), file_type=file_type,
+                        )
+                    if scenario in {"legacy", "versioned_legacy"}:
+                        self.assertEqual(status, 0, stderr)
+                        self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), expected)
+                        self.assertFalse(pending.exists())
+                        details = read_json_file(batch / DETAILS_FILE_NAME, "Run details")
+                        self.assertEqual(details["publication"]["mapping_version"], 1)
+                    else:
+                        self.assertEqual(status, 2, stderr)
+                        self.assertEqual(pending.read_bytes(), saved_bytes)
+                        self.assertFalse((batch / ("Catalogue.xlsx" if file_type == "excel" else CATALOGUE_FILE_NAME)).exists())
+                        if scenario in {"unknown", "null", "boolean"}:
+                            self.assertIn("mapping version", stderr)
 
     def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
@@ -897,6 +957,7 @@ class ManagedBatchTest(unittest.TestCase):
             )
             details = json.loads((batch / DETAILS_FILE_NAME).read_text(encoding="utf-8"))
             self.assertEqual(details["inputs"][0]["original_filename"], "PXL_230150462.jpg")
+            self.assertEqual(details["publication"]["mapping_version"], 2)
 
     def test_full_image_fallback_uses_the_readable_full_photo_name(self):
         with self.prepared_root("Shelf.jpg") as root:

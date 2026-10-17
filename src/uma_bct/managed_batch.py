@@ -57,6 +57,7 @@ WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
 PENDING_CATALOGUE_NAMES = frozenset({PENDING_CATALOGUE_NAME, ".uma-bct-catalogue-pending.xlsx"})
 MANAGED_SCHEMA_VERSION = 1
+CATALOGUE_MAPPING_VERSION = 2  # Version 1 predates compound-unit ambiguity checks.
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
 ACTIVE_WINDOWS_GUARDS: set[str] = set()
 DESKTOP_METADATA = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
@@ -1571,33 +1572,52 @@ def stage_catalogue(
     stored_columns = publication.get("output_columns")
     if stored_columns is not None and stored_columns not in known_layouts:
         raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
+    mapping_version = publication.get("mapping_version")
+    if "mapping_version" in publication and (
+        type(mapping_version) is not int or mapping_version not in {1, CATALOGUE_MAPPING_VERSION}
+    ):
+        raise ManagedBatchError(f"Unsupported catalogue mapping version in {batch_directory}")
     columns = stored_columns or OUTPUT_COLUMNS
+    pending_exists = path_entry_exists(pending)
+    # Record current mapping before any new staged bytes can appear. An older
+    # unversioned file can still prove which mapping originally produced it.
+    if not pending_exists:
+        publication["mapping_version"] = CATALOGUE_MAPPING_VERSION
     publication.update(phase="staging", pending_catalogue=pending.name)
     progress["phase"] = "staging"
     write_progress(batch_directory, progress)
 
     # A restart may find a staged catalogue. Rebuild from committed records and
     # compare bytes rather than assuming the leftover file is trustworthy.
-    if path_entry_exists(pending):
+    if pending_exists:
         check_path(pending, "Pending catalogue")
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}{pending.suffix}"
         try:
             pending_digest = file_digest(pending, "Pending catalogue")
             layouts = (stored_columns,) if stored_columns is not None else known_layouts
-            candidates = [(columns, False) for columns in layouts]
+            formats = [(columns, False) for columns in layouts]
             # Older CSV checkpoints contain formula links. Reproduce those bytes
             # only to validate saved work; new CSV exports use readable paths.
             if pending.suffix.casefold() == ".csv":
-                candidates.extend((columns, True) for columns in layouts)
-            for columns, legacy_formula_links in candidates:
+                formats.extend((columns, True) for columns in layouts)
+            # Try the current mapping first for unversioned checkpoints. Once
+            # versioned, a staged file must match only its recorded mapping.
+            versions = (CATALOGUE_MAPPING_VERSION, 1) if mapping_version is None else (mapping_version,)
+            candidates = []
+            for version in versions:
+                for columns, links in formats:
+                    candidates.append((columns, links, version))
+            for columns, legacy_formula_links, version in candidates:
                 records = export_catalogue(
                     results, verification, minimum_confidence=arguments.min_transcription_confidence,
                     replace_existing=False, detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
                     trusted_crop_links=legacy_formula_links, output_columns=columns,
+                    legacy_identity_mapping=version == 1,
                 )
                 matches = file_digest(verification, "Expected pending catalogue") == pending_digest
                 verification.unlink()
                 if matches:
+                    publication["mapping_version"] = version
                     break
             else:
                 raise ManagedBatchError(f"Pending catalogue does not match the committed results: {pending}")

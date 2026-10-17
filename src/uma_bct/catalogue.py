@@ -126,14 +126,16 @@ def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...]
     return identifiers, False, False
 
 
-def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
+def normalise_unit(transcription: BoxTranscription, *, legacy_identity_mapping: bool = False) -> tuple[str, str | None, bool]:
     raw_unit = transcription.unit_number.strip()
     if not raw_unit:
         return "", MISSING_UNIT_FLAG, False
     normalized = normalise_unit_claim(raw_unit)
     if normalized is None:
         return "", INVALID_UNIT_FLAG, False
-    evidence = collect_unit_evidence(transcription.typed_lines, transcription.handwritten_lines)
+    evidence = collect_unit_evidence(
+        transcription.typed_lines, transcription.handwritten_lines, reject_compound_units=not legacy_identity_mapping,
+    )
     if evidence.ambiguous or evidence.candidates != {normalized}:
         return "", INVALID_UNIT_FLAG, True
     return normalized, None, False
@@ -194,12 +196,15 @@ def verification_flags(audit: dict[str, object] | None) -> tuple[str, ...]:
 
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
-                         trusted_crop_link: bool = False, spreadsheet_safe: bool = True) -> dict[str, str | int]:
+                         trusted_crop_link: bool = False, spreadsheet_safe: bool = True,
+                         legacy_identity_mapping: bool = False) -> dict[str, str | int]:
     """Keep printed text visible and flag identity claims that need review."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
-    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-    unit_type = unit_type_text(transcription.typed_lines)
+    # Only historical staged-file checks replay the former compound-unit rules.
+    # Ordinary exports keep ambiguous numbers blank and retain their visible text.
+    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription, legacy_identity_mapping=legacy_identity_mapping)
+    unit_type = unit_type_text(transcription.typed_lines, preserve_compound_units=not legacy_identity_mapping)
     flags: list[str] = []
     if not unit_type:
         flags.append(AMBIGUOUS_IDENTIFIER_FLAG if ambiguous_identifier else MISSING_IDENTIFIER_FLAG)

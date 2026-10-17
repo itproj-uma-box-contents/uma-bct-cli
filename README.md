@@ -576,6 +576,10 @@ Details.json`. In forced direct runs, a manifest failure after CSV replacement
 restores the prior CSV atomically or removes the new one, then attempts a uniquely
 named failed-run manifest. Failed rollback gives partial status and a recovery path.
 
+Staged catalogues record their mapping version. Older pending files can replay
+historical identity rules only when the complete regenerated file hash matches;
+their original bytes are preserved. New batches use the current identity rules.
+
 `verification.py` owns mode choice, bounded readings, and reconciliation;
 `BoxResult.verification` stores optional evidence. First-pass commits are separate
 from verification checkpoints. Application version/model checks protect resumed

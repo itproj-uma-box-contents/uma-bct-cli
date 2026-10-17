@@ -172,14 +172,14 @@ def identifier_evidence(lines: Iterable[str]) -> tuple[str, ...]:
     return identifier_evidence_details(lines)[0]
 
 
-def unit_type_text(lines: Iterable[str]) -> str:
+def unit_type_text(lines: Iterable[str], *, preserve_compound_units: bool = True) -> str:
     """Return all printed label text except complete unit-number phrases."""
 
     parts: list[str] = []
     # Preserve headings and imperfect IDs exactly as printed. Only an explicit
     # Unit or Box phrase is removed before visual lines become one CSV cell.
     for line in visual_lines(lines):
-        without_unit = line if has_compound_unit(line) else PRINTED_UNIT_TEXT.sub(" ", line)
+        without_unit = line if preserve_compound_units and has_compound_unit(line) else PRINTED_UNIT_TEXT.sub(" ", line)
         value = " ".join(without_unit.split())
         if value and IDENTITY_SEPARATORS.fullmatch(value) is None:
             parts.append(value)
@@ -209,7 +209,8 @@ class UnitEvidence:
     ambiguous: bool
 
 
-def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterable[str]) -> UnitEvidence:
+def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterable[str], *,
+                          reject_compound_units: bool = True) -> UnitEvidence:
     """Collect unit numbers from printed and handwritten text."""
 
     typed = tuple(visual_lines(typed_lines))
@@ -220,7 +221,7 @@ def collect_unit_evidence(typed_lines: Iterable[str], handwritten_lines: Iterabl
     for line in (*typed, *handwritten):
         matches = tuple(CONTEXTUAL_UNIT.finditer(line))
         candidates.update(match.group(1).zfill(4) for match in matches)
-        if matches and (AMBIGUOUS_UNIT.search(line) or has_compound_unit(line)):
+        if matches and (AMBIGUOUS_UNIT.search(line) or (reject_compound_units and has_compound_unit(line))):
             ambiguous = True
 
     for line in handwritten:
