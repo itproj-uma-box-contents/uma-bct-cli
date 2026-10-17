@@ -159,7 +159,7 @@ def image_reference(image_file_path: str | Path, catalogue_path: str | Path | No
 
 
 def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Path) -> str:
-    """Build a formula only for a validated, managed ``Box Images`` path."""
+    """Rebuild legacy CSV formulas only for validated managed ``Box Images`` paths."""
 
     reference = image_reference(image_file_path, catalogue_path)
     relative = PurePosixPath(reference)
@@ -215,8 +215,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(DATE_EXTRACTION_FAILED_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    # Formula links are reserved for validated managed crops. Other paths are
-    # exported as escaped text because filenames may be untrusted input.
+    # Legacy checkpoint checks may need their original formula links. New CSV
+    # exports use escaped path text because filenames may be untrusted input.
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")

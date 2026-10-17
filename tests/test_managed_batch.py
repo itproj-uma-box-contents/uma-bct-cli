@@ -306,6 +306,7 @@ class ManagedBatchTest(unittest.TestCase):
 
     def test_legacy_staging_preserves_historical_catalogue_layouts(self):
         for columns, date_detector, file_type in (
+            (OUTPUT_COLUMNS, "regex", "csv"),
             (LEGACY_OUTPUT_COLUMNS, "none", "csv"), (LEGACY_OUTPUT_COLUMNS, "none", "excel"),
             (DATE_OUTPUT_COLUMNS, "regex", "csv"),
             (REVIEW_DATE_OUTPUT_COLUMNS, "regex", "csv"),
@@ -875,7 +876,7 @@ class ManagedBatchTest(unittest.TestCase):
                 os.umask(previous_umask)
             self.assertEqual(stat.S_IMODE(quarantine.stat().st_mode), 0o600)
 
-    def test_publishes_readable_batch_with_formula_links_and_exact_columns(self):
+    def test_publishes_readable_batch_with_plain_crop_paths_and_exact_columns(self):
         with self.prepared_root("PXL_230150462.jpg") as root:
 
             status, summary, _stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
@@ -892,7 +893,7 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(reader.fieldnames, OUTPUT_COLUMNS)
             self.assertEqual(
                 rows[0]["Cropped Box Image Link"],
-                '=HYPERLINK("Box Images/PXL_230150462 - Box 01.png","PXL_230150462 - Box 01.png")',
+                "Box Images/PXL_230150462 - Box 01.png",
             )
             details = json.loads((batch / DETAILS_FILE_NAME).read_text(encoding="utf-8"))
             self.assertEqual(details["inputs"][0]["original_filename"], "PXL_230150462.jpg")
@@ -1504,8 +1505,8 @@ class ManagedBatchTest(unittest.TestCase):
             with (moved / CATALOGUE_FILE_NAME).open(newline="", encoding="utf-8") as source:
                 row = next(csv.DictReader(source))
 
-            self.assertIn('"Box Images/Shelf Photo - Box 01.png"', row["Cropped Box Image Link"])
-            self.assertTrue((moved / BOX_IMAGES_DIRECTORY_NAME / "Shelf Photo - Box 01.png").is_file())
+            self.assertEqual(row["Cropped Box Image Link"], "Box Images/Shelf Photo - Box 01.png")
+            self.assertTrue((moved / row["Cropped Box Image Link"]).is_file())
 
     def test_serialize_results(self):
         batch_dir=Path("/test")

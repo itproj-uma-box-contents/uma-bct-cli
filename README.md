@@ -241,11 +241,12 @@ comparable between model families. `Transcription mismatch` also covers
 confidence` on correctly transcribed synthetic text. Review flags alone do not make
 processing partial; unresolved work does.
 
-Excel crop filenames are clickable in desktop Excel and LibreOffice and open with the
-system's associated image app. Managed CSV batches keep controlled, relative
-`HYPERLINK` formulas for compatible imports. Keep the catalogue and crop folder
-together when moving results. If links fail, open the named file in `Box Images`;
-Apple Numbers and Google Sheets cannot open these private local links.
+CSV crop references are readable relative paths, such as `Box Images/Shelf - Box
+01.png`, without hyperlink formulas. Excel crop filenames are clickable in desktop
+Excel and LibreOffice and open with the system's associated image app. Keep the
+catalogue and crop folder together when moving results. If links fail, open the named
+file in `Box Images`; Apple Numbers and Google Sheets cannot open these private local
+links. Existing completed catalogues stay unchanged; use `--reprocess` for a new batch.
 
 Verification is off by default. `--verification always` adds a blind second reading of
 the same images with the same selected model, local or hosted. `--verification ask`

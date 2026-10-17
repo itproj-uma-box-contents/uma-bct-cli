@@ -448,6 +448,24 @@ class CsvExportTest(unittest.TestCase):
 
             self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
 
+    def test_csv_crop_paths_are_readable_and_portable_with_special_characters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            output = root / "batch/Catalogue.csv"
+            crop = output.parent / "Box Images/é # 20% box.png"
+            crop.parent.mkdir(parents=True)
+            crop.write_bytes(b"synthetic crop")
+            box = make_box(crop_path=crop)
+            export_catalogue([make_result(BoxResult(box, make_transcription(box)))], output)
+
+            # CSV stores the readable path literally, without a formula or URL escaping.
+            with output.open(newline="", encoding="utf-8") as source:
+                reference = next(csv.DictReader(source))["Cropped Box Image Link"]
+            self.assertEqual(reference, "Box Images/é # 20% box.png")
+            moved = root / "Moved Batch"
+            output.parent.rename(moved)
+            self.assertTrue((moved / reference).is_file())
+
     def test_rejects_unsupported_output_formats(self):
         with self.assertRaisesRegex(ValueError, "must end in .xlsx or .csv"):
             export_catalogue([], "catalogue.pdf")

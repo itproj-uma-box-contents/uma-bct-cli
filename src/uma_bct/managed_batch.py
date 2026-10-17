@@ -1583,11 +1583,17 @@ def stage_catalogue(
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}{pending.suffix}"
         try:
             pending_digest = file_digest(pending, "Pending catalogue")
-            for columns in ((stored_columns,) if stored_columns is not None else known_layouts):
+            layouts = (stored_columns,) if stored_columns is not None else known_layouts
+            candidates = [(columns, False) for columns in layouts]
+            # Older CSV checkpoints contain formula links. Reproduce those bytes
+            # only to validate saved work; new CSV exports use readable paths.
+            if pending.suffix.casefold() == ".csv":
+                candidates.extend((columns, True) for columns in layouts)
+            for columns, legacy_formula_links in candidates:
                 records = export_catalogue(
                     results, verification, minimum_confidence=arguments.min_transcription_confidence,
                     replace_existing=False, detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
-                    trusted_crop_links=True, output_columns=columns,
+                    trusted_crop_links=legacy_formula_links, output_columns=columns,
                 )
                 matches = file_digest(verification, "Expected pending catalogue") == pending_digest
                 verification.unlink()
@@ -1607,7 +1613,6 @@ def stage_catalogue(
             minimum_confidence=arguments.min_transcription_confidence,
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
-            trusted_crop_links=True,
             output_columns=columns,
         )
     publication["output_columns"] = list(columns)
