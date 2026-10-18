@@ -70,8 +70,8 @@ dist/
 **/.[Ee][Nn][Vv].*
 
 # Local model storage and weights.
-/.ollama/
-/models/
+**/.ollama/
+**/models/
 *.gguf
 *.onnx
 *.pt

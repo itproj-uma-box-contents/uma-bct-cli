@@ -75,18 +75,19 @@ outputs
 **/*.[Ww][Ee][Bb][Pp]
 
 # Ollama state and model weights are mounted/downloaded separately.
-.ollama
-models
-*.gguf
-*.onnx
-*.pt
-*.pth
-*.safetensors
-*.[Gg][Gg][Uu][Ff]
-*.[Oo][Nn][Nn][Xx]
-*.[Pp][Tt]
-*.[Pp][Tt][Hh]
-*.[Ss][Aa][Ff][Ee][Tt][Ee][Nn][Ss][Oo][Rr][Ss]
+# Docker needs **/ to exclude these at every depth in the build context.
+**/.ollama
+**/models
+**/*.gguf
+**/*.onnx
+**/*.pt
+**/*.pth
+**/*.safetensors
+**/*.[Gg][Gg][Uu][Ff]
+**/*.[Oo][Nn][Nn][Xx]
+**/*.[Pp][Tt]
+**/*.[Pp][Tt][Hh]
+**/*.[Ss][Aa][Ff][Ee][Tt][Ee][Nn][Ss][Oo][Rr][Ss]
 
 # Final application images do not need local development metadata.
 .DS_Store

@@ -9,6 +9,13 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+MODEL_WEIGHT_SUFFIXES = (
+    "gguf", "GGUF", "GgUf",
+    "onnx", "ONNX", "OnNx",
+    "pt", "PT", "Pt",
+    "pth", "PTH", "PtH",
+    "safetensors", "SAFETENSORS", "SafeTensors",
+)
 PRIVATE_CONTEXT_PATHS = (
     "catalogue.csv",
     "CATALOGUE.CSV",
@@ -29,6 +36,12 @@ PRIVATE_CONTEXT_PATHS = (
     "nested/photo.JpG",
     "nested/photo.PnG",
     "nested/model.GgUf",
+    ".ollama/manifests/state",
+    "nested/.ollama/manifests/state",
+    "nested/deeper/.ollama/manifests/state",
+    "models/blobs/sha256-synthetic",
+    "nested/models/blobs/sha256-synthetic",
+    "nested/deeper/models/blobs/sha256-synthetic",
     ".uma-bct-runtime/state.txt",
     "nested/.uma-bct-runtime/state.txt",
     "Archive box photos/expectations.json",
@@ -37,6 +50,11 @@ PRIVATE_CONTEXT_PATHS = (
     "inputs/source.jpg",
     "Results/Run Details.json",
     "outputs/catalogue.csv",
+    # Docker matches complete paths, so check every suffix below several roots.
+) + tuple(
+    f"{directory}synthetic-weight.{suffix}"
+    for directory in ("", "nested/", "nested/deeper/")
+    for suffix in MODEL_WEIGHT_SUFFIXES
 )
 
 
