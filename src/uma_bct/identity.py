@@ -272,7 +272,8 @@ def resolve_unit_claim(
     return "", True
 
 
-def identity_only_line(line: str, structured_identifiers: Iterable[str], structured_unit: str) -> bool:
+def identity_only_line(line: str, structured_identifiers: Iterable[str], structured_unit: str, *,
+                       legacy_filter: bool = False) -> bool:
     """Check whether a line contains only the box ID or unit number."""
 
     identifier_keys = {
@@ -290,16 +291,40 @@ def identity_only_line(line: str, structured_identifiers: Iterable[str], structu
     def remove_unit(match: re.Match[str]) -> str:
         return " " if match.group(1).zfill(4) == normalized_unit else match.group(0)
 
-    # Remove known identity text while leaving any additional annotation for
-    # Description. A whole prefix-plus-unit line is identity-only as well.
-    body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
+    # Historical pending catalogues must reproduce their exact Description
+    # values. New rows remove only matching identifiers and unit numbers.
+    labelled_body = IDENTIFIER_LABEL_PREFIX.sub("", line, count=1)
+    body = labelled_body
     body = " " if body.strip().casefold() in identifier_keys else KNOWN_IDENTIFIER_TOKEN.sub(remove_identifier, body)
-    if prefixed := prefixed_unit(line):
-        body = line.replace(prefixed[0], " ", 1)
+    prefixed = prefixed_unit(line if legacy_filter else labelled_body)
+    if prefixed and (legacy_filter or normalise_identifier(prefixed[0]).casefold() in identifier_keys):
+        body = (line if legacy_filter else labelled_body).replace(prefixed[0], " ", 1)
         body = CONTEXTUAL_UNIT.sub(remove_unit, body)
         return IDENTITY_SEPARATORS.fullmatch(body) is not None
 
     body = CONTEXTUAL_UNIT.sub(remove_unit, body)
-    if normalized_unit and re.fullmatch(r"\s*[0-9]{1,4}\s*", body):
+    bare_unit = re.fullmatch(r"\s*([0-9]{1,4})\s*", body)
+    if normalized_unit and bare_unit and (legacy_filter or bare_unit.group(1).zfill(4) == normalized_unit):
         body = " "
     return IDENTITY_SEPARATORS.fullmatch(body) is not None
+
+
+def date_extraction_text(typed_lines: Iterable[str], handwritten_lines: Iterable[str],
+                         structured_identifiers: Iterable[str]) -> str:
+    """Leave explicit identity-only lines out of a new date request."""
+
+    printed_identifiers = {normalise_identifier(value).casefold() for value in identifier_evidence(typed_lines)}
+    corroborated = tuple(value for value in structured_identifiers
+                         if normalise_identifier(value).casefold() in printed_identifiers)
+    kept = []
+    for line in visual_lines(handwritten_lines):
+        if PRINTED_UNIT_TEXT.fullmatch(line.strip()):
+            continue
+        residue = PRINTED_UNIT_TEXT.sub(" ", line)
+        # A bare year remains ambiguous even if it was called an identifier.
+        bare_number = re.fullmatch(r"\s*[0-9]{1,4}\s*", residue)
+        has_identifier = any(normalise_identifier(value).casefold() in residue.casefold() for value in corroborated)
+        if not bare_number and has_identifier and identity_only_line(residue, corroborated, ""):
+            continue
+        kept.append(line)
+    return "\n".join(kept)

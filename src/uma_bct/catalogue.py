@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 from .constants import (
+    AMBIGUOUS_DATE_FLAG,
     AMBIGUOUS_IDENTIFIER_FLAG,
     DATE_EXTRACTION_FAILED_FLAG,
     INVALID_UNIT_FLAG,
@@ -174,10 +175,12 @@ def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Pa
     return f'=HYPERLINK("{target}","{label}")'
 
 
-def description(transcription: BoxTranscription) -> str:
+def description(transcription: BoxTranscription, *, legacy_filter: bool = False) -> str:
     values = (*non_empty_lines(transcription.handwritten_lines), *non_empty_lines(transcription.auxiliary_annotations))
     visible = (
-        line for line in values if not identity_only_line(line, transcription.record_identifiers, transcription.unit_number)
+        line for line in values if not identity_only_line(
+            line, transcription.record_identifiers, transcription.unit_number, legacy_filter=legacy_filter,
+        )
     )
     return escape_spreadsheet_formula("; ".join(visible))
 
@@ -197,7 +200,8 @@ def verification_flags(audit: dict[str, object] | None) -> tuple[str, ...]:
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
                          trusted_crop_link: bool = False, spreadsheet_safe: bool = True,
-                         legacy_identity_mapping: bool = False) -> dict[str, str | int]:
+                         legacy_identity_mapping: bool = False,
+                         legacy_description_filter: bool = False) -> dict[str, str | int]:
     """Keep printed text visible and flag identity claims that need review."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
@@ -218,6 +222,8 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
     if transcription.date_extraction_failed:
         flags.append(DATE_EXTRACTION_FAILED_FLAG)
+    if transcription.date_needs_review:
+        flags.append(AMBIGUOUS_DATE_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
     # Legacy checkpoint checks may need their original formula links. New CSV
@@ -232,7 +238,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
     record: dict[str, str | int] = {
         "Unit Type": escape_spreadsheet_formula(unit_type),
         "Unit Number": unit_number,
-        "Description": description(transcription),
+        "Description": description(transcription, legacy_filter=legacy_description_filter),
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,
@@ -246,7 +252,9 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         record["Description"] = "; ".join(
             line for line in (*non_empty_lines(transcription.handwritten_lines),
                               *non_empty_lines(transcription.auxiliary_annotations))
-            if not identity_only_line(line, transcription.record_identifiers, transcription.unit_number)
+            if not identity_only_line(
+                line, transcription.record_identifiers, transcription.unit_number, legacy_filter=legacy_description_filter,
+            )
         )
         record["Cropped Box Image Link"] = image_reference(image_file_path, catalogue_path)
     return CatalogueRow({column: record[column] for column in OUTPUT_COLUMNS})

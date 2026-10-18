@@ -212,6 +212,20 @@ class CatalogueRulesTest(unittest.TestCase):
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Description"], "'=SUM(A1:A2); Fragile")
 
+    def test_description_keeps_condition_annotations_and_conflicting_numeric_evidence(self):
+        box = make_box()
+        for handwritten, auxiliary, expected in (
+            ((), ("Fragile Box 4",), "Fragile Box 4"),
+            (("Mould on Box 4",), (), "Mould on Box 4"),
+            (("7",), (), "7"),
+            (("1950",), (), "1950"),
+        ):
+            with self.subTest(handwritten=handwritten, auxiliary=auxiliary):
+                transcription = make_transcription(box, handwritten=handwritten, auxiliary=auxiliary)
+                for spreadsheet_safe in (False, True):
+                    record = map_catalogue_record(transcription, box.image_file_path, spreadsheet_safe=spreadsheet_safe)
+                    self.assertEqual(record["Description"], expected)
+
     def test_untrusted_crop_text_is_escaped_and_only_managed_paths_become_formulas(self):
         box = make_box(crop_path=Path("=OPEN-UNTRUSTED.png"))
         transcription = make_transcription(box)

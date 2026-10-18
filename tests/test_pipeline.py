@@ -11,9 +11,11 @@ from helpers import make_box, make_image, make_transcription
 from uma_bct.adapters.empty_date_detector import EmptyDateDetector
 from uma_bct.adapters.ollama_client import OllamaVisionModel
 from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
+from uma_bct.adapters.regex_date_detector import RegexDateDetector
 from uma_bct.domain import BoundingBox, Box, DetectedRegion
 from uma_bct.pipeline import BoxTranscriptionPipeline
 from uma_bct.transcriptions import ObservedBox, deduplicate, text_completeness_score, text_detail
+from uma_bct.util.date_util import Date
 
 
 class FakeDetector:
@@ -114,7 +116,9 @@ class PipelineTest(unittest.TestCase):
 
     def process_qwen_responses(self, *responses):
         clients = [
-            SimpleNamespace(chat=Mock(return_value=iter([{"message": {"content": response, "thinking": ""}}])), close=Mock())
+            SimpleNamespace(chat=Mock(return_value=iter([{
+                "message": {"content": response, "thinking": ""}, "done": True, "done_reason": "stop",
+            }])), close=Mock())
             for response in responses
         ]
         transcriber = QwenTextTranscriber(OllamaVisionModel(model="qwen-test"))
@@ -131,6 +135,36 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.fallback_path, ("qwen",))
         self.assertEqual(stages, ["Transcribing box 1 of 1"])
+
+    def test_date_requests_exclude_explicit_identity_without_changing_readings(self):
+        handwritten = ("Unit 1950", "1950.1960", "1950", "Records from 1950.1960")
+        first = make_transcription(
+            make_box(), identifiers=("1950.1960",), typed=("1950.1960", "Unit 4"), handwritten=handwritten,
+        )
+        pipeline = self.pipeline(FakeDetector("qwen", [self.region]), ScriptedTranscriber([[first]]))
+        pipeline.date_detector = Mock(name="date detector", spec=["name", "extract_dates"])
+        pipeline.date_detector.name = "regex"
+        pipeline.date_detector.extract_dates.return_value = (Date(year=1950),)
+
+        result = self.process(pipeline)
+
+        pipeline.date_detector.extract_dates.assert_called_once_with("1950\nRecords from 1950.1960")
+        self.assertEqual(result.records[0].transcription.handwritten_lines, handwritten)
+        self.assertEqual(result.records[0].transcription.dates, (Date(year=1950),))
+
+    def test_century_ambiguity_keeps_valid_dates_and_complete_processing(self):
+        first = make_transcription(make_box(), handwritten=("12 May 50", "Filed 1952"))
+        for full_image in (False, True):
+            with self.subTest(full_image=full_image):
+                detector = FakeDetector("qwen", [] if full_image else [self.region])
+                pipeline = self.pipeline(detector, ScriptedTranscriber([[first]], full=[first]))
+                pipeline.date_detector = RegexDateDetector()
+                result = self.process(pipeline)
+                self.assertEqual(result.status, "complete")
+                self.assertEqual(result.records[0].transcription.dates, (Date(year=1952),))
+                self.assertTrue(result.records[0].transcription.date_needs_review)
+                self.assertFalse(result.records[0].transcription.date_extraction_failed)
+                self.assertEqual(result.records[0].transcription.handwritten_lines, first.handwritten_lines)
 
     def test_default_detector_threshold_only_filters_opencv_below_sixty_percent(self):
         regions = [DetectedRegion(self.region.bounding_box, confidence) for confidence in (0.59, 0.60, 0.61)]

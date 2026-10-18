@@ -30,6 +30,7 @@ INVALID_UNIT_FLAG = "Invalid unit"
 TRANSCRIPTION_MISMATCH_FLAG = "Transcription mismatch"
 FALLBACK_USED_FLAG = "Fallback used"
 DATE_EXTRACTION_FAILED_FLAG = "Date extraction failed"
+AMBIGUOUS_DATE_FLAG = "Ambiguous date"
 
 # Transcription review uses integer percentages; detector scores use 0 to 1.
 DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE = 50

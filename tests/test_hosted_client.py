@@ -93,6 +93,31 @@ class HostedVisionModelTest(unittest.TestCase):
                 self.assertIn("1950", content[0]["text"])
                 self.assertEqual(sdk.completion.call_args.kwargs["response_format"], {"type": "json_object"})
 
+    def test_duplicate_json_fields_are_rejected_without_private_response_text(self):
+        sdk = self.sdk(content='{"boxes":[{"typed":["private archive text"]}],"boxes":[]}')
+        client = HostedVisionModel(HostedModelConfig(model="openai/example", api_key="secret-test-key"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk), \
+                self.assertRaisesRegex(ValueError, "duplicate") as caught:
+            client.query(self.image_path, "Read boxes.", self.schema)
+        self.assertNotIn("private archive text", str(caught.exception))
+        self.assertNotIn("secret-test-key", str(caught.exception))
+
+    def test_ambiguous_century_is_review_data_without_a_retry(self):
+        text = "12 May 50; filed 1952"
+        response = {"dates": [
+            {"raw_text": "12 May 50", "starting_index": 0,
+             "start_date": {"day": 12, "month": 5, "year": 1950}, "end_date": {}},
+            {"raw_text": "1952", "starting_index": text.index("1952"),
+             "start_date": {"year": 1952}, "end_date": {}},
+        ]}
+        sdk = self.sdk(content=json.dumps(response))
+        client = HostedVisionModel(HostedModelConfig(model="openai/example", api_key="synthetic-key"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            outcome = QwenDateDetector(client).extract_dates_with_review(text)
+        sdk.completion.assert_called_once()
+        self.assertEqual(outcome.dates, (Date(year=1952),))
+        self.assertTrue(outcome.needs_review)
+
     def test_schema_capability_uses_portable_strict_structure(self):
         sdk = self.sdk()
         sdk.supports_response_schema.return_value = True

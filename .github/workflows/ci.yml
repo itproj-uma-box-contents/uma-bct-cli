@@ -185,6 +185,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - run: docker compose config --quiet
+      - name: Check Docker context privacy with synthetic files
+        run: python3 scripts/check_docker_context.py
       - run: docker build --target production -t uma-bct-cli:ci .
       - run: docker run --rm uma-bct-cli:ci --help
       - name: Check hosted Compose selects the hosted client

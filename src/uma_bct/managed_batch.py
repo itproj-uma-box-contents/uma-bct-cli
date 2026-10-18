@@ -57,7 +57,9 @@ WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
 PENDING_CATALOGUE_NAMES = frozenset({PENDING_CATALOGUE_NAME, ".uma-bct-catalogue-pending.xlsx"})
 MANAGED_SCHEMA_VERSION = 1
-CATALOGUE_MAPPING_VERSION = 2  # Version 1 predates compound-unit ambiguity checks.
+# Version 1 predates compound-unit checks; version 2 predates the Description
+# evidence fix. Older staged files must still reproduce their original bytes.
+CATALOGUE_MAPPING_VERSION = 3
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
 ACTIVE_WINDOWS_GUARDS: set[str] = set()
 DESKTOP_METADATA = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
@@ -1574,7 +1576,7 @@ def stage_catalogue(
         raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
     mapping_version = publication.get("mapping_version")
     if "mapping_version" in publication and (
-        type(mapping_version) is not int or mapping_version not in {1, CATALOGUE_MAPPING_VERSION}
+        type(mapping_version) is not int or mapping_version not in {1, 2, CATALOGUE_MAPPING_VERSION}
     ):
         raise ManagedBatchError(f"Unsupported catalogue mapping version in {batch_directory}")
     columns = stored_columns or OUTPUT_COLUMNS
@@ -1602,7 +1604,7 @@ def stage_catalogue(
                 formats.extend((columns, True) for columns in layouts)
             # Try the current mapping first for unversioned checkpoints. Once
             # versioned, a staged file must match only its recorded mapping.
-            versions = (CATALOGUE_MAPPING_VERSION, 1) if mapping_version is None else (mapping_version,)
+            versions = (CATALOGUE_MAPPING_VERSION, 2, 1) if mapping_version is None else (mapping_version,)
             candidates = []
             for version in versions:
                 for columns, links in formats:
@@ -1613,6 +1615,7 @@ def stage_catalogue(
                     replace_existing=False, detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
                     trusted_crop_links=legacy_formula_links, output_columns=columns,
                     legacy_identity_mapping=version == 1,
+                    legacy_description_filter=version < 3,
                 )
                 matches = file_digest(verification, "Expected pending catalogue") == pending_digest
                 verification.unlink()
@@ -1637,6 +1640,10 @@ def stage_catalogue(
         )
     publication["output_columns"] = list(columns)
     digest = file_digest(pending, "Pending catalogue")
+    # A later read must not authorize new bytes after the original hash matched
+    # committed readings. Keep the changed file for review instead of publishing it.
+    if pending_exists and digest != pending_digest:
+        raise ManagedBatchError(f"Pending catalogue changed after validation: {pending}")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
     write_progress(batch_directory, progress)

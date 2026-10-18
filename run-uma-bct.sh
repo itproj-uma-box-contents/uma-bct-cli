@@ -523,6 +523,10 @@ start_owned_ollama() {
     # healthy twice before sending any private image through its API.
     [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
     [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
+    if [ -e "$OLLAMA_LOG" ]; then
+        log_links=$({ stat -c '%h' "$OLLAMA_LOG" 2>/dev/null || stat -f '%l' "$OLLAMA_LOG" 2>/dev/null || true; })
+        [ "$log_links" = "1" ] || fail "The Ollama runtime log must be one unlinked regular file: $OLLAMA_LOG"
+    fi
     if ! : >"$OLLAMA_LOG"; then
         fail "The Ollama runtime log could not be prepared: $OLLAMA_LOG"
     fi
@@ -563,7 +567,9 @@ prepare_application() {
     if [ "$setup_model_selected" -eq 1 ]; then
         set -- "$@" "--model=$setup_model"
     fi
-    exec "$APP_CLI" "$@" >"$RUNTIME/setup.json"
+    # Setup's progress and failures already appear on stderr. Its JSON is
+    # unused here and must not overwrite a linked runtime file.
+    exec "$APP_CLI" "$@" >/dev/null
 }
 
 ollama_version_is_supported() {

@@ -158,6 +158,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
         # Preserve this evidence even when a group contains only one reading.
         dates=handwritten_source.transcription.dates,
         date_extraction_failed=handwritten_source.transcription.date_extraction_failed,
+        date_needs_review=handwritten_source.transcription.date_needs_review,
         auxiliary_annotations=auxiliary_source.transcription.auxiliary_annotations,
         needs_review=(
             any(item.transcription.needs_review for item in group)

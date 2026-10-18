@@ -82,6 +82,167 @@ class DateValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.extract([model_date(raw_text="x" * 101)], "x" * 101)
 
+    def test_model_components_and_precision_must_have_source_evidence(self):
+        cases = (
+            ("1950", {"year": 2049}, {}),
+            ("May 1950", {"day": 31, "month": 12, "year": 1950}, {}),
+            ("May 1950", {"day": 1, "month": 5, "year": 1950}, {}),
+            ("5/1950", {"day": 5, "month": 5, "year": 1950}, {}),
+            ("no date", {"year": 2049}, {}),
+            ("Series1950", {"year": 1950}, {}),
+            ("1950", {"year": 1950}, {"year": 1951}),
+            ("2021-23", {"year": 2021}, {"year": 2024}),
+            ("12 May 1950", {"month": 5, "year": 2012}, {}),
+            ("12 May 1950 - 15 June 1951", {"month": 5, "year": 2012}, {"month": 6, "year": 2015}),
+        )
+        for text, start, end in cases:
+            with self.subTest(text=text, start=start, end=end):
+                with self.assertRaises(ValueError) as caught:
+                    self.extract([model_date(raw_text=text, start_date=start, end_date=end)], text)
+                self.assertNotIn(text, str(caught.exception))
+
+    def test_source_evidence_preserves_shared_components_and_ai_range_syntax(self):
+        def components(value):
+            return {key: part for key, part in asdict(value).items() if part is not None}
+
+        cases = (
+            ("12/05/1990", Date(day=12, month=5, year=1990), None),
+            ("12May1950", Date(day=12, month=5, year=1950), None),
+            ("May1950", Date(month=5, year=1950), None),
+            ("12thMay1950", Date(day=12, month=5, year=1950), None),
+            ("12Sept1950", Date(day=12, month=9, year=1950), None),
+            ("Sept1950", Date(month=9, year=1950), None),
+            ("12-15/May", Date(day=12, month=5), Date(day=15, month=5)),
+            ("12-12/May/1950", Date(day=12, month=5, year=1950), Date(day=12, month=5, year=1950)),
+            ("05-06/1990", Date(month=5, year=1990), Date(month=6, year=1990)),
+            ("May-Jun/1950", Date(month=5, year=1950), Date(month=6, year=1950)),
+            ("from May until July in 1950", Date(month=5, year=1950), Date(month=7, year=1950)),
+            ("2021-23", Date(year=2021), Date(year=2023)),
+            ("1942-9", Date(year=1942), Date(year=1949)),
+            ("21st September 1950", Date(day=21, month=9, year=1950), None),
+        )
+        for text, start, end in cases:
+            entry = model_date(raw_text=text, start_date=components(start), end_date=components(end) if end else {})
+            with self.subTest(text=text):
+                self.assertEqual(self.extract([entry], text), (DateRange(start, end) if end else start,))
+
+    def test_source_guard_omits_unanchored_short_years_for_review(self):
+        for year in (50, 1950, 2050):
+            with self.subTest(year=year):
+                text = "May 50"
+                entry = model_date(raw_text=text, start_date={"month": 5, "year": year})
+                client = Mock()
+                client.query.return_value = ModelResponse(value={"dates": [entry]})
+                outcome = QwenDateDetector(client).extract_dates_with_review(text)
+                self.assertEqual(outcome.dates, ())
+                self.assertTrue(outcome.needs_review)
+
+    def test_regex_century_ambiguity_keeps_other_dates_and_full_year_ranges(self):
+        detector = RegexDateDetector()
+        for text in ("12 May 50", "12 May 25", "May 50", "05/90", "02/03/04", "05-06/90", "12May50",
+                     "12-15/May/50", "12-15/05/50"):
+            with self.subTest(text=text):
+                outcome = detector.extract_dates_with_review(text + "; filed 1952")
+                self.assertEqual(outcome.dates, (Date(year=1952),))
+                self.assertTrue(outcome.needs_review)
+                self.assertEqual(detector.extract_dates(text), ())
+        for text, expected in (
+            ("2021-23", DateRange(Date(year=2021), Date(year=2023))),
+            ("1942-9", DateRange(Date(year=1942), Date(year=1949))),
+            ("12-15/May/1950", DateRange(Date(day=12, month=5, year=1950), Date(day=15, month=5, year=1950))),
+        ):
+            with self.subTest(text=text):
+                outcome = detector.extract_dates_with_review(text)
+                self.assertEqual(outcome.dates, (expected,))
+                self.assertFalse(outcome.needs_review)
+
+    def test_ai_omits_ambiguous_entries_and_flags_even_an_empty_reply(self):
+        text = "12 May 50; filed 1952"
+        entries = [model_date(raw_text="12 May 50", start_date={"day": 12, "month": 5, "year": 1950}),
+                   model_date(raw_text="1952", starting_index=text.index("1952"), start_date={"year": 1952})]
+        for values, expected in ((entries, (Date(year=1952),)), ([], ())):
+            with self.subTest(values=values):
+                client = Mock()
+                client.query.return_value = ModelResponse(value={"dates": values})
+                outcome = QwenDateDetector(client).extract_dates_with_review(text)
+                self.assertEqual(outcome.dates, expected)
+                self.assertTrue(outcome.needs_review)
+                client.query.assert_called_once()
+
+    def test_ai_only_short_year_syntax_is_reviewed_but_four_digit_years_are_kept(self):
+        cases = (
+            ("from May until July in 50", {"month": 5, "year": 1950}, {"month": 7, "year": 1950}, (), True),
+            ("0050", {"year": 50}, {}, (Date(year=50),), False),
+            ("2021-23", {"year": 2021}, {"year": 2023}, (DateRange(Date(year=2021), Date(year=2023)),), False),
+        )
+        for text, start, end, expected, review in cases:
+            with self.subTest(text=text):
+                client = Mock()
+                client.query.return_value = ModelResponse(value={"dates": [
+                    model_date(raw_text=text, start_date=start, end_date=end),
+                ]})
+                outcome = QwenDateDetector(client).extract_dates_with_review(text)
+                self.assertEqual((outcome.dates, outcome.needs_review), (expected, review))
+
+    def test_ambiguous_years_do_not_hide_malformed_model_components(self):
+        text = "May 50"
+        with self.assertRaises(ValueError):
+            self.extract([model_date(raw_text=text, start_date={"month": 13, "year": 1950})], text)
+
+    def test_ai_anchors_only_the_short_range_end_and_keeps_other_ambiguity(self):
+        for text, start, end in (
+            ("May 1950-Jun 51", {"month": 5, "year": 1950}, {"month": 6, "year": 1951}),
+            ("12May1950-15June51", {"day": 12, "month": 5, "year": 1950},
+             {"day": 15, "month": 6, "year": 1951}),
+        ):
+            for extra in ("", "; May 50"):
+                with self.subTest(text=text, extra=extra):
+                    client = Mock()
+                    client.query.return_value = ModelResponse(value={"dates": [
+                        model_date(raw_text=text, start_date=start, end_date=end),
+                    ]})
+                    outcome = QwenDateDetector(client).extract_dates_with_review(text + extra)
+                    self.assertEqual(outcome.dates, (DateRange(Date(**start), Date(**end)),))
+                    self.assertEqual(outcome.needs_review, bool(extra))
+
+        text = "May 50; filed 1950"
+        client = Mock()
+        client.query.return_value = ModelResponse(value={"dates": [
+            model_date(raw_text="May 50", start_date={"month": 5, "year": 1950}),
+            model_date(raw_text="1950", starting_index=text.index("1950"), start_date={"year": 1950}),
+        ]})
+        outcome = QwenDateDetector(client).extract_dates_with_review(text)
+        self.assertEqual(outcome.dates, (Date(year=1950),))
+        self.assertTrue(outcome.needs_review)
+
+        text = "Filed 1950; May 50 to June 51"
+        client.query.return_value = ModelResponse(value={"dates": [
+            model_date(raw_text=text, start_date={"month": 5, "year": 1950},
+                       end_date={"month": 6, "year": 1951}),
+        ]})
+        outcome = QwenDateDetector(client).extract_dates_with_review(text)
+        self.assertEqual(outcome.dates, ())
+        self.assertTrue(outcome.needs_review)
+
+    def test_verification_dates_share_the_filtered_input_and_preserve_raw_readings(self):
+        box = make_box()
+        first = make_transcription(
+            box, identifiers=("1950.1960",), unit="1950", typed=("1950.1960", "Unit 1950"),
+            handwritten=("Unit 1950", "1950.1960", "1951", "Minutes 1952"),
+            dates=(Date(year=1951), Date(year=1952)),
+        )
+        transcriber = Mock()
+        transcriber.verify.return_value = [first]
+        detector = Mock(spec=RegexDateDetector, wraps=RegexDateDetector())
+        result = verify_image(make_result(BoxResult(box, first)), transcriber, on_stage=lambda _: None,
+                              date_detector=detector)
+        detector.extract_dates_with_review.assert_called_once_with("1951\nMinutes 1952")
+        self.assertEqual(result.records[0].transcription.handwritten_lines, first.handwritten_lines)
+        self.assertEqual(result.records[0].transcription.dates, first.dates)
+        second = result.records[0].verification["second"][0]
+        self.assertEqual(second["handwritten_lines"], first.handwritten_lines)
+        self.assertEqual(reading(second).dates, first.dates)
+
     def test_empty_text_does_not_request_a_model(self):
         client = Mock()
         for text in ("", " \n\t"):
@@ -136,7 +297,7 @@ class DateFailureTest(unittest.TestCase):
         detector = test_pipeline.FakeDetector("qwen", [] if full_image else [fixture.region])
         transcriber = test_pipeline.ScriptedTranscriber(["record"], full="record")
         pipeline = fixture.pipeline(detector, transcriber)
-        pipeline.date_detector = Mock()
+        pipeline.date_detector = Mock(spec=["name", "extract_dates"])
         pipeline.date_detector.name = "qwen"
         pipeline.date_detector.extract_dates.side_effect = RuntimeError("synthetic date failure")
         return fixture.process(pipeline)
@@ -166,6 +327,19 @@ class DateFailureTest(unittest.TestCase):
             del legacy["records"][0]["transcription"]["date_extraction_failed"]
             self.assertFalse(deserialize_result(legacy, root).records[0].transcription.date_extraction_failed)
 
+    def test_date_review_flag_roundtrips_and_is_optional_in_legacy_readings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            box = make_box(crop_path=root / "Box Images/box.png")
+            transcription = replace(make_transcription(box), date_needs_review=True, dates=(Date(year=1952),))
+            original = make_result(BoxResult(box, transcription))
+            saved = serialize_result(original, root)
+            self.assertEqual(deserialize_result(saved, root), original)
+            self.assertTrue(reading(asdict(transcription)).date_needs_review)
+            legacy = copy.deepcopy(saved)
+            del legacy["records"][0]["transcription"]["date_needs_review"]
+            self.assertFalse(deserialize_result(legacy, root).records[0].transcription.date_needs_review)
+
     def test_date_failure_flag_is_identical_in_csv_and_excel(self):
         import csv
 
@@ -192,7 +366,7 @@ class DateFailureTest(unittest.TestCase):
         second = replace(first, handwritten_lines=("Changed 1951",))
         transcriber = Mock()
         transcriber.verify.return_value = [second]
-        detector = Mock()
+        detector = Mock(spec=["extract_dates"])
         detector.extract_dates.side_effect = RuntimeError("synthetic date failure")
         result = verify_image(make_result(BoxResult(box, first)), transcriber, on_stage=lambda _: None,
                               date_detector=detector)

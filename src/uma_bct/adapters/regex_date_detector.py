@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass, field
 
+from ..ports import DateExtraction
 from ..util.date_util import Date, DateRange
 
 ESCAPE_SQEUNCE = "#"
@@ -67,6 +68,33 @@ DEFAULT_CUSTOM_RANGE_FORMATS = (
     "yyyy~y",
 )
 
+# Recognize these only to flag ambiguity, never to infer a century.
+AMBIGUOUS_DATE_FORMATS = ("dd/mm/yy", "mm/dd/yy", "mon yy")
+AMBIGUOUS_RANGE_FORMATS = ("dd~dd/mm/yy", "dd~dd/mon/yy")
+MONTH_NAMES = "|".join(sorted([name for names in MONTH_STRINGS.values() for name in names] + ["sept"],
+                            key=len, reverse=True))
+COMPACT_MONTH_DATE = re.compile(
+    rf"(?<!\w)(?:(?P<day>[0-9]{{1,2}})(?P<ordinal>st|nd|rd|th)?)?"
+    rf"(?P<month>{MONTH_NAMES})(?P<year>[0-9]{{4}}|[0-9]{{2}})(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def spaced_month_dates(string: str) -> str:
+    """Separate compact English-month dates without splitting arbitrary IDs."""
+
+    def expand(match: re.Match[str]) -> str:
+        day = (match.group("day") or "") + (match.group("ordinal") or "")
+        return " ".join(part for part in (day, match.group("month"), match.group("year")) if part)
+
+    return COMPACT_MONTH_DATE.sub(expand, string)
+
+
+def compact_ambiguous_spans(string: str) -> tuple[tuple[int, int], ...]:
+    """Locate compact month dates whose printed year lacks a century."""
+
+    return tuple(match.span() for match in COMPACT_MONTH_DATE.finditer(string) if len(match.group("year")) == 2)
+
 
 def fill_prefix(start: str, end: str) -> str:
     """Expand an increasing shorthand suffix: 1942-49 or 1942-9 ends in 1949.
@@ -100,6 +128,17 @@ def complete_numeric_token(match: re.Match[str]) -> bool:
         end + 1 < len(text) and text[end - 1].isdigit() and text[end] == "." and text[end + 1].isdigit()
     )
     return not starts_inside_number and not ends_inside_number
+
+
+def has_ambiguous_century(match: re.Match[str]) -> bool:
+    """Only a complete first year can anchor a shortened range ending."""
+
+    years = [value for name, value in match.groupdict().items() if name.startswith("y") and value]
+    if not years:
+        return False
+    if len(years[0]) < 4:
+        return True
+    return any(len(value) < 4 and len(fill_prefix(years[0], value)) < 4 for value in years[1:])
 
 
 @dataclass
@@ -197,11 +236,6 @@ class RegexDateDetector:
             elif "dd" in part:
                 add_to_dates("d", value)
 
-        # Preserve the established interpretation of complete dates with
-        # two-digit years 01-29; partial dates keep their printed precision.
-        if dates[0]["d"] != "" and dates[0]["m"] != "" and len(dates[0]["y"]) == 2 and 0 < int(dates[0]["y"]) < 30:
-            dates[0]["y"] = "20" + dates[0]["y"]
-
         if dates[1]["y"] != "" or dates[1]["m"] != "" or dates[1]["d"] != "":
             # Expand an abbreviated day only when both dates share a month.
             if dates[1]["y"] == dates[0]["y"] and dates[1]["m"] == dates[0]["m"] and dates[1]["d"] != "":
@@ -234,21 +268,37 @@ class RegexDateDetector:
             )
 
     def extract_dates(self, string: str) -> tuple[Date | DateRange, ...]:
-        """Extract configured dates, preferring longer matches and custom ranges.
+        """Preserve the tuple API while omitting dates with ambiguous centuries."""
+
+        return self.extract_dates_with_review(string).dates
+
+    def extract_dates_with_review(self, string: str) -> DateExtraction:
+        """Keep valid dates from the label and flag omitted century ambiguity."""
+
+        matches = self.selected_matches(string)
+        compact = compact_ambiguous_spans(string)
+        dates = tuple(self.standardise_match_result(match) for match in matches
+                      if not has_ambiguous_century(match)
+                      and not any(match.start() < right and match.end() > left for left, right in compact))
+        needs_review = bool(compact) or any(map(has_ambiguous_century, matches))
+        return DateExtraction(tuple(date for date in dates if date.is_valid()), needs_review)
+
+    def selected_matches(self, string: str) -> list[re.Match[str]]:
+        """Prefer longer matches and suppress contained date fragments.
 
         Stable ordering favours individual dates over equal-length ranges.
-        Contained matches are removed before restoring source reading order.
+        Even an ambiguous or invalid whole date suppresses smaller fragments.
         """
         dates: list[re.Match] = []
         matches: list[re.Match] = []
 
         # Collect single dates first so equal-length matches keep that priority.
-        for format in self.date_formats:
+        for format in (*AMBIGUOUS_DATE_FORMATS, *self.date_formats):
             date_regex = self.date_format_to_regex(format)
             matches.extend(re.finditer(date_regex, string, flags=re.IGNORECASE))
 
         # Explicit range formats take precedence over generic combinations.
-        for format in self.custom_range_formats:
+        for format in (*AMBIGUOUS_RANGE_FORMATS, *self.custom_range_formats):
             date_range_regex = self.date_format_to_regex(format)
             matches.extend(re.finditer(date_range_regex, string, flags=re.IGNORECASE))
 
@@ -267,8 +317,7 @@ class RegexDateDetector:
 
         while i < len(matches):
             # A full date must not also produce its contained day/month match.
-            if self.standardise_match_result(matches[i]).is_valid():
-                dates.append(matches[i])
+            dates.append(matches[i])
 
             for j in reversed(range(i + 1, len(matches))):
                 if matches[j].start() >= matches[i].start() and matches[j].end() <= matches[i].end():
@@ -278,4 +327,11 @@ class RegexDateDetector:
         # Restore left-to-right reading order after selecting complete matches.
         dates.sort(key=lambda x: x.start())
 
-        return tuple(self.standardise_match_result(date) for date in dates)
+        return dates
+
+
+def ambiguous_year_spans(string: str) -> tuple[tuple[int, int], ...]:
+    """Find known ambiguous date spans even when an AI reply omits them."""
+
+    return (tuple(match.span() for match in RegexDateDetector().selected_matches(string) if has_ambiguous_century(match))
+            + compact_ambiguous_spans(string))

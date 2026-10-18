@@ -56,6 +56,32 @@ class ArtifactSafetyTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNotNone(unsafe_reason(name))
 
+    def test_environment_credentials_are_rejected_by_name_and_in_archives(self):
+        names = (".env", ".ENV.local", "nested/.EnV.production", ".env/private-key", "nested/.ENV.local/token")
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(unsafe_reason(name), "local environment credentials")
+        self.assertIsNone(unsafe_reason("uma_bct/.environment.py"))
+
+        content = b"synthetic-credential-value-not-for-logs"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = root / "synthetic.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                for name in names:
+                    archive.writestr(name, content)
+            source = root / "synthetic.tar.gz"
+            with tarfile.open(source, "w:gz") as archive:
+                for name in names:
+                    member = tarfile.TarInfo(name)
+                    member.size = len(content)
+                    archive.addfile(member, io.BytesIO(content))
+            for artifact in (wheel, source):
+                findings = inspect_artifact(artifact)
+                self.assertEqual(len(findings), len(names))
+                self.assertTrue(all("local environment credentials" in finding for finding in findings))
+                self.assertNotIn(content.decode(), "\n".join(findings))
+
     def test_ollama_extractor_accepts_archive_internal_link_targets(self):
         cases = (
             (tarfile.SYMTYPE, "bin/ollama-link", "ollama"),

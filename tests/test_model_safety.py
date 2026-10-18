@@ -15,7 +15,7 @@ from uma_bct.adapters.qwen_transcriber import QwenTextTranscriber
 
 class ModelResponseSafetyTest(unittest.TestCase):
     def transcribe(self, raw, probability):
-        chunk = {"message": {"content": raw}, "logprobs": [{"token": raw, "logprob": probability}]}
+        chunk = {"message": {"content": raw}, "logprobs": [{"token": raw, "logprob": probability}], "done": True}
         client = SimpleNamespace(chat=Mock(return_value=iter([chunk])), close=Mock())
         with patch.object(OllamaVisionModel, "client", return_value=client):
             return QwenTextTranscriber(OllamaVisionModel(model="qwen-test")).transcribe(make_box())
@@ -34,7 +34,8 @@ class ModelResponseSafetyTest(unittest.TestCase):
         raw = json.dumps({"boxes": [test_pipeline.qwen_record(handwritten=["Actual text"])]})
         other = json.dumps({"boxes": [test_pipeline.qwen_record(handwritten=["Different text"])]})
         client = SimpleNamespace(
-            chat=Mock(return_value=iter([{"message": {"content": raw}, "logprobs": [{"token": other, "logprob": 0.0}]}])),
+            chat=Mock(return_value=iter([{"message": {"content": raw}, "done": True,
+                                         "logprobs": [{"token": other, "logprob": 0.0}]}])),
             close=Mock(),
         )
         with patch.object(OllamaVisionModel, "client", return_value=client):
@@ -48,7 +49,7 @@ class ModelResponseSafetyTest(unittest.TestCase):
         good = json.dumps({"boxes": [test_pipeline.qwen_record(handwritten=["Valid 王 📦"])]})
         bad = json.dumps({"boxes": [test_pipeline.qwen_record(unit="5", handwritten=["invalid \ud800"])]})
         clients = [
-            SimpleNamespace(chat=Mock(return_value=iter([{"message": {"content": raw}}])), close=Mock())
+            SimpleNamespace(chat=Mock(return_value=iter([{"message": {"content": raw}, "done": True}])), close=Mock())
             for raw in (good, bad)
         ]
         transcriber = QwenTextTranscriber(OllamaVisionModel(model="qwen-test"))
@@ -59,3 +60,33 @@ class ModelResponseSafetyTest(unittest.TestCase):
         self.assertEqual(result.status, "partial")
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.records[0].transcription.handwritten_lines, ("Valid 王 📦",))
+
+    def test_truncated_request_keeps_a_successful_neighbor_and_marks_partial(self):
+        fixture = test_pipeline.PipelineTest()
+        fixture.setUp()
+        raw = json.dumps({"boxes": [test_pipeline.qwen_record(handwritten=["Keep this reading"])]})
+        clients = [
+            SimpleNamespace(chat=Mock(return_value=iter([
+                {"message": {"content": raw}, "done": True, "done_reason": reason},
+            ])), close=Mock())
+            for reason in ("stop", "length")
+        ]
+        detector = test_pipeline.FakeDetector("qwen", [fixture.region, fixture.region])
+        transcriber = QwenTextTranscriber(OllamaVisionModel(model="qwen-test"))
+        with patch.object(OllamaVisionModel, "client", side_effect=clients) as client_factory:
+            result = fixture.process(fixture.pipeline(detector, transcriber))
+        self.assertEqual(client_factory.call_count, 2)
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0].transcription.handwritten_lines, ("Keep this reading",))
+
+    def test_duplicate_box_arrays_cannot_silently_discard_a_physical_box(self):
+        first = test_pipeline.qwen_record(unit="4", handwritten=["First physical box"])
+        second = test_pipeline.qwen_record(unit="5", handwritten=["Second physical box"])
+        raw = '{"boxes":' + json.dumps([first]) + ',"boxes":' + json.dumps([second]) + '}'
+        client = SimpleNamespace(chat=Mock(return_value=iter([
+            {"message": {"content": raw}, "done": True, "done_reason": "stop"},
+        ])), close=Mock())
+        with patch.object(OllamaVisionModel, "client", return_value=client), \
+                self.assertRaisesRegex(ValueError, "duplicate"):
+            QwenTextTranscriber(OllamaVisionModel(model="qwen-test")).transcribe_full_image(make_box())

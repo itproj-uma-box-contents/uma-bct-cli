@@ -35,8 +35,9 @@ from .path_safety import check_path
 
 
 def read_image(path: Path) -> np.ndarray:
-    if sys.platform == "win32":
+    if sys.platform == "win32" or path.suffix.casefold() in {".tif", ".tiff"}:
         # Python handles Unicode paths; OpenCV receives only the encoded pixels.
+        # The byte decoder also avoids imread's rotated-TIFF buffer failure.
         try:
             image = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
         except (OSError, cv2.error) as error:
@@ -118,18 +119,30 @@ def decode_new_image(path: Path) -> np.ndarray:
     raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
 
 
+def has_transparency(path: Path) -> bool:
+    """Inspect alpha metadata without converting opaque or high-bit pixels."""
+
+    try:
+        with Image.open(path) as image:
+            return "A" in image.getbands() or "transparency" in image.info
+    except (OSError, SyntaxError, ValueError) as error:
+        raise ValueError(f"Could not read image: {path}: {error}") from error
+
+
 @contextmanager
 def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
     """Yield one source image with a private normalized path when required."""
 
     file_path = Path(path)
-    if file_path.suffix.casefold() in OPENCV_IMAGE_EXTENSIONS:
+    extension = file_path.suffix.casefold()
+    normalize_alpha = extension in {".png", ".webp"} and has_transparency(file_path)
+    if extension in OPENCV_IMAGE_EXTENSIONS and not normalize_alpha:
         yield load_input_image(file_path)
         return
 
-    # The source path remains the catalogue identity. Formats OpenCV cannot
-    # read directly use a short-lived PNG without carrying source metadata on.
-    pixels = decode_new_image(file_path)
+    # Detection and crops share one oriented, opaque working copy. Its PNG
+    # carries pixels only; the original source remains the catalogue identity.
+    pixels = pillow_image(file_path) if normalize_alpha else decode_new_image(file_path)
     height, width = pixels.shape[:2]
     with tempfile.TemporaryDirectory(prefix="uma-bct-input-") as directory:
         temporary_directory = Path(directory)

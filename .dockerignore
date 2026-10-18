@@ -33,11 +33,9 @@ outputs
 **/Results
 **/inputs
 **/outputs
-/*.csv
-/*.xlsx
 /*.run.json
-**/*.csv
-**/*.xlsx
+**/*.[Cc][Ss][Vv]
+**/*.[Xx][Ll][Ss][Xx]
 **/*.run.json
 **/Run Progress.json
 **/Run Details.json
@@ -101,3 +99,7 @@ models
 **/.uma-bct-settings.json
 **/.uma-bct-review-*
 **/*.review.previous-*.html
+
+# Local credentials never enter the build context.
+**/.[Ee][Nn][Vv]
+**/.[Ee][Nn][Vv].*

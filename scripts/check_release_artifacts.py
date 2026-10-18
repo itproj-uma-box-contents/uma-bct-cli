@@ -122,6 +122,8 @@ def unsafe_reason(
     if is_directory and size:
         return "archive directory entry contains data"
     parts = {part.casefold() for part in path.parts}
+    if any(part == ".env" or part.startswith(".env.") for part in parts):
+        return "local environment credentials"
     if any(
         part.startswith((".uma-bct-launcher-lock-", ".uma-bct-lock-release-"))
         for part in parts

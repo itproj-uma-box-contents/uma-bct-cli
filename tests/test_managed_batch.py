@@ -36,6 +36,7 @@ from uma_bct.managed_batch import (
     allocate_source_names,
     create_batch_directory,
     deserialize_result,
+    file_digest,
     fingerprint_file,
     publish_reserved_crop,
     read_json_file,
@@ -359,7 +360,7 @@ class ManagedBatchTest(unittest.TestCase):
                 transcription = replace(record.transcription, typed_lines=("1960.0009", "Unit 4/5"))
                 return replace(result, records=(replace(record, transcription=transcription),))
 
-        saved_versions = {"versioned_legacy": 1, "current": 2, "unknown": 99, "null": None, "boolean": True}
+        saved_versions = {"versioned_legacy": 1, "current": 3, "unknown": 99, "null": None, "boolean": True}
         for file_type in ("csv", "excel"):
             for scenario in ("legacy", "versioned_legacy", "tampered", "current", "unknown", "null", "boolean"):
                 with self.subTest(file_type=file_type, scenario=scenario), self.prepared_root("01.jpg") as root:
@@ -409,6 +410,142 @@ class ManagedBatchTest(unittest.TestCase):
                         self.assertFalse((batch / ("Catalogue.xlsx" if file_type == "excel" else CATALOGUE_FILE_NAME)).exists())
                         if scenario in {"unknown", "null", "boolean"}:
                             self.assertIn("mapping version", stderr)
+
+    def test_legacy_description_staging_preserves_original_bytes(self):
+        class AnnotatedPipeline(ManagedPipeline):
+            def process(self, path):
+                result = super().process(path)
+                record = result.records[0]
+                transcription = replace(record.transcription, auxiliary_annotations=("Fragile Box 4",))
+                return replace(result, records=(replace(record, transcription=transcription),))
+
+        for file_type in ("csv", "excel"):
+            for version in (None, 1, 2, 3):
+                with self.subTest(file_type=file_type, version=version), self.prepared_root("01.jpg") as root:
+                    _, interrupted, _ = self.run_managed_batch_and_capture_output(
+                        root, AnnotatedPipeline(), file_type=file_type,
+                        patches=(patch("uma_bct.managed_batch.file_digest", side_effect=KeyboardInterrupt),),
+                    )
+                    batch = Path(interrupted["batch_directory"])
+                    progress_path = batch / PROGRESS_FILE_NAME
+                    progress = read_json_file(progress_path, "Run progress")
+                    if version is None:
+                        progress["publication"].pop("mapping_version", None)
+                    else:
+                        progress["publication"]["mapping_version"] = version
+                    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+                    # The old filter dropped this annotation. Encode that historical
+                    # row explicitly so new filtering cannot redefine the expected bytes.
+                    reference = "Box Images/01 - Box 01.png"
+                    legacy = {
+                        "Unit Type": "1960.0009", "Unit Number": "0004", "Description": "",
+                        "Dates": "No Dates", "Earliest Date": "None", "Latest Date": "None",
+                        "Transcription Confidence (%)": 95, "Review Flags": "", "Cropped Box Image Link": reference,
+                    }
+                    if file_type == "csv":
+                        legacy["Cropped Box Image Link"] = f'=HYPERLINK("{reference}","01 - Box 01.png")'
+                    pending = batch / progress["publication"]["pending_catalogue"]
+                    with patch("uma_bct.export.catalogue_records", return_value=[legacy]):
+                        export_catalogue([], pending)
+                    expected = pending.read_bytes()
+
+                    with patch("uma_bct.managed_batch.build_managed_pipeline", side_effect=AssertionError("model loaded")):
+                        status, summary, stderr = self.run_managed_batch_and_capture_output(
+                            root, AnnotatedPipeline(), file_type=file_type,
+                        )
+                    if version == 3:
+                        self.assertEqual(status, 2, stderr)
+                        self.assertIn("does not match the committed results", stderr)
+                        self.assertEqual(pending.read_bytes(), expected)
+                        self.assertFalse((batch / DETAILS_FILE_NAME).exists())
+                    else:
+                        self.assertEqual(status, 0, stderr)
+                        self.assertEqual(Path(summary["catalogue_output"]).read_bytes(), expected)
+                        details = read_json_file(batch / DETAILS_FILE_NAME, "Run details")
+                        self.assertEqual(details["publication"]["mapping_version"], version or 2)
+
+    def test_staged_catalogue_changed_after_validation_is_preserved_without_publication(self):
+        for file_type in ("csv", "excel"):
+            with self.subTest(file_type=file_type), self.prepared_root("01.jpg") as root:
+                status, interrupted, _ = self.run_managed_batch_and_capture_output(
+                    root, ManagedPipeline(), file_type=file_type,
+                    patches=(patch("uma_bct.managed_batch.file_digest", side_effect=KeyboardInterrupt),),
+                )
+                self.assertEqual(status, 130)
+                batch = Path(interrupted["batch_directory"])
+                progress = read_json_file(batch / PROGRESS_FILE_NAME, "Run progress")
+                pending = batch / progress["publication"]["pending_catalogue"]
+                changed_bytes = b"unverified replacement after validation\n"
+                changed = False
+
+                # Change only the pending file after its expected bytes were verified.
+                def change_after_validation(path, purpose, *, pending=pending, changed_bytes=changed_bytes):
+                    nonlocal changed
+                    digest = file_digest(path, purpose)
+                    if purpose == "Expected pending catalogue" and not changed:
+                        pending.write_bytes(changed_bytes)
+                        changed = True
+                    return digest
+
+                pipeline = ManagedPipeline()
+                status, summary, stderr = self.run_managed_batch_and_capture_output(
+                    root, pipeline, file_type=file_type,
+                    patches=(patch("uma_bct.managed_batch.file_digest", side_effect=change_after_validation),),
+                )
+                self.assertEqual(status, 2, stderr)
+                self.assertIn("changed after validation", stderr)
+                self.assertEqual(pipeline.calls, [])
+                self.assertIsNone(summary["catalogue_output"])
+                self.assertEqual(pending.read_bytes(), changed_bytes)
+                self.assertFalse((batch / DETAILS_FILE_NAME).exists())
+                self.assertFalse((batch / ("Catalogue.xlsx" if file_type == "excel" else CATALOGUE_FILE_NAME)).exists())
+                saved = read_json_file(batch / PROGRESS_FILE_NAME, "Run progress")
+                self.assertNotIn("sha256", saved["publication"])
+
+    def test_date_review_flag_preserves_clear_dates_without_partial_processing(self):
+        class ReviewPipeline(ManagedPipeline):
+            def process(self, path):
+                result = super().process(path)
+                record = result.records[0]
+                transcription = replace(
+                    record.transcription, handwritten_lines=("Filed 12 May 50; other records 1950",),
+                    dates=(Date(year=1950),), date_needs_review=True,
+                )
+                return replace(result, records=(replace(record, transcription=transcription),))
+
+        for file_type in ("csv", "excel"):
+            with self.subTest(file_type=file_type), self.prepared_root("01.jpg") as root:
+                status, summary, stderr = self.run_managed_batch_and_capture_output(
+                    root, ReviewPipeline(), file_type=file_type,
+                )
+                self.assertEqual(status, 0, stderr)
+                self.assertEqual(summary["status"], "complete")
+                catalogue = Path(summary["catalogue_output"])
+                if file_type == "csv":
+                    with catalogue.open(newline="", encoding="utf-8") as source:
+                        row = next(csv.DictReader(source))
+                else:
+                    rows, _ = read_excel(catalogue)
+                    row = dict(zip(rows[0], rows[1], strict=True))
+                for column in ("Dates", "Earliest Date", "Latest Date"):
+                    self.assertEqual(row[column], "1950")
+                self.assertIn("12 May 50", row["Description"])
+                self.assertIn("Ambiguous date", row["Review Flags"])
+                self.assertNotIn("Date extraction failed", row["Review Flags"])
+
+                # New review state survives checkpoints; older records default
+                # to their saved dates without reinterpreting source handwriting.
+                batch = Path(summary["batch_directory"])
+                details = read_json_file(batch / DETAILS_FILE_NAME, "Run details")
+                saved = details["inputs"][0]["result"]
+                restored = deserialize_result(saved, batch).records[0].transcription
+                self.assertTrue(restored.date_needs_review)
+                self.assertTrue(restored.to_dict()["date_needs_review"])
+                saved["records"][0]["transcription"].pop("date_needs_review")
+                legacy = deserialize_result(saved, batch).records[0].transcription
+                self.assertFalse(legacy.date_needs_review)
+                self.assertEqual(legacy.dates, (Date(year=1950),))
 
     def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
@@ -977,7 +1114,7 @@ class ManagedBatchTest(unittest.TestCase):
             )
             details = json.loads((batch / DETAILS_FILE_NAME).read_text(encoding="utf-8"))
             self.assertEqual(details["inputs"][0]["original_filename"], "PXL_230150462.jpg")
-            self.assertEqual(details["publication"]["mapping_version"], 2)
+            self.assertEqual(details["publication"]["mapping_version"], 3)
 
     def test_full_image_fallback_uses_the_readable_full_photo_name(self):
         with self.prepared_root("Shelf.jpg") as root:

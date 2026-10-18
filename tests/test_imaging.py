@@ -1,3 +1,6 @@
+import base64
+import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,10 +10,13 @@ import cv2
 import numpy as np
 import tifffile
 from helpers import make_box, make_image, make_transcription
-from PIL import Image
+from ollama import Image as OllamaImage
+from PIL import Image, ImageOps
+from PIL.PngImagePlugin import PngInfo
 from pillow_heif import register_heif_opener
 
 from uma_bct.adapters.opencv_detector import detect_regions, plausible_bbox
+from uma_bct.adapters.qwen_detector import sanitized_detection_image
 from uma_bct.domain import BoundingBox, DetectedRegion, InputImage
 from uma_bct.imaging import OpenCVBoxCropper, load_input_image, prepare_input_image, read_image, read_input_image
 from uma_bct.path_safety import check_path
@@ -35,6 +41,16 @@ def write_synthetic_dng(path: Path) -> None:
         (50778, "H", 1, 21, False),
     )
     tifffile.imwrite(path, raw_pixels, photometric=32803, metadata=None, extratags=tags)
+
+
+def model_payload_pixels(path: Path) -> np.ndarray:
+    """Decode the real client's serialized image bytes without a request."""
+
+    encoded = OllamaImage(value=str(path)).model_dump()
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as payload:
+        rgb = ImageOps.exif_transpose(payload).convert("RGB")
+        return cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
+
 
 class ImagingTest(unittest.TestCase):
     def test_domain_values_reject_invalid_geometry_and_confidence(self):
@@ -150,13 +166,140 @@ class ImagingTest(unittest.TestCase):
 
     def test_existing_formats_keep_the_direct_opencv_path(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory).resolve() / "shelf.jpg"
-            cv2.imwrite(str(source), np.full((7, 13, 3), 120, dtype=np.uint8))
+            for extension in ("jpg", "png", "webp"):
+                with self.subTest(extension=extension):
+                    source = Path(directory).resolve() / f"shelf.{extension}"
+                    cv2.imwrite(str(source), np.full((7, 13, 3), 120, dtype=np.uint8))
 
-            with prepare_input_image(source) as image:
-                self.assertEqual(image.readable_file_path, source)
-                self.assertIsNone(image.processing_file_path)
-                self.assertEqual(read_input_image(image).shape, (7, 13, 3))
+                    with prepare_input_image(source) as image:
+                        self.assertEqual(image.readable_file_path, source)
+                        self.assertIsNone(image.processing_file_path)
+                        self.assertEqual(read_input_image(image).shape, (7, 13, 3))
+
+    def test_tiff_orientation_preserves_all_landmarks_for_every_orientation(self):
+        rgb = np.zeros((20, 40, 3), dtype=np.uint8)
+        rgb[:10, :20] = (10, 20, 30)
+        rgb[:10, 20:] = (40, 50, 60)
+        rgb[10:, :20] = (70, 80, 90)
+        rgb[10:, 20:] = (100, 110, 120)
+        with tempfile.TemporaryDirectory() as directory:
+            for orientation in range(1, 9):
+                with self.subTest(orientation=orientation):
+                    source = Path(directory).resolve() / f"Shelf é {orientation}.tiff"
+                    image = Image.fromarray(rgb)
+                    exif = Image.Exif()
+                    exif[274] = orientation
+                    image.save(source, exif=exif)
+                    image.getexif()[274] = orientation
+                    expected = cv2.cvtColor(np.asarray(ImageOps.exif_transpose(image)), cv2.COLOR_RGB2BGR)
+
+                    with prepare_input_image(source) as prepared:
+                        pixels = read_input_image(prepared)
+                        self.assertEqual((prepared.width, prepared.height), (expected.shape[1], expected.shape[0]))
+                        np.testing.assert_array_equal(pixels, expected)
+                        with sanitized_detection_image(prepared) as model_image:
+                            np.testing.assert_array_equal(model_payload_pixels(model_image), expected)
+                        region = DetectedRegion(BoundingBox((0, 0), (prepared.width, prepared.height)), 1.0)
+                        crop = OpenCVBoxCropper().create_boxes(prepared, [region], source.parent / "review")[0]
+                        np.testing.assert_array_equal(model_payload_pixels(crop.image_file_path), expected)
+                        np.testing.assert_array_equal(read_image(crop.image_file_path), expected)
+
+    def test_opaque_sixteen_bit_png_and_tiff_keep_the_existing_eight_bit_values(self):
+        rgb = np.array([[[0, 16384, 32768], [65535, 49152, 256]]], dtype=np.uint16)
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("png", "tiff"):
+                with self.subTest(extension=extension):
+                    source = Path(directory).resolve() / f"shelf.{extension}"
+                    self.assertTrue(cv2.imwrite(str(source), rgb))
+                    expected = cv2.imread(str(source), cv2.IMREAD_COLOR)
+                    with prepare_input_image(source) as prepared:
+                        self.assertIsNone(prepared.processing_file_path)
+                        self.assertEqual(read_input_image(prepared).dtype, np.uint8)
+                        np.testing.assert_array_equal(read_input_image(prepared), expected)
+
+    def test_transparent_png_and_webp_share_oriented_metadata_free_model_and_crop_pixels(self):
+        rgba = np.zeros((20, 40, 4), dtype=np.uint8)
+        rgba[2:8, 3:12] = (0, 0, 0, 255)
+        rgba[12:18, 25:37] = (240, 40, 20, 128)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for extension in ("png", "webp"):
+                with self.subTest(extension=extension):
+                    source = root / f"Shelf é.{extension}"
+                    exif = Image.Exif()
+                    exif[274] = 6
+                    exif[270] = "synthetic private metadata"
+                    image = Image.fromarray(rgba)
+                    image.save(source, exif=exif, lossless=True)
+                    oriented = Image.fromarray(rgba).transpose(Image.Transpose.ROTATE_270)
+                    white = Image.new("RGBA", oriented.size, "white")
+                    white.alpha_composite(oriented)
+                    expected = cv2.cvtColor(np.asarray(white.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+                    with prepare_input_image(source) as prepared:
+                        normalized = prepared.processing_file_path
+                        self.assertIsNotNone(normalized)
+                        self.assertEqual(prepared.file_path, source)
+                        self.assertEqual((prepared.width, prepared.height), (20, 40))
+                        np.testing.assert_array_equal(read_input_image(prepared), expected)
+                        if sys.platform != "win32":
+                            self.assertEqual(normalized.stat().st_mode & 0o777, 0o600)
+                            self.assertEqual(normalized.parent.stat().st_mode & 0o777, 0o700)
+                        with Image.open(normalized) as clean:
+                            self.assertFalse(clean.getexif())
+                            self.assertNotIn("exif", clean.info)
+                        with sanitized_detection_image(prepared) as model_image:
+                            np.testing.assert_array_equal(read_image(model_image), expected)
+                            np.testing.assert_array_equal(model_payload_pixels(model_image), expected)
+                        region = DetectedRegion(BoundingBox((0, 0), (20, 40)), 1.0)
+                        crop = OpenCVBoxCropper().create_boxes(prepared, [region], root / "review")[0]
+                        np.testing.assert_array_equal(read_image(crop.image_file_path), expected)
+                        np.testing.assert_array_equal(model_payload_pixels(crop.image_file_path), expected)
+                    self.assertFalse(normalized.exists())
+
+    def test_palette_transparency_uses_white_and_discards_private_png_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory).resolve() / "palette.png"
+            image = Image.new("P", (8, 6), 0)
+            image.putpalette([0, 0, 0, 240, 20, 20] + [0, 0, 0] * 254)
+            image.putpixel((4, 3), 1)
+            metadata = PngInfo()
+            metadata.add_text("private", "synthetic metadata")
+            image.save(source, transparency=0, pnginfo=metadata)
+
+            with prepare_input_image(source) as prepared:
+                normalized = prepared.processing_file_path
+                self.assertIsNotNone(normalized)
+                pixels = read_input_image(prepared)
+                self.assertEqual(pixels[0, 0].tolist(), [255, 255, 255])
+                self.assertEqual(pixels[3, 4].tolist(), [20, 20, 240])
+                with Image.open(normalized) as clean:
+                    self.assertNotIn("private", clean.info)
+            self.assertFalse(normalized.exists())
+
+    def test_transparent_input_working_copy_is_removed_after_processing_or_write_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory).resolve() / "transparent.png"
+            Image.new("RGBA", (8, 6), (0, 0, 0, 0)).save(source)
+            with self.assertRaisesRegex(RuntimeError, "synthetic processing failure"):
+                with prepare_input_image(source) as prepared:
+                    normalized = prepared.processing_file_path
+                    self.assertIsNotNone(normalized)
+                    raise RuntimeError("synthetic processing failure")
+            self.assertFalse(normalized.parent.exists())
+
+            attempted = []
+
+            def failed_write(path, pixels):
+                attempted.append(path)
+                return False
+
+            with patch("uma_bct.imaging.write_png", side_effect=failed_write):
+                with self.assertRaisesRegex(OSError, "Could not create normalized image"):
+                    with prepare_input_image(source):
+                        self.fail("Failed normalization must not enter the pipeline")
+            self.assertEqual(len(attempted), 1)
+            self.assertFalse(attempted[0].parent.exists())
 
     def test_corrupt_supported_image_has_a_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -44,9 +44,9 @@ dist/
 **/*.[Tt][Ii][Ff][Ff]
 **/*.[Ww][Ee][Bb][Pp]
 
-# Generated catalogues and review artefacts at the repository root.
-/*.csv
-/*.xlsx
+# Private catalogues also use custom folders and mixed-case extensions.
+**/*.[Cc][Ss][Vv]
+**/*.[Xx][Ll][Ss][Xx]
 *.run.json
 **/Run Progress.json
 **/Run Details.json
@@ -64,6 +64,10 @@ dist/
 **/outputs/
 /Results/
 **/Results/
+
+# Local credentials must not enter Git, including nested environment files.
+**/.[Ee][Nn][Vv]
+**/.[Ee][Nn][Vv].*
 
 # Local model storage and weights.
 /.ollama/

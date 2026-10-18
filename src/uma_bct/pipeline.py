@@ -16,7 +16,14 @@ from .adapters.empty_date_detector import EmptyDateDetector
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
 from .domain import Box, BoxResult, BoxTranscription, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
-from .ports import BoxCropper, BoxDetector, DateDetector, FullImageTextTranscriber, TextTranscriber
+from .ports import (
+    BoxCropper,
+    BoxDetector,
+    DateDetector,
+    FullImageTextTranscriber,
+    TextTranscriber,
+    extract_dates_with_review,
+)
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]
@@ -193,12 +200,13 @@ class BoxTranscriptionPipeline:
         updated = []
         for reading in readings:
             try:
-                dates = self.date_detector.extract_dates(reading.get_handwritten_text())
+                outcome = extract_dates_with_review(self.date_detector, reading.get_date_text())
             except Exception as error:
                 warnings.append(f"{label} failed to extract dates: {warning_text(error)}")
                 updated.append(replace(reading, date_extraction_failed=True))
             else:
-                updated.append(replace(reading, dates=dates, date_extraction_failed=False))
+                updated.append(replace(reading, dates=outcome.dates, date_needs_review=outcome.needs_review,
+                                       date_extraction_failed=False))
         return updated
 
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:

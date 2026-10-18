@@ -586,6 +586,7 @@ class ClientDeliveryTest(unittest.TestCase):
                 setup_arguments = (root / "setup-arguments.txt").read_text(encoding="utf-8").splitlines()
                 self.assertEqual(setup_arguments[0], "setup")
                 self.assertIn("--model=" + model, setup_arguments)
+                self.assertFalse((root / ".uma-bct-runtime/setup.json").exists())
 
     def test_explicit_hosted_mode_requires_a_key_before_any_bootstrap(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"
@@ -606,6 +607,104 @@ class ClientDeliveryTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("--hosted", result.stdout)
                 self.assertEqual(list(root.iterdir()), [launcher])
+
+    def assert_launcher_preserves_setup_link(self, link_type: str) -> None:
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, events):
+            (root / "inputs/shelf.jpg").unlink()
+            environment.update(
+                UMA_BCT_API_KEY="synthetic-key",
+                UMA_BCT_API_MODEL="openai/synthetic-model",
+                UMA_BCT_FAKE_APP_STDOUT='{"synthetic_setup":true}',
+            )
+            sentinel = root / "reviewer-note.txt"
+            sentinel.write_bytes(b"keep this synthetic note")
+            setup_path = root / ".uma-bct-runtime/setup.json"
+            try:
+                if link_type == "hardlink":
+                    os.link(sentinel, setup_path)
+                else:
+                    setup_path.symlink_to(sentinel)
+            except OSError as error:
+                self.skipTest(str(error))
+
+            result = run_launcher(launcher, environment, arguments=("--json",))
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("No supported photos", result.stderr)
+            self.assertTrue((root / "setup-arguments.txt").is_file())
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(sentinel.read_bytes(), b"keep this synthetic note")
+            self.assertFalse(events.exists())
+
+    def test_launcher_setup_does_not_write_through_a_hardlink(self):
+        self.assert_launcher_preserves_setup_link("hardlink")
+
+    def test_launcher_setup_does_not_write_through_a_symlink(self):
+        self.assert_launcher_preserves_setup_link("symlink")
+
+    def test_hosted_launcher_preserves_processing_json_and_exit_status(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        for exit_code in (0, 1, 2):
+            with self.subTest(exit_code=exit_code), launcher_fixture(prepare, *fixture_args) as fixture:
+                root, launcher, environment, events = fixture
+                environment.update(
+                    UMA_BCT_API_KEY="synthetic-key",
+                    UMA_BCT_API_MODEL="openai/synthetic-model",
+                    UMA_BCT_FAKE_APP_STDOUT='{"synthetic_processing":true}',
+                    UMA_BCT_FAKE_APP_EXIT=str(exit_code),
+                )
+
+                result = run_launcher(launcher, environment, arguments=("--json",))
+
+                self.assertEqual(result.returncode, exit_code, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {"synthetic_processing": True})
+                self.assertFalse((root / ".uma-bct-runtime/setup.json").exists())
+                self.assertFalse(events.exists())
+
+    def assert_launcher_preserves_log_entry(self, entry_type: str) -> None:
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        names = ("ollama.log", "ollama.stdout.log") if os.name == "nt" else ("ollama.log",)
+        for name in names:
+            with self.subTest(log=name), launcher_fixture(prepare, *fixture_args) as fixture:
+                root, launcher, environment, events = fixture
+                environment.pop("UMA_BCT_API_KEY", None)
+                environment.pop("UMA_BCT_API_MODEL", None)
+                sentinel = root / "reviewer-note.txt"
+                sentinel.write_bytes(b"keep this synthetic note")
+                log_path = root / ".uma-bct-runtime" / name
+                try:
+                    if entry_type == "directory":
+                        log_path.mkdir()
+                    elif entry_type == "hardlink":
+                        os.link(sentinel, log_path)
+                    else:
+                        log_path.symlink_to(sentinel)
+                except OSError as error:
+                    self.skipTest(str(error))
+
+                result = run_launcher(launcher, environment, arguments=("--json",))
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("runtime log", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(sentinel.read_bytes(), b"keep this synthetic note")
+                self.assertFalse((root / "app-host.txt").exists())
+                self.assertFalse(events.exists())
+                if entry_type == "directory":
+                    self.assertTrue(log_path.is_dir())
+
+    def test_launcher_rejects_hardlinked_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("hardlink")
+
+    def test_launcher_rejects_symlinked_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("symlink")
+
+    def test_launcher_rejects_nonregular_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("directory")
 
     def test_launchers_reject_folder_overrides_and_direct_commands_before_bootstrap(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"

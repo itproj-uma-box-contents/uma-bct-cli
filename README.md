@@ -103,6 +103,10 @@ Animated or multi-page inputs use the first frame or page unless noted below.
 | `.json` | Run details, unfinished progress, and benchmark evidence. Keep batch metadata intact. |
 | `.zip` | The client delivery bundle; unzip it before running. |
 
+TIFF orientation is applied before detection and cropping. Transparent PNG/WebP
+inputs use the same temporary white background as other transparent image formats;
+the source photo is preserved and the temporary copy is removed after processing.
+
 ## Run the tool
 
 1. Download and unzip `archive-box-transcription.zip` into a private folder that
@@ -245,6 +249,13 @@ the selected local or hosted model. When no dates are found, `Dates` is `No Date
 with `None` for the bounds. Failed extraction keeps the transcription, adds
 `Date extraction failed`, and makes the run partial. Check dates against the crop.
 
+Short years without a supported full-year anchor, such as `12 May 50` or `05/90`,
+are omitted from the date columns and flagged `Ambiguous date`. Clear dates on the
+same label are kept. A range such as `2021-23` retains its explicit century. When
+no clear dates remain, `Dates` is `No Dates` and its bounds are `None`. Ambiguity is
+a review flag; it does not by itself make processing partial. New readings use this
+rule; completed catalogues and cached readings are preserved.
+
 Rows sort case-insensitively by complete `Unit Type`, then numeric `Unit Number`;
 incomplete rows stay stable at the end. Separate physical boxes retain separate rows,
 even with matching identities; those matches receive `Potential Duplicate`.
@@ -325,6 +336,10 @@ local and ignored; uploading private photos or derived content requires written 
 approval. Keep credentials out of logs, manifests, command arguments, shell-history
 lines, and committed files. Do not enable LiteLLM debug dumps for private photos or
 keys.
+
+Git and Docker exclusions cover CSV/Excel outputs in custom folders and mixed-case
+extensions, plus local `.env` files. Release checks also reject environment files.
+Launchers discard the unused setup JSON and refuse linked or nonregular model logs.
 
 Only numeric loopback Ollama endpoints are accepted by default; direct CLI use
 defaults to `http://127.0.0.1:11434`. Remote Ollama needs written approval, HTTPS, and
@@ -610,9 +625,15 @@ Details.json`. In forced direct runs, a manifest failure after CSV replacement
 restores the prior CSV atomically or removes the new one, then attempts a uniquely
 named failed-run manifest. Failed rollback gives partial status and a recovery path.
 
+Model replies must be complete and have unique JSON fields. Invalid or unfinished
+replies use the existing bounded retry/recovery paths; successful boxes from other
+crops remain available. AI date claims are checked against their quoted text, but
+these checks do not replace human review of the photo and catalogue.
+
 Staged catalogues record their mapping version. Older pending files can replay
 historical identity rules only when the complete regenerated file hash matches;
-their original bytes are preserved. New batches use the current identity rules.
+their original bytes are preserved. A file changed after validation is retained for
+review and cannot be published. New batches use the current identity rules.
 
 `verification.py` owns mode choice, bounded readings, and reconciliation;
 `BoxResult.verification` stores optional evidence. First-pass commits are separate
@@ -643,6 +664,10 @@ Docker defaults to CSV. Inputs mount read-only, outputs use the host user, and O
 has no exposed host port. The `hosted` profile has no Ollama dependency; use `docker
 compose --profile hosted run --rm hosted` only with the environment key/model and
 hosted approval described above. Free-tier checks use synthetic photos.
+
+With Docker running, `python3 scripts/check_docker_context.py` checks build-context
+exclusions using an isolated set of invented files. It never copies checkout photos
+or credentials. CI runs this check on both Linux architectures before building the app.
 
 ## Build the client deliverables
 

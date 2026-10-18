@@ -105,6 +105,20 @@ class QwenAdapterTest(unittest.TestCase):
                 parsed = json_from_text(raw)
                 self.assertEqual(validate_transcription_result(parsed), expected)
 
+    def test_json_rejects_duplicate_fields_without_echoing_private_names(self):
+        private_name = "private archive field"
+        replies = (
+            '{"boxes":[{"unit":"4"}],"boxes":[{"unit":"5"}]}',
+            '{"boxes":[{"unit":"4","unit":"5"}]}',
+            '{"dates":[{"start_date":{"year":1950,"year":1951}}]}',
+            json.dumps({private_name: 1})[:-1] + f',"{private_name}":2}}',
+        )
+        for raw in replies:
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "duplicate") as caught:
+                    json_from_text(raw)
+                self.assertNotIn(private_name, str(caught.exception))
+
     def test_detector_accepts_complete_equivalent_response_envelopes(self):
         proposal = {"bbox_2d": [100, 200, 500, 800]}
         for response in (proposal, [proposal], {"boxes": [proposal]}):
@@ -381,6 +395,7 @@ class OllamaClientTest(unittest.TestCase):
         if content_logprobs is not None:
             chunk["logprobs"] = content_logprobs
         chunks.append(chunk)
+        chunks.append({"done": True, "done_reason": "stop"})
 
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
@@ -411,6 +426,7 @@ class OllamaClientTest(unittest.TestCase):
 
     def test_streamed_response_does_not_print_dots(self):
         chunks = [{"message": {"content": '{"boxes": []}'}}] + [{"message": {"content": ""}}] * 60
+        chunks.append({"done": True, "done_reason": "stop"})
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             content, _thinking, _content_logprobs, _thinking_logprobs = ollama_client.collect_stream_text(chunks)
@@ -418,7 +434,7 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
 
     def test_query_collects_streamed_json_with_safe_client_settings(self):
-        chunks = [{"message": {"content": '{"boxes":'}}, {"message": {"content": " []}"}}]
+        chunks = [{"message": {"content": '{"boxes":'}}, {"message": {"content": " []}"}, "done": True}]
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
         with patch.dict(sys.modules, {"ollama": SimpleNamespace(Client=factory)}), patch.dict("os.environ", {}, clear=True):
@@ -433,6 +449,7 @@ class OllamaClientTest(unittest.TestCase):
         chunks = [
             {"message": {"content": '{"unit"'}, "logprobs": [{"token": '{"unit"', "logprob": -12.0}]},
             {"message": {"content": ':"4"}'}, "logprobs": [{"token": ':"4"}', "logprob": -0.01}]},
+            {"done": True, "done_reason": "stop"},
         ]
         client = SimpleNamespace(chat=Mock(return_value=iter(chunks)), close=Mock())
         factory = Mock(return_value=client)
@@ -441,6 +458,34 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(result.value, {"unit": "4"})
         self.assertEqual(result.token_logprobs, (('{"unit"', -12.0), (':"4"}', -0.01)))
         self.assertEqual(client.chat.call_args.kwargs["logprobs"], True)
+
+    def test_stream_rejects_missing_terminal_chunk_and_explicit_truncation(self):
+        content = {"message": {"content": '{"boxes": []}'}, "done": False}
+        tails = ([], [{"done": False}], [{"done": 1}],
+                 [{"done": True, "done_reason": "length"}],
+                 [{"done": True, "done_reason": "truncated"}],
+                 [{"done": True}, {"message": {"content": ""}}])
+        for tail in tails:
+            with self.subTest(tail=tail), self.assertRaisesRegex(ValueError, "finish|truncat"):
+                ollama_client.collect_stream_text([content, *tail])
+
+    def test_query_uses_valid_thinking_when_content_has_duplicate_fields(self):
+        expected = record(unit="8", typed=["1960.0009", "Unit 8"])
+        result = self.query_response(
+            '{"boxes":[],"boxes":[]}', thinking=json.dumps({"boxes": [expected]}),
+            validator=validate_transcription_result,
+        )
+        self.assertEqual(validate_transcription_result(result.value), [expected])
+
+    def test_query_uses_thinking_when_content_date_contradicts_its_source(self):
+        expected = {"dates": [{"raw_text": "1950", "starting_index": 0,
+                               "start_date": {"year": 1950}, "end_date": {}}]}
+        wrong = {"dates": [expected["dates"][0] | {"start_date": {"year": 2049}}]}
+        result = self.query_response(
+            json.dumps(wrong), thinking=json.dumps(expected),
+            validator=lambda value: parse_qwen_result(value, "1950"),
+        )
+        self.assertEqual(parse_qwen_result(result.value, "1950"), (Date(year=1950),))
 
     def test_query_returns_thinking_logprobs_when_thinking_wins(self):
         expected = record(unit="8", typed=["1960.0009", "Unit 8"])
@@ -623,7 +668,7 @@ class RegexDateDetectorTest(unittest.TestCase):
 
     def test_fill_short_year(self):
         cases = (
-            ("12 May 25", Date(day=12, month=5, year=2025)),
+            ("12 May 25", None),
             ("12th May 2025", Date(day=12, month=5, year=2025)),
             ("may 21", None),
             ("21", None),

@@ -474,24 +474,23 @@ function Quote-NativeArgument([string] $Value) {
     return '"' + $EscapedEnding + '"'
 }
 
-function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
+function Invoke-OwnedApp([string] $Arguments, [bool] $DiscardOutput = $false) {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new()
     $StartInfo.FileName = $AppCli
     $StartInfo.Arguments = $Arguments
     $StartInfo.UseShellExecute = $false
-    if (-not [string]::IsNullOrEmpty($OutputPath)) {
+    if ($DiscardOutput) {
         $StartInfo.RedirectStandardOutput = $true
     }
     $script:AppProcess = [Diagnostics.Process]::Start($StartInfo)
     try {
         if ($StartInfo.RedirectStandardOutput) {
-            $Output = $script:AppProcess.StandardOutput.ReadToEnd()
+            # Setup reports progress and failures on stderr. Drain its unused
+            # JSON without creating a runtime file or polluting final stdout.
+            [void] $script:AppProcess.StandardOutput.ReadToEnd()
         }
         $script:AppProcess.WaitForExit()
         $Status = $script:AppProcess.ExitCode
-        if ($StartInfo.RedirectStandardOutput) {
-            [IO.File]::WriteAllText($OutputPath, $Output, [Text.UTF8Encoding]::new($false))
-        }
         if ($Status -eq -1073741510) {
             return 130
         }
@@ -503,12 +502,16 @@ function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
 
 function Start-OwnedOllama([string] $Executable) {
     foreach ($LogPath in @($OllamaLog, $OllamaOutputLog)) {
-        if (Test-Path -LiteralPath $LogPath) {
-            $LogItem = Get-Item -LiteralPath $LogPath -Force
-            if ($LogItem.PSIsContainer -or
-                ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
-            }
+        try {
+            $LogItem = Get-Item -LiteralPath $LogPath -Force -ErrorAction Stop
+        } catch [Management.Automation.ItemNotFoundException] {
+            continue
+        }
+        $LinkType = $LogItem.PSObject.Properties["LinkType"]
+        if ($LogItem -isnot [IO.FileInfo] -or
+            ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $null -eq $LinkType -or -not [string]::IsNullOrEmpty("$($LinkType.Value)")) {
+            throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
         }
     }
     # Use a fresh numeric loopback port and confirm the owned process remains
@@ -852,7 +855,6 @@ try {
             } else {
                 [Console]::Error.WriteLine("Checking the application and model. The first model download is large...")
             }
-            $SetupLog = Join-Path $Runtime "setup.json"
             $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
                 " --results-directory " + (Quote-NativeArgument $Outputs)
             if ($HostedMode) { $SetupArguments += " --hosted" }
@@ -860,7 +862,7 @@ try {
             if ($null -ne $SetupModel) {
                 $SetupArguments += " " + (Quote-NativeArgument "--model=$SetupModel")
             }
-            $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
+            $SetupStatus = Invoke-OwnedApp $SetupArguments $true
             if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
             }

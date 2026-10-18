@@ -102,6 +102,17 @@ def invalid_json_message(error: json.JSONDecodeError | RecursionError) -> str:
     return f"The model response contained invalid or incomplete JSON{location}."
 
 
+def unique_json_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate fields instead of silently discarding earlier evidence."""
+
+    value: dict[str, Any] = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError("The model response contained duplicate JSON fields.")
+        value[name] = item
+    return value
+
+
 def json_from_text(raw: str) -> Any:
     """Accept a complete model reply without silently skipping broken JSON fragments."""
 
@@ -123,7 +134,7 @@ def json_from_text(raw: str) -> Any:
     if starts_with_simple_json(prefix):
         raise ValueError("The model response contained an unrelated JSON value.")
 
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(object_pairs_hook=unique_json_fields)
     try:
         first, end = decoder.raw_decode(text, start)
     except (json.JSONDecodeError, RecursionError) as error:
@@ -192,7 +203,12 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
     content_logprobs: list[tuple[str, float]] = []
     thinking_logprobs: list[tuple[str, float]] = []
     characters = 0
+    complete = False
     for chunk in stream:
+        # Valid-looking JSON alone cannot prove an interrupted stream finished.
+        complete = response_field(chunk, "done") is True
+        if complete and response_field(chunk, "done_reason") in ("length", "truncated"):
+            raise ValueError("The model response was truncated before completion.")
         chunk_content = message_text(chunk, "content")
         chunk_thinking = message_text(chunk, "thinking")
         characters += len(chunk_content) + len(chunk_thinking)
@@ -205,6 +221,8 @@ def collect_stream_text(stream: Any) -> tuple[str, str, tuple[tuple[str, float],
             content_logprobs.extend(chunk_token_logprobs(chunk))
         elif chunk_thinking:
             thinking_logprobs.extend(chunk_token_logprobs(chunk))
+    if not complete:
+        raise ValueError("The model did not finish its response.")
     # Partial or mismatched metadata must not score a different text stream.
     # The transcription itself remains usable with unavailable confidence.
     content_text, thinking_text = "".join(content), "".join(thinking)
