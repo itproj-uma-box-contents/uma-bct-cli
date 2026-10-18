@@ -57,30 +57,50 @@ $SupportedExtensions = @(
 function Show-LauncherHelp {
     [Console]::WriteLine(@'
 UMA BCT ZIP launcher
-Usage: .\run-uma-bct.ps1 [processing options]
+Usage: & '.\Run UMA BCT.cmd' [processing options]
 
 Photos: Add Photos Here   Results: Results
 Existing inputs/outputs folders are kept when they already contain data.
 
-  --format, --file-type csv|excel   Save CSV (.csv) or Excel (.xlsx); default CSV
-  --reprocess                     Create a new batch; keep previous results
-  --verification ask|always|never  Select the second-reading accuracy check
-  --hosted                        Use the configured hosted model
-  -d, --detector qwen|opencv       Select the box detector
-  -t, --transcriber qwen          Select the text transcriber
-  -m, --model NAME                Select the local model
-  --ai-dates                      Use the selected model to extract dates
-  -c, --min-transcription-confidence INTEGER  Set the review threshold (0-100)
-  --min-confidence, --min-detector-confidence FLOAT  Set OpenCV threshold (0-1)
-  --request-timeout SECONDS        Set the model request timeout
-  --no-missing-box, --no-missing-box-detection  Disable missing-box suggestions
-  --json                          Write one JSON summary; never prompt
-  -h, --help                      Show this help without setting up the runtime
+  --format, --file-type csv|excel   Save CSV or Excel .xlsx; default CSV
+  --reprocess                     New batch; keep saved results
+  --verification never|always|ask
+      Blind second reading (default: never); ask needs a terminal
+  --hosted                        Use UMA_BCT_API_MODEL / UMA_BCT_API_KEY
+  -d, --detector qwen|opencv
+      Find boxes (default: qwen); OpenCV is experimental
+  -t, --transcriber qwen          Use the selected local or hosted model
+  -m, --model MODEL               Local model (default: pinned Qwen3-VL)
+      Hosted model: UMA_BCT_API_MODEL
+  --ai-dates
+      Extract dates from transcribed handwriting with the selected model
+      Adds text requests; omit for built-in date matching
+  -c, --min-transcription-confidence PERCENT
+      Flag scores below PERCENT; keep rows (0-100; default 50)
+  --min-confidence, --min-detector-confidence SCORE
+      Filter OpenCV detections, including fallback (0-1; default 0.60)
+  --request-timeout SECONDS
+      Positive timeout per processing request; retries can add time
+      Default: UMA_BCT_OLLAMA_TIMEOUT_SECONDS or 600 seconds
+  --no-missing-box, --no-missing-box-detection
+      Omit suggested rows for gaps in unit numbers
+  --json                          JSON run summary; use --format for CSV/Excel
+      Progress goes to stderr; never prompt
+  --human                         Readable run summary (default)
+      Cannot combine with --json
+  -h, --help                      Show help without setting up the runtime
   --version                       Show the bundled application version
 
 Interactive launches open the photo folder and wait for Enter every time.
-Completed batches stay unchanged; use --reprocess to apply a different format.
+Saved batches keep their original results and settings.
+Use --reprocess to apply changes in a new batch.
+An unfinished batch resumes first and needs its original options.
 Use direct uma-bct for custom paths, --force, or setup. See README.md for details.
+
+Examples:
+  & '.\Run UMA BCT.cmd' --format excel
+  & '.\Run UMA BCT.cmd' --ai-dates
+  & '.\Run UMA BCT.cmd' --format excel --reprocess
 '@)
 }
 
@@ -638,7 +658,10 @@ try {
             $Argument -cmatch '^-[iobf]' -or $Argument -ceq "setup") {
             throw "This ZIP launcher uses its managed photo and results folders. Use direct uma-bct for '$Argument'; see README.md."
         }
-        if ($Argument -ceq "--help" -or $Argument -ceq "-h") { $MetadataOption = "help" }
+        # Match argparse's short help clusters, such as -hh, before setup.
+        if ($Argument -ceq "--help" -or $Argument.StartsWith("-h", [StringComparison]::Ordinal)) {
+            $MetadataOption = "help"
+        }
         if ($Argument -ceq "--version" -and $MetadataOption -ne "help") { $MetadataOption = "version" }
         if ($Argument -ceq "--json") { $JsonOutput = $true }
         if ($Argument -ceq "--hosted") { $HostedRequested = $true }

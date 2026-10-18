@@ -6,6 +6,7 @@ verification, checkpoints, exports and exit codes use production code.
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import os
 import signal
@@ -28,7 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @contextmanager
-def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool = False):
+def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool = False,
+                    handwriting: str = "Review annotation"):
     counts = Counter()
     ready, release = threading.Event(), threading.Event()
 
@@ -62,8 +64,15 @@ def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool
             message = request["messages"][-1]
             prompt = message["content"]
             if not message.get("images"):
-                counts["preflight"] += 1
-                content = "ok"
+                if "dates" in request.get("format", {}).get("properties", {}):
+                    counts["dates"] += 1
+                    # Date extraction is a text request, separate from photo transcription.
+                    dates = ([{"raw_text": "1950", "starting_index": handwriting.index("1950"),
+                               "start_date": {"year": 1950}, "end_date": {}}] if "1950" in handwriting else [])
+                    content = json.dumps({"dates": dates})
+                else:
+                    counts["preflight"] += 1
+                    content = "ok"
             else:
                 assert base64.b64decode(message["images"][0]).startswith(b"\x89PNG")
                 properties = request["format"]["properties"]["boxes"]["items"]["properties"]
@@ -89,7 +98,7 @@ def scripted_ollama(*, added_photo: Path | None = None, block_verification: bool
                         unit = "4"
                     value = {"boxes": [{"position": "middle-left", "record_identifiers": ["1960.0009"],
                                          "unit": unit, "typed": ["1960.0009", f"Unit {unit}"],
-                                         "handwritten": ["Review annotation"], "auxiliary_annotations": []}]}
+                                         "handwritten": [handwriting], "auxiliary_annotations": []}]}
                 content = json.dumps(value)
             self.respond({"model": DEFAULT_MODEL, "message": {"role": "assistant", "content": content},
                           "done": True}, streaming=request.get("stream", False))
@@ -142,6 +151,29 @@ class CliIntegrationTest(unittest.TestCase):
             self.assertEqual(counts["first"], 1)
             self.assertEqual(counts["second"], 0)
             self.assertEqual(counts["third"], 0)
+
+    def test_ai_dates_adds_a_text_request_and_keeps_the_catalogue_columns(self):
+        for ai_dates in (False, True):
+            with self.subTest(ai_dates=ai_dates), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.prepare(root)
+                with scripted_ollama(handwriting="Filed 1950") as (endpoint, counts, _ready, _release):
+                    command = self.command(root, optional_features=False)
+                    if ai_dates:
+                        command.append("--ai-dates")
+                    result = subprocess.run(command, cwd=root, env=self.environment(endpoint),
+                                            capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary = json.loads(result.stdout)
+                with Path(summary["catalogue_output"]).open(newline="", encoding="utf-8") as source:
+                    row = next(csv.DictReader(source))
+                self.assertEqual(row["Dates"], "1950")
+                self.assertEqual(row["Earliest Date"], "1950")
+                self.assertEqual(row["Latest Date"], "1950")
+                self.assertEqual(counts["detection"], 1)
+                self.assertEqual(counts["first"], 1)
+                self.assertEqual(counts["second"], 0)
+                self.assertEqual(counts["dates"], int(ai_dates))
 
     def test_real_cli_defers_additions_and_checks_only_disputed_crops(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -507,6 +507,9 @@ class ClientDeliveryTest(unittest.TestCase):
         arguments = (
             "--format", "Excel", "--reprocess", "--verification", "never", "--json",
             "--model", 'a model with "quotes" and a trailing\\',
+            "--ai-dates", "--detector", "opencv", "--transcriber", "qwen",
+            "--min-transcription-confidence", "80", "--min-detector-confidence", "0.7",
+            "--request-timeout", "75", "--no-missing-box-detection",
         )
         prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
         fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
@@ -547,7 +550,10 @@ class ClientDeliveryTest(unittest.TestCase):
 
     def test_launcher_metadata_does_not_need_a_runtime_or_touch_the_workspace(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"
-        for option, expected in (("--help", "--format"), ("--version", "0.1.0")):
+        for option, expected in (
+            ("--help", "--format"), ("-h", "--format"), ("-hh", "--format"),
+            ("-hmcustom:8b", "--format"), ("--version", "0.1.0"),
+        ):
             with self.subTest(option=option), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 launcher = root / ("run-uma-bct" + suffix)

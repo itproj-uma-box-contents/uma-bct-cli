@@ -17,18 +17,18 @@ batch. Format names ignore case: `--format Excel` works too.
 | Option | What it does | Default / example |
 | --- | --- | --- |
 | `--format csv` / `--format excel` | Choose CSV or an Excel `.xlsx` workbook for a new batch. `--file-type` is the same option. | CSV; `--format excel` |
-| `--verification never\|always\|ask` | Skip verification, run a blind second reading, or ask after transcription. A third reading is used only for substantive differences. | `never`; `ask` prompts only interactively |
-| `--ai-dates` | Extract dates with the selected local or hosted model. | Local regex extraction |
-| `-c`, `--min-transcription-confidence INTEGER` | Flag scores below this percentage; keep the rows. Accepts 0–100. | `50`; `-c 80` |
-| `--min-detector-confidence FLOAT` | Filter OpenCV box proposals on a 0–1 scale. `--min-confidence` is the older alias. | `0.60` |
+| `--verification never\|always\|ask` | Skip the second reading, always compare a blind second reading, or ask after transcription. Substantive differences may need a third reading. | `never`; `ask` skips when JSON or a stream is redirected |
+| `--ai-dates` | Ask the selected local or hosted model for dates in transcribed handwriting; adds text requests. Pass `--ai-dates` without a value. | Built-in date matching; no extra date request |
+| `-c`, `--min-transcription-confidence PERCENT` | Flag scores below this percentage; keep all rows. Accepts 0–100. | `50`; `-c 80` |
+| `--min-detector-confidence SCORE` | Filter OpenCV box proposals, including fallback detection, on a 0–1 scale. `--min-confidence` is the older alias. | `0.60` |
 | `--no-missing-box-detection` | Disable suggested rows for internal unit-number gaps. `--no-missing-box` is an alias. | Suggestions enabled |
 | `-d`, `--detector qwen\|opencv` | Choose the primary detector; OpenCV is experimental. | `qwen` |
 | `-t`, `--transcriber qwen` | Select the shared vision transcriber, including when a hosted model is selected. | `qwen` is the only choice |
 | `-m`, `--model MODEL` | Select a local Ollama model. For hosted models, use `UMA_BCT_API_MODEL`. | Pinned `qwen3-vl:8b-instruct-q4_K_M` |
 | `--hosted` | Use the provider and key from `UMA_BCT_API_MODEL` and `UMA_BCT_API_KEY`. Direct CLI runs require this opt-in. | Local; ZIP launchers add it when a key is set |
-| `--request-timeout SECONDS` | Set a positive timeout for each model request. | `UMA_BCT_OLLAMA_TIMEOUT_SECONDS`, otherwise `600` |
-| `--reprocess` | Create a separate managed batch for already completed photos; preserve earlier results. Requires managed mode. | Reuse completed work |
-| `--json` | Write one JSON summary to stdout; send progress and warnings to stderr. Never prompt. | Readable report |
+| `--request-timeout SECONDS` | Set a positive timeout per model request, not for the whole job. Retries can add time. | `UMA_BCT_OLLAMA_TIMEOUT_SECONDS`, otherwise `600` |
+| `--reprocess` | Create a separate managed batch for processed photos; preserve earlier results. An unfinished batch still resumes first with its original options. | Reuse saved work |
+| `--json` | Write a JSON run summary to stdout; progress and warnings go to stderr. Use `--format` to choose the catalogue file type. Never prompt. | Readable report |
 | `--human` | Keep the readable report; accepted for older commands. Cannot be combined with `--json`. | Already the default |
 | `-h`, `--help` | Show help and exit. ZIP launchers do not download or start a runtime for this. | No processing |
 | `--version` | Show the version and exit without processing or ZIP runtime setup. | No processing |
@@ -52,6 +52,40 @@ There is no `--date-detector` option. For custom managed folders:
 uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
 uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
 ```
+
+### Choosing processing options
+
+Photos always use a vision model for transcription. Without `--ai-dates`, built-in
+text rules extract dates from the transcribed handwriting. Adding `--ai-dates` asks
+the same selected model to interpret that handwriting in a separate text request;
+it does not read the crop image again. It can take longer, and hosted requests may
+add charges. Both methods fill the same `Dates`, `Earliest Date`, and `Latest Date` columns.
+Both methods need human review. AI extraction failures are flagged; they do not
+silently switch back to built-in matching.
+
+`--verification always` separately compares a blind second transcription. It can be
+used with or without `--ai-dates`; verification readings may add date requests too.
+`-c 80` flags transcription scores below 80% and keeps the rows. By contrast,
+`--min-detector-confidence 0.7` filters OpenCV detections, including the fallback;
+it does not change the transcription review threshold.
+
+For a new ZIP batch on macOS/Linux:
+
+```bash
+sh run-uma-bct.sh --format excel
+sh run-uma-bct.sh --ai-dates
+sh run-uma-bct.sh --verification always
+```
+
+These are separate examples; options can be combined. In Windows PowerShell, use
+`& '.\Run UMA BCT.cmd'` followed by the same options. Flags such as `--ai-dates`,
+`--hosted`, `--reprocess`, and `--json` take no value; options such as `--format excel`
+and `--verification always` need a value.
+
+Saved batches keep their original results and processing settings. To apply new
+options to the same photos, add `--reprocess`, for example
+`sh run-uma-bct.sh --format excel --ai-dates --reprocess`. An unfinished batch still
+needs its original options, including its timeout; `--reprocess` does not bypass it.
 
 ### File extensions
 

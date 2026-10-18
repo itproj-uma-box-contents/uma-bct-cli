@@ -424,6 +424,26 @@ class ManagedBatchTest(unittest.TestCase):
             self.assertEqual(pipeline.calls, [])
             self.assertEqual((batch / PROGRESS_FILE_NAME).read_bytes(), original_progress)
 
+    def test_completed_options_explain_reprocess_and_preserve_saved_results(self):
+        with self.prepared_root("01.jpg") as root:
+            status, saved, stderr = self.run_managed_batch_and_capture_output(root, ManagedPipeline())
+            self.assertEqual(status, 0, stderr)
+            catalogue = Path(saved["catalogue_output"])
+            original = catalogue.read_bytes()
+            for options in (
+                {"date_detector": "qwen"}, {"verification": "always"},
+                {"min_transcription_confidence": 100}, {"detect_missing_boxes": False},
+            ):
+                with self.subTest(options=options):
+                    pipeline = ManagedPipeline()
+                    status, summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline, **options)
+                    self.assertEqual(status, 0, stderr)
+                    self.assertTrue(summary["already_complete"])
+                    self.assertEqual(pipeline.calls, [])
+                    self.assertEqual(catalogue.read_bytes(), original)
+                    self.assertIn("original processing settings", stderr)
+                    self.assertIn("--reprocess to apply new options", stderr)
+
     def test_ai_date_batch_requires_the_ai_switch_again_on_resume(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
             arguments = managed_arguments(root)

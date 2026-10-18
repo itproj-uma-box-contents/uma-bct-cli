@@ -2099,7 +2099,8 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             print(
                 "This photo set has saved outcomes in:\n"
                 + "\n".join(summary["batch_directories"]) + "\n"
-                "Use --reprocess to create another batch.",
+                "Saved results keep their original processing settings. "
+                "Use --reprocess to apply new options in a separate batch.",
                 file=sys.stderr,
             )
             for catalogue in summary["catalogue_outputs"]:
