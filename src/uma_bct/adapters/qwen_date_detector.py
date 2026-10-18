@@ -109,10 +109,11 @@ def source_year_matches(year: int, number: str, first_year: int | None, *, full_
         return True
     if not full_year_present and len(number) == 2 and year % 100 == int(number):
         return True
-    if first_year is None or len(number) >= len(str(first_year)):
+    if first_year is None or len(number) >= 4:
         return False
-    prefix = str(first_year)
-    return int(prefix[-len(number):]) < int(number) and str(year) == prefix[:-len(number)] + number
+    # Preserve the printed width: an explicit 0050 anchor supplies 00 to 51.
+    prefix = f"{first_year:04d}"
+    return int(prefix[-len(number):]) < int(number) and year == int(prefix[:-len(number)] + number)
 
 
 def source_component_tokens(date: Date, numbers: tuple[str, ...], months: tuple[int, ...],
@@ -225,7 +226,8 @@ def anchored_end_span(raw_text: str, position: int, start: Date, end: Date,
 
     if start.year is None or end.year is None:
         return None
-    anchor = re.search(rf"(?<!\d){start.year:04d}(?!\d)", raw_text)
+    prefix = f"{start.year:04d}"
+    anchor = re.search(rf"(?<!\d){prefix}(?!\d)", raw_text)
     if anchor is None:
         return None
     for left, right in sorted(ambiguous_spans):
@@ -233,7 +235,7 @@ def anchored_end_span(raw_text: str, position: int, start: Date, end: Date,
             continue
         evidence = spaced_month_dates(raw_text[left - position:right - position])
         numbers = [match.group(1) for match in SOURCE_NUMBER.finditer(evidence)]
-        if numbers and len(numbers[-1]) < 4 and fill_prefix(str(start.year), numbers[-1]) == str(end.year):
+        if numbers and len(numbers[-1]) < 4 and int(fill_prefix(prefix, numbers[-1])) == end.year:
             return left, right
     return None
 

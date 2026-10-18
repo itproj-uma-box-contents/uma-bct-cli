@@ -189,6 +189,28 @@ class DateValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.extract([model_date(raw_text=text, start_date={"month": 13, "year": 1950})], text)
 
+    def test_early_year_ranges_keep_their_explicit_four_digit_anchor(self):
+        cases = (
+            ("0050-51", {"year": 50}, {"year": 51}),
+            ("0001-05", {"year": 1}, {"year": 5}),
+            ("May0050-Jun51", {"month": 5, "year": 50}, {"month": 6, "year": 51}),
+            ("May0001-Jun05", {"month": 5, "year": 1}, {"month": 6, "year": 5}),
+        )
+        for text, start, end in cases:
+            with self.subTest(text=text):
+                client = Mock()
+                client.query.return_value = ModelResponse(value={"dates": [
+                    model_date(raw_text=text, start_date=start, end_date=end),
+                ]})
+                outcome = QwenDateDetector(client).extract_dates_with_review(text)
+                self.assertEqual(outcome.dates, (DateRange(Date(**start), Date(**end)),))
+                self.assertFalse(outcome.needs_review)
+                client.query.assert_called_once()
+
+        # A printed full-year anchor does not authorize a different suffix.
+        with self.assertRaises(ValueError):
+            self.extract([model_date(raw_text="0050-52", start_date={"year": 50}, end_date={"year": 51})], "0050-52")
+
     def test_ai_anchors_only_the_short_range_end_and_keeps_other_ambiguity(self):
         for text, start, end in (
             ("May 1950-Jun 51", {"month": 5, "year": 1950}, {"month": 6, "year": 1951}),
