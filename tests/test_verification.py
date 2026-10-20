@@ -202,11 +202,37 @@ class VerificationTest(unittest.TestCase):
         self.assertEqual(audit["third"][0]["dates"], audit["second"][0]["dates"])
         self.assertTrue(saved)
 
+    def test_accepted_handwriting_correction_carries_date_review_without_partial(self):
+        first = replace(self.first, handwritten_lines=("Minutes 1951",), dates=(Date(year=1951),))
+        changed = replace(first, handwritten_lines=("Minutes 12 May 50; filed 1952",), dates=())
+        transcriber = Mock()
+        transcriber.verify.return_value = [changed]
+        transcriber.resolve_discrepancy.return_value = [changed]
+        result = verify_image(make_result(BoxResult(self.box, first)), transcriber, on_stage=lambda _: None,
+                              date_detector=RegexDateDetector())
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.records[0].transcription.dates, (Date(year=1952),))
+        self.assertTrue(result.records[0].transcription.date_needs_review)
+        self.assertIn("Ambiguous date", catalogue_records([result])[0]["Review Flags"])
+        self.assertNotIn("error", result.records[0].verification)
+
+    def test_cached_dates_remain_unchanged_when_agreement_adds_a_review_flag(self):
+        self.first = replace(self.first, handwritten_lines=("12 May 50",), dates=(Date(day=12, month=5, year=50),))
+        reviewed = replace(self.first, dates=(), date_needs_review=True)
+        cached = self.cached_result(reviewed)
+        factory = Mock(side_effect=AssertionError("must not load"))
+        result = verify_image(cached, None, on_stage=lambda _: None, get_transcriber=factory)
+        factory.assert_not_called()
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.records[0].transcription.dates, self.first.dates)
+        self.assertTrue(result.records[0].transcription.date_needs_review)
+        self.assertFalse(result.records[0].verification["original"][0]["date_needs_review"])
+
     def test_verification_date_request_failure_keeps_first_reading(self):
         first = replace(self.first, handwritten_lines=("Minutes 1950",), dates=(Date(year=1950),))
         transcriber = Mock()
         transcriber.verify.return_value = [first]
-        detector = Mock()
+        detector = Mock(spec=["extract_dates"])
         detector.extract_dates.side_effect = RuntimeError("date request failed")
         result = verify_image(make_result(BoxResult(self.box, first)), transcriber, on_stage=lambda _: None,
                               date_detector=detector)
@@ -334,6 +360,18 @@ class VerificationTest(unittest.TestCase):
             stream.readline.assert_not_called()
             self.assertTrue(choose_verification(argparse.Namespace(json=True), "always", has_records=True))
 
+    def test_any_redirected_stream_disables_the_optional_prompt(self):
+        for redirected in ("stdin", "stdout", "stderr"):
+            with self.subTest(redirected=redirected), patch("sys.stdin") as stdin, \
+                 patch("sys.stdout") as stdout, patch("sys.stderr") as stderr:
+                streams = {"stdin": stdin, "stdout": stdout, "stderr": stderr}
+                stdin.readline.return_value = "y\n"
+                for stream in streams.values():
+                    stream.isatty.return_value = True
+                streams[redirected].isatty.return_value = False
+                self.assertFalse(choose_verification(argparse.Namespace(json=False), "ask", has_records=True))
+                stdin.readline.assert_not_called()
+
     def test_verification_requires_a_cli_option_even_with_saved_or_environment_preferences(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             args = argparse.Namespace(results_directory=Path(directory), verification=None, json=False)
@@ -347,8 +385,8 @@ class VerificationTest(unittest.TestCase):
                 args.verification = "never"
                 self.assertEqual(configured_mode(args), "never")
             args.verification = "ask"
-            with patch("sys.stdin") as stdin, patch("sys.stderr") as stderr:
-                stdin.isatty.return_value = stderr.isatty.return_value = True
+            with patch("sys.stdin") as stdin, patch("sys.stderr") as stderr, patch("sys.stdout") as stdout:
+                stdin.isatty.return_value = stderr.isatty.return_value = stdout.isatty.return_value = True
                 stdin.readline.return_value = "y\n"
                 self.assertTrue(choose_verification(args, "ask", has_records=True))
             self.assertEqual(settings.read_text(encoding="utf-8"), '{"verification": "always"}')

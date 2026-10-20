@@ -14,9 +14,16 @@ from typing import Literal
 
 from .adapters.empty_date_detector import EmptyDateDetector
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE
-from .domain import Box, BoxResult, DetectedRegion, InputImage
+from .domain import Box, BoxResult, BoxTranscription, DetectedRegion, InputImage
 from .imaging import create_full_image_box, prepare_input_image
-from .ports import BoxCropper, BoxDetector, DateDetector, FullImageTextTranscriber, TextTranscriber
+from .ports import (
+    BoxCropper,
+    BoxDetector,
+    DateDetector,
+    FullImageTextTranscriber,
+    TextTranscriber,
+    extract_dates_with_review,
+)
 from .transcriptions import ObservedBox, deduplicate, observations_from_response
 
 ImageStatus = Literal["complete", "partial", "failed"]
@@ -183,17 +190,24 @@ class BoxTranscriptionPipeline:
             warnings.append(f"{label} returned no boxes.")
             return []
 
-        #extect dates for each transcription
-        for i in range(len(returned)):
-            transcription = returned[i]
+        returned = self.extract_transcription_dates(returned, warnings, label)
+        return observations_from_response(box, returned, 0)
+
+    def extract_transcription_dates(self, readings: Sequence[BoxTranscription], warnings: list[str],
+                                    label: str) -> list[BoxTranscription]:
+        """Keep each usable reading even when its separate date request fails."""
+
+        updated = []
+        for reading in readings:
             try:
-                dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
+                outcome = extract_dates_with_review(self.date_detector, reading.get_date_text())
             except Exception as error:
                 warnings.append(f"{label} failed to extract dates: {warning_text(error)}")
-                continue
-            returned[i] = replace(transcription, dates=dates)
-
-        return observations_from_response(box, returned, 0)
+                updated.append(replace(reading, date_extraction_failed=True))
+            else:
+                updated.append(replace(reading, dates=outcome.dates, date_needs_review=outcome.needs_review,
+                                       date_extraction_failed=False))
+        return updated
 
     def transcribe_crops(self, boxes: Sequence[Box], warnings: list[str]) -> tuple[list[ObservedBox], int]:
         observations: list[ObservedBox] = []
@@ -211,16 +225,8 @@ class BoxTranscriptionPipeline:
                 unresolved += 1
                 continue
 
-            #extect dates for each transcription
-            for i in range(len(returned)):
-                transcription = returned[i]
-                try:
-                    dates = self.date_detector.extract_dates(transcription.get_handwritten_text())
-                except Exception as error:
-                    warnings.append(f"Crop {index} {box.bounding_box.as_xywh()} failed to extract dates: {warning_text(error)}")
-                    continue
-                returned[i] = replace(transcription, dates=dates)
-
+            label = f"Crop {index} {box.bounding_box.as_xywh()}"
+            returned = self.extract_transcription_dates(returned, warnings, label)
             observations.extend(observations_from_response(box, returned, index))
         return observations, unresolved
 
@@ -275,7 +281,8 @@ class BoxTranscriptionPipeline:
             status: ImageStatus
             if not consolidated:
                 status = "failed"
-            elif unresolved or localization.incomplete:
+            elif (unresolved or localization.incomplete
+                  or any(item.transcription.date_extraction_failed for item in observations)):
                 status = "partial"
             else:
                 status = "complete"

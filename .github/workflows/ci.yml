@@ -78,12 +78,14 @@ jobs:
           for artifact in dist/*.whl dist/*.tar.gz; do
             smoke="$(mktemp -d)"
             uv venv --python 3.12 "$smoke/.venv"
-            uv pip install --python "$smoke/.venv/bin/python" "$root/$artifact"
+            uv pip sync --require-hashes --python "$smoke/.venv/bin/python" "$root/client-constraints.txt"
+            uv pip install --no-deps --python "$smoke/.venv/bin/python" "$root/$artifact"
             (
               cd "$smoke"
               "$smoke/.venv/bin/uma-bct" --help
               "$smoke/.venv/bin/uma-bct" --version
               "$smoke/.venv/bin/python" -m uma_bct --help
+              "$smoke/.venv/bin/python" "$root/scripts/smoke_hosted_install.py"
             )
           done
 
@@ -126,28 +128,43 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          root="$PWD"
           smoke="$(mktemp -d)"
           uv venv --python 3.12 "$smoke/.venv"
-          uv pip install --python "$smoke/.venv/bin/python" "${{ runner.temp }}"/uma-bct-dist/*.whl
+          # Match the launcher's complete hash-pinned environment, including hosted support.
+          uv pip sync --require-hashes --python "$smoke/.venv/bin/python" "$root/client-constraints.txt"
+          uv pip install --offline --no-deps --python "$smoke/.venv/bin/python" "${{ runner.temp }}"/uma-bct-dist/*.whl
           (
             cd "$smoke"
             "$smoke/.venv/bin/uma-bct" --help
             "$smoke/.venv/bin/uma-bct" --version
             "$smoke/.venv/bin/python" -m uma_bct --help
+            "$smoke/.venv/bin/python" "$root/scripts/smoke_hosted_install.py"
           )
       - name: Smoke-test the installed wheel (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $Repository = (Get-Location).Path
           $Smoke = Join-Path $env:RUNNER_TEMP "uma-bct-smoke"
           uv venv --python 3.12 $Smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $Wheel = Get-ChildItem (Join-Path $env:RUNNER_TEMP "uma-bct-dist\*.whl") | Select-Object -First 1
-          uv pip install --python (Join-Path $Smoke "Scripts\python.exe") $Wheel.FullName
+          $Python = Join-Path $Smoke "Scripts\python.exe"
+          uv pip sync --require-hashes --python $Python (Join-Path $Repository "client-constraints.txt")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --offline --no-deps --python $Python $Wheel.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Push-Location $Smoke
           try {
             & (Join-Path $Smoke "Scripts\uma-bct.exe") --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & (Join-Path $Smoke "Scripts\uma-bct.exe") --version
-            & (Join-Path $Smoke "Scripts\python.exe") -m uma_bct --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Python -m uma_bct --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Python (Join-Path $Repository "scripts/smoke_hosted_install.py")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally {
             Pop-Location
           }
@@ -168,5 +185,18 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - run: docker compose config --quiet
+      - name: Check Docker context privacy with synthetic files
+        run: python3 scripts/check_docker_context.py
       - run: docker build --target production -t uma-bct-cli:ci .
       - run: docker run --rm uma-bct-cli:ci --help
+      - name: Check hosted Compose selects the hosted client
+        shell: bash
+        run: |
+          # Empty credentials must fail before any image or provider request.
+          status=0
+          UMA_BCT_IMAGE=uma-bct-cli:ci docker compose --profile hosted run --rm --no-deps \
+            -e UMA_BCT_API_KEY= -e UMA_BCT_API_MODEL= hosted \
+            > "$RUNNER_TEMP/hosted-smoke.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/hosted-smoke.log"
+          test "$status" -eq 2
+          grep -Fq "UMA_BCT_API_KEY is required with --hosted" "$RUNNER_TEMP/hosted-smoke.log"

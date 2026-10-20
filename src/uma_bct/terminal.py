@@ -24,6 +24,18 @@ def terminal_text(value: object) -> str:
     return "".join(character if character.isprintable() else "?" for character in str(value))
 
 
+def write_terminal(stream: TextIO, text: str) -> None:
+    """Keep an unencodable filename from turning completed work into failure."""
+
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        # Redirected Windows streams may use a legacy code page. Escape only
+        # unsupported characters; leave UTF-8 terminals and StringIO unchanged.
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        stream.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+
+
 def print_selected_model(metadata: Mapping[str, str], *, fallback_model: str) -> None:
     """Persist the selected model on stderr without printing credentials."""
 
@@ -95,7 +107,7 @@ class TerminalProgress:
         self.close()
 
     def _write(self, message: str) -> None:
-        self.stream.write(f"{message}\n")
+        write_terminal(self.stream, f"{message}\n")
         self.stream.flush()
 
     def _show(self) -> None:
@@ -221,6 +233,7 @@ def print_run_summary(
     """Use readable stdout only when requested; preserve the JSON contract."""
 
     if human:
-        print(human_summary(summary, elapsed_seconds=elapsed_seconds, attempted=attempted))
+        write_terminal(sys.stdout, human_summary(summary, elapsed_seconds=elapsed_seconds, attempted=attempted) + "\n")
     else:
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        # JSON escapes preserve the exact Unicode value in every code page.
+        print(json.dumps(summary, indent=2, ensure_ascii=True))

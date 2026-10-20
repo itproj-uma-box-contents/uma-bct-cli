@@ -35,8 +35,9 @@ from .path_safety import check_path
 
 
 def read_image(path: Path) -> np.ndarray:
-    if sys.platform == "win32":
+    if sys.platform == "win32" or path.suffix.casefold() in {".tif", ".tiff"}:
         # Python handles Unicode paths; OpenCV receives only the encoded pixels.
+        # The byte decoder also avoids imread's rotated-TIFF buffer failure.
         try:
             image = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
         except (OSError, cv2.error) as error:
@@ -52,6 +53,20 @@ def read_input_image(image: InputImage) -> np.ndarray:
     """Read the private normalized copy when one was prepared."""
 
     return read_image(image.readable_file_path)
+
+
+def write_png(path: Path, pixels: np.ndarray) -> bool:
+    """Write review pixels without Windows' narrow OpenCV filename handling."""
+
+    if sys.platform != "win32":
+        return cv2.imwrite(str(path), pixels)
+    # Python opens Unicode filenames correctly. Encode only the pixels so
+    # this route keeps the same metadata-free PNG output as cv2.imwrite.
+    success, encoded = cv2.imencode(".png", pixels)
+    if not success:
+        return False
+    path.write_bytes(encoded.tobytes())
+    return True
 
 
 def pillow_image(path: Path) -> np.ndarray:
@@ -104,24 +119,36 @@ def decode_new_image(path: Path) -> np.ndarray:
     raise ValueError(f"Unsupported image extension: {path.suffix or '<none>'}")
 
 
+def has_transparency(path: Path) -> bool:
+    """Inspect alpha metadata without converting opaque or high-bit pixels."""
+
+    try:
+        with Image.open(path) as image:
+            return "A" in image.getbands() or "transparency" in image.info
+    except (OSError, SyntaxError, ValueError) as error:
+        raise ValueError(f"Could not read image: {path}: {error}") from error
+
+
 @contextmanager
 def prepare_input_image(path: str | Path) -> Iterator[InputImage]:
     """Yield one source image with a private normalized path when required."""
 
     file_path = Path(path)
-    if file_path.suffix.casefold() in OPENCV_IMAGE_EXTENSIONS:
+    extension = file_path.suffix.casefold()
+    normalize_alpha = extension in {".png", ".webp"} and has_transparency(file_path)
+    if extension in OPENCV_IMAGE_EXTENSIONS and not normalize_alpha:
         yield load_input_image(file_path)
         return
 
-    # The source path remains the catalogue identity. Formats OpenCV cannot
-    # read directly use a short-lived PNG without carrying source metadata on.
-    pixels = decode_new_image(file_path)
+    # Detection and crops share one oriented, opaque working copy. Its PNG
+    # carries pixels only; the original source remains the catalogue identity.
+    pixels = pillow_image(file_path) if normalize_alpha else decode_new_image(file_path)
     height, width = pixels.shape[:2]
     with tempfile.TemporaryDirectory(prefix="uma-bct-input-") as directory:
         temporary_directory = Path(directory)
         temporary_directory.chmod(0o700)
         processing_path = temporary_directory / "source.png"
-        if not cv2.imwrite(str(processing_path), pixels):
+        if not write_png(processing_path, pixels):
             raise OSError(f"Could not create normalized image: {file_path}")
         del pixels
         processing_path.chmod(0o600)
@@ -247,7 +274,7 @@ def create_full_image_box(image: InputImage, output_directory: Path) -> Box:
     image_directory.chmod(0o700)
     image_path = image_directory / "full_image.png"
     check_path(image_path, "Full-image review copy")
-    if not cv2.imwrite(str(image_path), read_input_image(image)):
+    if not write_png(image_path, read_input_image(image)):
         raise OSError(f"Could not write full-image review copy: {image_path}")
     check_path(image_path, "Full-image review copy")
     image_path.chmod(0o600)
@@ -300,7 +327,7 @@ class OpenCVBoxCropper:
             crop_path = crop_directory / f"box_{index:03d}.png"
             crop = original[y1:y2, x1:x2].copy()
             check_path(crop_path, "Review crop")
-            if not cv2.imwrite(str(crop_path), crop):
+            if not write_png(crop_path, crop):
                 raise OSError(f"Could not write box crop: {crop_path}")
             check_path(crop_path, "Review crop")
             crop_path.chmod(0o600)

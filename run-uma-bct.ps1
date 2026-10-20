@@ -1,5 +1,24 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+# Direct PowerShell calls can supply numbers as objects; native CLI arguments
+# are strings. Capture them once before any helper's local $args is used.
+$CliArguments = @($args | ForEach-Object { [string] $_ })
+
+# powershell.exe -File splits attached values such as -mmodel:8b before
+# filling $args. A calling script's arguments must never replace its callee's.
+if ([string]::IsNullOrEmpty($MyInvocation.ScriptName)) {
+    $NativeArguments = [Environment]::GetCommandLineArgs()
+    for ($Index = 1; $Index -lt $NativeArguments.Length - 1; $Index++) {
+        if ($NativeArguments[$Index] -iin @("-Command", "-EncodedCommand")) { break }
+        if ($NativeArguments[$Index] -ieq "-File") {
+            $InvokedScript = Get-Item -LiteralPath $NativeArguments[$Index + 1] -ErrorAction SilentlyContinue
+            if ($null -ne $InvokedScript -and $InvokedScript.FullName -ieq $MyInvocation.MyCommand.Path) {
+                $CliArguments = @($NativeArguments | Select-Object -Skip ($Index + 2))
+            }
+            break
+        }
+    }
+}
 
 # Keep runtime, input, and result paths anchored to this extracted bundle.
 # The launcher reserves it before any repair or model setup begins.
@@ -34,6 +53,67 @@ $SupportedExtensions = @(
     ".avif", ".bmp", ".dng", ".gif", ".heic", ".heif",
     ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"
 )
+
+function Show-LauncherHelp {
+    [Console]::WriteLine(@'
+UMA BCT ZIP launcher
+Usage: & '.\Run UMA BCT.cmd' [processing options]
+
+Photos: Add Photos Here   Results: Results
+Existing inputs/outputs folders are kept when they already contain data.
+
+  --format, --file-type csv|excel   Save CSV or Excel .xlsx; default CSV
+  --reprocess                     New batch; keep saved results
+  --verification never|always|ask
+      Blind second reading (default: never); ask needs a terminal
+  --hosted                        Use UMA_BCT_API_MODEL / UMA_BCT_API_KEY
+  -d, --detector qwen|opencv
+      Find boxes (default: qwen); OpenCV is experimental
+  -t, --transcriber qwen          Use the selected local or hosted model
+  -m, --model MODEL               Local model (default: pinned Qwen3-VL)
+      Hosted model: UMA_BCT_API_MODEL
+  --ai-dates
+      Extract dates from transcribed handwriting with the selected model
+      Adds text requests; omit for built-in date matching
+  -c, --min-transcription-confidence PERCENT
+      Flag scores below PERCENT; keep rows (0-100; default 50)
+  --min-confidence, --min-detector-confidence SCORE
+      Filter OpenCV detections, including fallback (0-1; default 0.60)
+  --request-timeout SECONDS
+      Positive timeout per processing request; retries can add time
+      Default: UMA_BCT_OLLAMA_TIMEOUT_SECONDS or 600 seconds
+  --no-missing-box, --no-missing-box-detection
+      Omit suggested rows for gaps in unit numbers
+  --json                          JSON run summary; use --format for CSV/Excel
+      Progress goes to stderr; never prompt
+  --human                         Readable run summary (default)
+      Cannot combine with --json
+  -h, --help                      Show help without setting up the runtime
+  --version                       Show the bundled application version
+
+Interactive launches open the photo folder and wait for Enter every time.
+Saved batches keep their original results and settings.
+Use --reprocess to apply changes in a new batch.
+An unfinished batch resumes first and needs its original options.
+Use direct uma-bct for custom paths, --force, or setup. See README.md for details.
+
+Examples:
+  & '.\Run UMA BCT.cmd' --format excel
+  & '.\Run UMA BCT.cmd' --ai-dates
+  & '.\Run UMA BCT.cmd' --format excel --reprocess
+'@)
+}
+
+function Get-BundledWheel {
+    $Wheels = @(Get-ChildItem -LiteralPath $Root -Filter "uma_bct_cli-*.whl" -File)
+    if ($Wheels.Count -ne 1) {
+        throw "The supplied folder must contain exactly one UMA BCT wheel."
+    }
+    if (($Wheels[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "The supplied wheel must not be a symbolic link."
+    }
+    return $Wheels[0]
+}
 
 function Test-VerifiedResultsLock([IO.FileInfo] $Item) {
     if ($Item.Name -ne ".uma-bct.lock" -or
@@ -192,7 +272,13 @@ function Assert-NoPrivateData {
 
 function Open-LocalFolder([string] $Path) {
     if ($env:UMA_BCT_NO_OPEN -ne "1") {
-        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+        try {
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+        } catch {
+            # Folder opening is a convenience. Keep the processing outcome
+            # intact and give the operator the path, as the Unix launcher does.
+            [Console]::Error.WriteLine("Could not open the folder automatically. Open it in your file manager: $Path")
+        }
     }
 }
 
@@ -381,27 +467,30 @@ function Stop-OwnedApp {
 }
 
 function Quote-NativeArgument([string] $Value) {
-    return '"' + $Value.Replace('"', '\"') + '"'
+    # Windows consumes backslashes before quotes. Double those backslashes,
+    # escape the quote itself, then double any backslashes at the end.
+    $EscapedQuotes = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $EscapedEnding = [regex]::Replace($EscapedQuotes, '\\+$', '$0$0')
+    return '"' + $EscapedEnding + '"'
 }
 
-function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
+function Invoke-OwnedApp([string] $Arguments, [bool] $DiscardOutput = $false) {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new()
     $StartInfo.FileName = $AppCli
     $StartInfo.Arguments = $Arguments
     $StartInfo.UseShellExecute = $false
-    if (-not [string]::IsNullOrEmpty($OutputPath)) {
+    if ($DiscardOutput) {
         $StartInfo.RedirectStandardOutput = $true
     }
     $script:AppProcess = [Diagnostics.Process]::Start($StartInfo)
     try {
         if ($StartInfo.RedirectStandardOutput) {
-            $Output = $script:AppProcess.StandardOutput.ReadToEnd()
+            # Setup reports progress and failures on stderr. Drain its unused
+            # JSON without creating a runtime file or polluting final stdout.
+            [void] $script:AppProcess.StandardOutput.ReadToEnd()
         }
         $script:AppProcess.WaitForExit()
         $Status = $script:AppProcess.ExitCode
-        if ($StartInfo.RedirectStandardOutput) {
-            [IO.File]::WriteAllText($OutputPath, $Output, [Text.UTF8Encoding]::new($false))
-        }
         if ($Status -eq -1073741510) {
             return 130
         }
@@ -413,12 +502,16 @@ function Invoke-OwnedApp([string] $Arguments, [string] $OutputPath = "") {
 
 function Start-OwnedOllama([string] $Executable) {
     foreach ($LogPath in @($OllamaLog, $OllamaOutputLog)) {
-        if (Test-Path -LiteralPath $LogPath) {
-            $LogItem = Get-Item -LiteralPath $LogPath -Force
-            if ($LogItem.PSIsContainer -or
-                ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
-            }
+        try {
+            $LogItem = Get-Item -LiteralPath $LogPath -Force -ErrorAction Stop
+        } catch [Management.Automation.ItemNotFoundException] {
+            continue
+        }
+        $LinkType = $LogItem.PSObject.Properties["LinkType"]
+        if ($LogItem -isnot [IO.FileInfo] -or
+            ($LogItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $null -eq $LinkType -or -not [string]::IsNullOrEmpty("$($LinkType.Value)")) {
+            throw "The Ollama runtime log must be a regular file and not a link: $LogPath"
         }
     }
     # Use a fresh numeric loopback port and confirm the owned process remains
@@ -427,7 +520,7 @@ function Start-OwnedOllama([string] $Executable) {
         try {
             $Port = Get-FreeLoopbackPort
             $env:OLLAMA_HOST = "http://127.0.0.1:$Port"
-            Write-Host "Starting the isolated Ollama service (attempt $Attempt of 3)..."
+            [Console]::Error.WriteLine("Starting the isolated Ollama service (attempt $Attempt of 3)...")
             $script:OllamaProcess = Start-Process -FilePath $Executable `
                 -ArgumentList "serve" -WindowStyle Hidden -PassThru `
                 -RedirectStandardOutput $OllamaOutputLog -RedirectStandardError $OllamaLog
@@ -458,7 +551,7 @@ function Start-OwnedOllama([string] $Executable) {
 }
 
 function Install-Ollama {
-    Write-Host "Installing the verified private Ollama runtime..."
+    [Console]::Error.WriteLine("Installing the verified private Ollama runtime...")
     Assert-NoPrivateData
     $OllamaArchive = Join-Path $Runtime "ollama-windows-amd64.zip"
     $OllamaStaging = Join-Path $Runtime "ollama-install"
@@ -539,7 +632,66 @@ function Assert-NoReparseAncestor([string] $Path) {
 }
 
 $RunStatus = 2
+$Interactive = $false
 try {
+    # Check only the launcher's fixed-folder boundary. Python remains the
+    # single place that validates processing choices, numbers, and values.
+    $JsonOutput = $false
+    $HostedRequested = $false
+    $MetadataOption = ""
+    $ExpectsValue = $false
+    $ValueOption = ""
+    $SetupModel = $null
+    $ValueOptions = @(
+        "--format", "--file-type", "--verification", "-d", "--detector",
+        "-t", "--transcriber", "-m", "--model", "-c", "--min-transcription-confidence",
+        "--min-confidence", "--min-detector-confidence", "--request-timeout"
+    )
+    foreach ($Argument in $CliArguments) {
+        if ($ExpectsValue) {
+            $ExpectsValue = $false
+            if (-not $Argument.StartsWith("-")) {
+                if ($ValueOption -ceq "--model" -or $ValueOption -ceq "-m") {
+                    $SetupModel = $Argument
+                }
+                continue
+            }
+        }
+        if ($Argument -cmatch '^--(path-to-inputs|path-to-outputs?|path-to-box-images|work-dir|results-directory|force)(=|$)' -or
+            $Argument -cmatch '^-[iobf]' -or $Argument -ceq "setup") {
+            throw "This ZIP launcher uses its managed photo and results folders. Use direct uma-bct for '$Argument'; see README.md."
+        }
+        # Match argparse's short help clusters, such as -hh, before setup.
+        if ($Argument -ceq "--help" -or $Argument.StartsWith("-h", [StringComparison]::Ordinal)) {
+            $MetadataOption = "help"
+        }
+        if ($Argument -ceq "--version" -and $MetadataOption -ne "help") { $MetadataOption = "version" }
+        if ($Argument -ceq "--json") { $JsonOutput = $true }
+        if ($Argument -ceq "--hosted") { $HostedRequested = $true }
+        if ($Argument.StartsWith("--model=")) { $SetupModel = $Argument.Substring(8) }
+        elseif ($Argument.StartsWith("-m=")) { $SetupModel = $Argument.Substring(3) }
+        elseif ($Argument.StartsWith("-m") -and $Argument.Length -gt 2) { $SetupModel = $Argument.Substring(2) }
+        $ExpectsValue = $ValueOptions -ccontains $Argument
+        $ValueOption = $Argument
+    }
+
+    # Metadata exits before folders, locks, installers, or model setup.
+    if ($MetadataOption -eq "help") {
+        Show-LauncherHelp
+        exit 0
+    }
+    if ($MetadataOption -eq "version") {
+        $Wheel = Get-BundledWheel
+        [Console]::WriteLine($Wheel.Name.Split('-')[1])
+        exit 0
+    }
+    if ($HostedRequested -and [string]::IsNullOrWhiteSpace($env:UMA_BCT_API_KEY)) {
+        throw "UMA_BCT_API_KEY is required when --hosted is selected."
+    }
+    $Interactive = -not $JsonOutput -and [Environment]::UserInteractive -and
+        -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected -and
+        -not [Console]::IsErrorRedirected
+
     # Reject redirected workspace paths before creating folders or repairing
     # the local runtime beside any client photographs.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -566,13 +718,7 @@ try {
     New-Item -ItemType Directory -Force -Path $Inputs, $Outputs, $Runtime | Out-Null
     $PrivateDataPresent = Test-PrivateData
 
-    $Wheels = @(Get-ChildItem -LiteralPath $Root -Filter "uma_bct_cli-*.whl" -File)
-    if ($Wheels.Count -ne 1) {
-        throw "The supplied folder must contain exactly one UMA BCT wheel."
-    }
-    if (($Wheels[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "The supplied wheel must not be a symbolic link."
-    }
+    $Wheel = Get-BundledWheel
     if (-not (Test-Path -LiteralPath $Constraints -PathType Leaf) -or
         ((Get-Item -LiteralPath $Constraints -Force).Attributes -band
             [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -605,7 +751,7 @@ try {
             throw "Move private files out of '$Inputs' and '$Outputs' before repairing the local runtime."
         }
         Assert-NoPrivateData
-        Write-Host "Preparing the private local Python runtime..."
+        [Console]::Error.WriteLine("Preparing the private local Python runtime...")
         New-Item -ItemType Directory -Force -Path $UvDirectory | Out-Null
         $UvArchive = Join-Path $Runtime "uv.zip"
         $UvExtract = Join-Path $Runtime "uv-extract"
@@ -665,18 +811,19 @@ try {
         # Finish verified downloads and dependency installation before the
         # client is prompted to place private photos in the input folder.
         Assert-NoPrivateData
-        Write-Host "Installing the verified application dependencies..."
-        & $Uv venv --no-config --clear --managed-python --python 3.12 $AppEnvironment
+        [Console]::Error.WriteLine("Installing the verified application dependencies...")
+        & $Uv venv --no-config --clear --managed-python --python 3.12 $AppEnvironment |
+            ForEach-Object { [Console]::Error.WriteLine($_) }
         if ($LASTEXITCODE -ne 0) {
             throw "The managed Python environment could not be created."
         }
         & $Uv pip sync --no-config --require-hashes `
-            --python $AppPython $Constraints
+            --python $AppPython $Constraints | ForEach-Object { [Console]::Error.WriteLine($_) }
         if ($LASTEXITCODE -ne 0) {
             throw "The verified application dependencies could not be installed."
         }
         & $Uv pip install --no-config --offline --no-deps `
-            --python $AppPython $Wheels[0].FullName
+            --python $AppPython $Wheel.FullName | ForEach-Object { [Console]::Error.WriteLine($_) }
         if ($LASTEXITCODE -ne 0) {
             throw "UMA BCT could not be installed."
         }
@@ -686,7 +833,7 @@ try {
             throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
         & $Uv pip install --no-config --offline --no-deps --reinstall `
-            --python $AppPython $Wheels[0].FullName
+            --python $AppPython $Wheel.FullName | ForEach-Object { [Console]::Error.WriteLine($_) }
         if ($LASTEXITCODE -ne 0) {
             throw "Move private files out of '$Inputs' and '$Outputs' before repairing the application environment."
         }
@@ -704,25 +851,33 @@ try {
         if (-not $PrivateDataPresent) {
             Assert-NoPrivateData
             if ($HostedMode) {
-                Write-Host "Checking the hosted client and private folders..."
+                [Console]::Error.WriteLine("Checking the hosted client and private folders...")
             } else {
-                Write-Host "Checking the application and model. The first model download is large..."
+                [Console]::Error.WriteLine("Checking the application and model. The first model download is large...")
             }
-            $SetupLog = Join-Path $Runtime "setup.json"
             $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
                 " --results-directory " + (Quote-NativeArgument $Outputs)
             if ($HostedMode) { $SetupArguments += " --hosted" }
-            $SetupStatus = Invoke-OwnedApp $SetupArguments $SetupLog
+            # Setup must prepare the same model that processing will use.
+            if ($null -ne $SetupModel) {
+                $SetupArguments += " " + (Quote-NativeArgument "--model=$SetupModel")
+            }
+            $SetupStatus = Invoke-OwnedApp $SetupArguments $true
             if ($SetupStatus -ne 0) {
                 throw "Automatic setup failed. See the message above and run this launcher again."
             }
         }
 
-        if (@(Get-InputImages).Count -eq 0) {
-            Write-Host "Add supported photo files (including JPG, PNG, HEIC, or DNG) to the folder that just opened."
+        [Console]::Error.WriteLine("Photos folder: $Inputs")
+        [Console]::Error.WriteLine("Results folder: $Outputs")
+        if ($Interactive) {
+            # Give users the same chance to add photos before every run,
+            # including a launch that will reuse an already completed batch.
+            [Console]::Error.WriteLine("Add supported photo files (including JPG, PNG, HEIC, or DNG) to the photos folder.")
             Open-LocalFolder $Inputs
-            if ([Environment]::UserInteractive) {
-                Read-Host "Press Enter after the photos have finished copying"
+            [Console]::Error.Write("Press Enter after the photos have finished copying: ")
+            if ($null -eq [Console]::ReadLine()) {
+                throw "No input was received. Run this launcher again when you are ready."
             }
         }
         if (@(Get-InputImages).Count -eq 0) {
@@ -734,12 +889,15 @@ try {
         $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
             " --results-directory " + (Quote-NativeArgument $Outputs)
         if ($HostedMode) { $Arguments += " --hosted" }
+        foreach ($Argument in $CliArguments) {
+            $Arguments += " " + (Quote-NativeArgument $Argument)
+        }
         $RunStatus = Invoke-OwnedApp $Arguments
     } finally {
         Pop-Location
     }
 
-    if ($RunStatus -eq 0 -or $RunStatus -eq 1) {
+    if ($Interactive -and ($RunStatus -eq 0 -or $RunStatus -eq 1)) {
         Open-LocalFolder $Outputs
     }
 } catch [Management.Automation.PipelineStoppedException] {
@@ -752,5 +910,16 @@ try {
     Stop-OwnedApp
     Stop-OwnedOllama
     Release-Bundle
+}
+
+# A double-clicked console would otherwise close before the error can be
+# read. Release owned processes and locks first; never delay automation.
+if ($Interactive -and $RunStatus -gt 0 -and $RunStatus -lt 128) {
+    try {
+        [Console]::Error.Write("Press Enter to close this window: ")
+        [void] [Console]::ReadLine()
+    } catch {
+        # A closing console must not change the processing exit code.
+    }
 }
 exit $RunStatus

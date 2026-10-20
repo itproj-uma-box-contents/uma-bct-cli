@@ -87,6 +87,7 @@ services:
       - /tmp:size=256m
     init: true
     command:
+      - --hosted
       - --json
       - --path-to-inputs
       - /data/inputs

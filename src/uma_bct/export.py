@@ -124,6 +124,8 @@ def catalogue_records(
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
     spreadsheet_safe: bool = True,
+    legacy_identity_mapping: bool = False,
+    legacy_description_filter: bool = False,
 ) -> list[dict[str, str | int]]:
     """Build catalogue rows sorted by box prefix and unit number."""
 
@@ -146,6 +148,8 @@ def catalogue_records(
                     ),
                     trusted_crop_link=trusted_crop_links,
                     spreadsheet_safe=spreadsheet_safe,
+                    legacy_identity_mapping=legacy_identity_mapping,
+                    legacy_description_filter=legacy_description_filter,
                 )
             )
 
@@ -214,6 +218,8 @@ def export_catalogue(
     detect_missing_boxes: bool = True,
     trusted_crop_links: bool = False,
     output_columns: Sequence[str] = OUTPUT_COLUMNS,
+    legacy_identity_mapping: bool = False,
+    legacy_description_filter: bool = False,
 ) -> list[dict[str, str | int]]:
     """Safely write an Excel workbook or UTF-8 CSV and return its rows."""
 
@@ -226,6 +232,8 @@ def export_catalogue(
         results, minimum_confidence=minimum_confidence, catalogue_path=destination,
         detect_missing_boxes=detect_missing_boxes, trusted_crop_links=trusted_crop_links and not excel,
         spreadsheet_safe=not excel,
+        legacy_identity_mapping=legacy_identity_mapping,
+        legacy_description_filter=legacy_description_filter,
     )
     if "Date Range" in output_columns:
         for record in records:

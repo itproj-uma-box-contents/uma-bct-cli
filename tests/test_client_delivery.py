@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -139,6 +140,8 @@ def prepare_launcher_root(root: Path) -> tuple[Path, dict[str, str], Path]:
         UMA_BCT_FAKE_APP_HOST=str(root / "app-host.txt"),
         UMA_BCT_FAKE_APP_PID=str(root / "app-pid.txt"),
         UMA_BCT_FAKE_APP_SIGNALS=str(root / "app-signals.txt"),
+        UMA_BCT_FAKE_APP_ARGUMENTS=str(root / "app-arguments.txt"),
+        UMA_BCT_FAKE_SETUP_ARGUMENTS=str(root / "setup-arguments.txt"),
         UMA_BCT_FAKE_OLLAMA_EVENTS=str(events),
         UMA_BCT_FAKE_OLLAMA_COUNTER=str(root / "ollama-counter.txt"),
     )
@@ -150,12 +153,16 @@ def prepare_posix_launcher(root: Path, *, companion: bool = True) -> tuple[Path,
     shutil.copy2(ROOT / "run-uma-bct.sh", launcher)
     runtime, environment, events = prepare_launcher_root(root)
     write_executable(
-        runtime / "bin/uv", '#!/bin/sh\nif [ "${1:-}" = "--version" ]; then printf \'uv 0.12.9\\n\'; fi\nexit 0\n'
+        runtime / "bin/uv", '#!/bin/sh\nif [ "${1:-}" = "--version" ]; then printf \'uv 0.12.9\\n\'; '
+        'else printf \'synthetic installer output\\n\'; fi\nexit 0\n'
     )
     write_executable(runtime / "app/bin/python", f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     write_executable(
         runtime / "app/bin/uma-bct",
         '#!/bin/sh\nprintf \'%s\\n\' "$OLLAMA_HOST" >"$UMA_BCT_FAKE_APP_HOST"\n'
+        'printf \'%s\\n\' "$@" >"$UMA_BCT_FAKE_APP_ARGUMENTS"\n'
+        'if [ "${1:-}" = "setup" ]; then printf \'%s\\n\' "$@" >"$UMA_BCT_FAKE_SETUP_ARGUMENTS"; fi\n'
+        'if [ -n "${UMA_BCT_FAKE_APP_STDOUT:-}" ]; then printf \'%s\\n\' "$UMA_BCT_FAKE_APP_STDOUT"; fi\n'
         'if [ "${UMA_BCT_FAKE_INTERRUPT:-}" = "1" ]; then kill -TERM "$PPID"; fi\n'
         'if [ "${UMA_BCT_FAKE_APP_WAIT:-}" = "1" ]; then\n'
         '  exec "$UMA_BCT_FAKE_SYSTEM_PYTHON" -c \'import os, signal, time\n'
@@ -222,9 +229,11 @@ def launcher_command(launcher: Path) -> list[str]:
     return ["sh", str(launcher)]
 
 
-def run_launcher(launcher: Path, environment: dict[str, str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
+def run_launcher(
+    launcher: Path, environment: dict[str, str], timeout: int = 15, arguments: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        launcher_command(launcher), env=environment, capture_output=True, text=True, timeout=timeout
+        [*launcher_command(launcher), *arguments], env=environment, capture_output=True, text=True, timeout=timeout
     )
 
 
@@ -241,6 +250,15 @@ def start_launcher(launcher: Path, environment: dict[str, str], **options) -> su
 
 def event_names(path: Path) -> list[str]:
     return [line.split()[0] for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def read_stderr_until(process, text: str, captured: list[str], ready: threading.Event) -> None:
+    # Read prompts without waiting for a newline, as a real terminal does.
+    while character := process.stderr.read(1):
+        captured.append(character)
+        if text in "".join(captured):
+            ready.set()
+            return
 
 
 def wait_until(process: subprocess.Popen[str], ready: Callable[[], bool], message: str, timeout: int = 10) -> None:
@@ -435,7 +453,7 @@ class ClientDeliveryTest(unittest.TestCase):
         ):
             self.assertIn(pattern, posix)
         self.assertLess(posix.index("setup --path-to-inputs"), posix.index("Press Enter after"))
-        self.assertLess(windows.index('"setup --path-to-inputs "'), windows.index("Read-Host"))
+        self.assertLess(windows.index('"setup --path-to-inputs "'), windows.index("[Console]::ReadLine()"))
         self.assertIn("Get-AuthenticodeSignature", windows)
         self.assertIn("ollama-windows-amd64.zip", windows)
         self.assertNotIn("OllamaSetup.exe", windows)
@@ -484,6 +502,310 @@ class ClientDeliveryTest(unittest.TestCase):
         for command in ("uv run uma-bct --help", "uv run python -m uma_bct --help", "uv run python main.py --help"):
             self.assertEqual(workflow.count(command), 1)
         self.assertEqual(workflow.count("name: Docker smoke (${{ matrix.name }})"), 1)
+
+    def test_launchers_forward_processing_arguments_and_keep_json_stdout_clean(self):
+        arguments = (
+            "--format", "Excel", "--reprocess", "--verification", "never", "--json",
+            "--model", 'a model with "quotes" and a trailing\\',
+            "--ai-dates", "--detector", "opencv", "--transcriber", "qwen",
+            "--min-transcription-confidence", "80", "--min-detector-confidence", "0.7",
+            "--request-timeout", "75", "--no-missing-box-detection",
+        )
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, _events):
+            environment["UMA_BCT_FAKE_APP_STDOUT"] = '{"status":"complete"}'
+            result = run_launcher(launcher, environment, arguments=arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"status": "complete"})
+            self.assertEqual(
+                (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines(),
+                ["--path-to-inputs", str(root.resolve() / "inputs"),
+                 "--results-directory", str(root.resolve() / "outputs"), *arguments],
+            )
+            self.assertNotIn("Press Enter", result.stderr)
+            self.assertIn("synthetic installer output", result.stderr)
+            self.assertFalse((root / "setup-arguments.txt").exists())
+
+    def test_launchers_forward_legacy_and_equals_options_without_reinterpreting_values(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, _events):
+            arguments = ("--file-type=excel", "--model", "setup", "--request-timeout", "invalid")
+            result = run_launcher(launcher, environment, arguments=arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            forwarded = (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(forwarded[4:], list(arguments))
+
+    def test_launchers_preserve_attached_model_tags_for_processing(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, _events):
+            arguments = ("-mcustom:8b", "--json")
+            result = run_launcher(launcher, environment, arguments=arguments)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            forwarded = (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(forwarded[4:], list(arguments))
+            self.assertFalse((root / "setup-arguments.txt").exists())
+
+    def test_launcher_metadata_does_not_need_a_runtime_or_touch_the_workspace(self):
+        suffix = ".ps1" if os.name == "nt" else ".sh"
+        for option, expected in (
+            ("--help", "--format"), ("-h", "--format"), ("-hh", "--format"),
+            ("-hmcustom:8b", "--format"), ("--version", "0.1.0"),
+        ):
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher = root / ("run-uma-bct" + suffix)
+                shutil.copy2(ROOT / launcher.name, launcher)
+                (root / "uma_bct_cli-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+                before = set(root.iterdir())
+                result = run_launcher(launcher, os.environ.copy(), arguments=(option,))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stdout)
+                self.assertEqual(set(root.iterdir()), before)
+                self.assertNotIn("Press Enter", result.stderr)
+
+    def test_first_launcher_setup_prepares_the_selected_model(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        cases = (
+            (("--model", "custom:8b"), "custom:8b"),
+            (("--model=custom:8b",), "custom:8b"),
+            (("-mcustom:8b",), "custom:8b"),
+            (("-m", "custom:8b"), "custom:8b"),
+            (("--model", "first:8b", "--model=second:8b", "-mthird:8b", "-m=last:8b"), "last:8b"),
+        )
+        for arguments, model in cases:
+            with self.subTest(arguments=arguments), launcher_fixture(prepare, *fixture_args) as fixture:
+                root, launcher, environment, _events = fixture
+                (root / "inputs/shelf.jpg").unlink()
+                result = run_launcher(launcher, environment, arguments=arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("No supported photos", result.stderr)
+                setup_arguments = (root / "setup-arguments.txt").read_text(encoding="utf-8").splitlines()
+                self.assertEqual(setup_arguments[0], "setup")
+                self.assertIn("--model=" + model, setup_arguments)
+                self.assertFalse((root / ".uma-bct-runtime/setup.json").exists())
+
+    def test_explicit_hosted_mode_requires_a_key_before_any_bootstrap(self):
+        suffix = ".ps1" if os.name == "nt" else ".sh"
+        for key in ("", " \t "):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher = root / ("run-uma-bct" + suffix)
+                shutil.copy2(ROOT / launcher.name, launcher)
+                environment = os.environ.copy()
+                environment["UMA_BCT_API_KEY"] = key
+                result = run_launcher(launcher, environment, arguments=("--hosted",))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("UMA_BCT_API_KEY is required", result.stderr)
+                self.assertEqual(list(root.iterdir()), [launcher])
+
+                # Asking for help must remain possible without credentials.
+                result = run_launcher(launcher, environment, arguments=("--hosted", "--help"))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("--hosted", result.stdout)
+                self.assertEqual(list(root.iterdir()), [launcher])
+
+    def assert_launcher_preserves_setup_link(self, link_type: str) -> None:
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, events):
+            (root / "inputs/shelf.jpg").unlink()
+            environment.update(
+                UMA_BCT_API_KEY="synthetic-key",
+                UMA_BCT_API_MODEL="openai/synthetic-model",
+                UMA_BCT_FAKE_APP_STDOUT='{"synthetic_setup":true}',
+            )
+            sentinel = root / "reviewer-note.txt"
+            sentinel.write_bytes(b"keep this synthetic note")
+            setup_path = root / ".uma-bct-runtime/setup.json"
+            try:
+                if link_type == "hardlink":
+                    os.link(sentinel, setup_path)
+                else:
+                    setup_path.symlink_to(sentinel)
+            except OSError as error:
+                self.skipTest(str(error))
+
+            result = run_launcher(launcher, environment, arguments=("--json",))
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("No supported photos", result.stderr)
+            self.assertTrue((root / "setup-arguments.txt").is_file())
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(sentinel.read_bytes(), b"keep this synthetic note")
+            self.assertFalse(events.exists())
+
+    def test_launcher_setup_does_not_write_through_a_hardlink(self):
+        self.assert_launcher_preserves_setup_link("hardlink")
+
+    def test_launcher_setup_does_not_write_through_a_symlink(self):
+        self.assert_launcher_preserves_setup_link("symlink")
+
+    def test_hosted_launcher_preserves_processing_json_and_exit_status(self):
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        for exit_code in (0, 1, 2):
+            with self.subTest(exit_code=exit_code), launcher_fixture(prepare, *fixture_args) as fixture:
+                root, launcher, environment, events = fixture
+                environment.update(
+                    UMA_BCT_API_KEY="synthetic-key",
+                    UMA_BCT_API_MODEL="openai/synthetic-model",
+                    UMA_BCT_FAKE_APP_STDOUT='{"synthetic_processing":true}',
+                    UMA_BCT_FAKE_APP_EXIT=str(exit_code),
+                )
+
+                result = run_launcher(launcher, environment, arguments=("--json",))
+
+                self.assertEqual(result.returncode, exit_code, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {"synthetic_processing": True})
+                self.assertFalse((root / ".uma-bct-runtime/setup.json").exists())
+                self.assertFalse(events.exists())
+
+    def assert_launcher_preserves_log_entry(self, entry_type: str) -> None:
+        prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
+        fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
+        names = ("ollama.log", "ollama.stdout.log") if os.name == "nt" else ("ollama.log",)
+        for name in names:
+            with self.subTest(log=name), launcher_fixture(prepare, *fixture_args) as fixture:
+                root, launcher, environment, events = fixture
+                environment.pop("UMA_BCT_API_KEY", None)
+                environment.pop("UMA_BCT_API_MODEL", None)
+                sentinel = root / "reviewer-note.txt"
+                sentinel.write_bytes(b"keep this synthetic note")
+                log_path = root / ".uma-bct-runtime" / name
+                try:
+                    if entry_type == "directory":
+                        log_path.mkdir()
+                    elif entry_type == "hardlink":
+                        os.link(sentinel, log_path)
+                    else:
+                        log_path.symlink_to(sentinel)
+                except OSError as error:
+                    self.skipTest(str(error))
+
+                result = run_launcher(launcher, environment, arguments=("--json",))
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("runtime log", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(sentinel.read_bytes(), b"keep this synthetic note")
+                self.assertFalse((root / "app-host.txt").exists())
+                self.assertFalse(events.exists())
+                if entry_type == "directory":
+                    self.assertTrue(log_path.is_dir())
+
+    def test_launcher_rejects_hardlinked_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("hardlink")
+
+    def test_launcher_rejects_symlinked_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("symlink")
+
+    def test_launcher_rejects_nonregular_ollama_logs(self):
+        self.assert_launcher_preserves_log_entry("directory")
+
+    def test_launchers_reject_folder_overrides_and_direct_commands_before_bootstrap(self):
+        suffix = ".ps1" if os.name == "nt" else ".sh"
+        cases = (
+            ("--path-to-inputs=elsewhere",), ("-ielsewhere",),
+            ("--path-to-output=elsewhere.csv",), ("-oelsewhere.xlsx",),
+            ("--path-to-box-images=elsewhere",), ("-belsewhere",),
+            ("--results-directory", "elsewhere"), ("--work-dir=elsewhere",),
+            ("--force",), ("-f",), ("setup",),
+            ("--model", "--results-directory=elsewhere"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher = root / ("run-uma-bct" + suffix)
+                shutil.copy2(ROOT / launcher.name, launcher)
+                result = run_launcher(launcher, os.environ.copy(), arguments=arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("direct uma-bct", result.stderr)
+                self.assertEqual(list(root.iterdir()), [launcher])
+
+    @unittest.skipIf(os.name == "nt", "POSIX terminal fixture")
+    def test_posix_launcher_waits_on_every_interactive_launch(self):
+        import pty
+        import select
+
+        with launcher_fixture(prepare_posix_launcher) as (root, launcher, environment, _events):
+            (root / "inputs").rename(root / "Add Photos Here")
+            (root / "outputs").rename(root / "Results")
+            opened_folders = root / "opened-folders.txt"
+            environment["UMA_BCT_TEST_OPENED"] = str(opened_folders)
+            launcher.write_text(launcher.read_text().replace(
+                "open_folder() {\n",
+                'open_folder() {\n    printf \'%s\\n\' "$1" >>"$UMA_BCT_TEST_OPENED"\n',
+            ), encoding="utf-8")
+            for _launch in range(2):
+                with self.subTest(launch=_launch):
+                    (root / "app-host.txt").unlink(missing_ok=True)
+                    terminal, child_terminal = pty.openpty()
+                    process = subprocess.Popen(
+                        launcher_command(launcher), env=environment,
+                        stdin=child_terminal, stdout=child_terminal, stderr=child_terminal,
+                    )
+                    os.close(child_terminal)
+                    output = b""
+                    try:
+                        deadline = time.monotonic() + 15
+                        while time.monotonic() < deadline and b"Press Enter" not in output:
+                            readable, _, _ = select.select([terminal], [], [], 0.2)
+                            if readable:
+                                output += os.read(terminal, 4096)
+                        self.assertIn(b"Press Enter", output)
+                        self.assertIn(str(root.resolve() / "Add Photos Here").encode(), output)
+                        self.assertIn(str(root.resolve() / "Results").encode(), output)
+                        self.assertFalse((root / "app-host.txt").exists())
+                        self.assertEqual(opened_folders.read_text().splitlines()[-1],
+                                         str(root.resolve() / "Add Photos Here"))
+                        os.write(terminal, b"\n")
+                        self.assertEqual(process.wait(timeout=15), 0)
+                    finally:
+                        if process.poll() is None:
+                            process.terminate()
+                            process.wait(timeout=10)
+                        os.close(terminal)
+
+    @unittest.skipIf(os.name == "nt", "POSIX terminal fixture")
+    def test_posix_json_launch_does_not_prompt_even_with_a_terminal(self):
+        import pty
+
+        with launcher_fixture(prepare_posix_launcher) as (_root, launcher, environment, _events):
+            terminal, child_terminal = pty.openpty()
+            process = subprocess.Popen(
+                [*launcher_command(launcher), "--json"], env=environment,
+                stdin=child_terminal, stdout=child_terminal, stderr=child_terminal,
+            )
+            os.close(child_terminal)
+            try:
+                self.assertEqual(process.wait(timeout=15), 0)
+                self.assertNotIn(b"Press Enter", os.read(terminal, 4096))
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+                os.close(terminal)
+
+    @unittest.skipIf(os.name == "nt", "POSIX terminal fixture")
+    def test_posix_launch_does_not_prompt_when_any_terminal_stream_is_redirected(self):
+        import pty
+
+        with launcher_fixture(prepare_posix_launcher) as (_root, launcher, environment, _events):
+            for stream in ("stdin", "stdout", "stderr"):
+                with self.subTest(stream=stream):
+                    terminal, child_terminal = pty.openpty()
+                    streams = dict.fromkeys(("stdin", "stdout", "stderr"), child_terminal)
+                    streams[stream] = subprocess.DEVNULL
+                    try:
+                        result = subprocess.run(launcher_command(launcher), env=environment, timeout=15, **streams)
+                        self.assertEqual(result.returncode, 0)
+                    finally:
+                        os.close(terminal)
+                        os.close(child_terminal)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell test")
     @unittest.skipIf(os.name == "nt", "POSIX launcher fixture")
@@ -692,7 +1014,7 @@ class ClientDeliveryTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 2)
             self.assertIn("No supported photos", result.stderr)
-            self.assertIn(str((root / "Add Photos Here").resolve()), result.stdout)
+            self.assertIn(str((root / "Add Photos Here").resolve()), result.stderr)
             self.assertTrue((root / ".uma-bct-runtime/ollama/ollama").is_file())
             self.assertTrue((root / ".uma-bct-runtime/ollama/llama-server").is_file())
             self.assertFalse((root / ".uma-bct-runtime/ollama-install").exists())
@@ -998,6 +1320,208 @@ class ClientDeliveryTest(unittest.TestCase):
         subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True, capture_output=True, text=True)
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_folder_open_failure_is_a_warning(self):
+        source = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
+        start = source.index("function Open-LocalFolder")
+        function = source[start:source.index("\n}\n", start) + 3]
+        command = (
+            "$ErrorActionPreference='Stop'; $env:UMA_BCT_NO_OPEN='0'; "
+            "function Start-Process { throw 'synthetic folder failure' }\n"
+            f"{function}\nOpen-LocalFolder 'C:\\Private Files\\Results'\nexit 0"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Could not open the folder automatically", result.stderr)
+        self.assertIn("C:\\Private Files\\Results", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_does_not_prompt_with_redirected_input(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as (root, launcher, environment, _events):
+            (root / "inputs/shelf.jpg").unlink()
+            result = subprocess.run(
+                launcher_command(launcher), env=environment, input="", capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("No supported photos", result.stderr)
+            self.assertNotIn("Press Enter", result.stdout)
+            self.assertNotIn("Press Enter", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_waits_on_every_interactive_launch(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
+            root, launcher, environment, _events = fixture
+            opened_folders = root / "opened-folders.txt"
+            environment["UMA_BCT_TEST_OPENED"] = str(opened_folders)
+
+            # CI has no interactive console. Simulate only that capability;
+            # retain the launcher's actual prompt, blocking read, and CLI call.
+            source = launcher.read_text(encoding="utf-8")
+            start = source.index("    $Interactive = -not $JsonOutput")
+            end = source.index("\n\n", start)
+            source = source[:start] + "    $Interactive = -not $JsonOutput" + source[end:]
+            source = source.replace(
+                "function Open-LocalFolder([string] $Path) {\n",
+                "function Open-LocalFolder([string] $Path) {\n"
+                '    [IO.File]::AppendAllText($env:UMA_BCT_TEST_OPENED, "$Path`n")\n',
+            )
+            launcher.write_text(source, encoding="utf-8")
+            for launch in range(2):
+                with self.subTest(launch=launch):
+                    (root / "app-host.txt").unlink(missing_ok=True)
+                    process = start_launcher(
+                        launcher, environment, stdin=subprocess.PIPE,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    )
+                    output = []
+                    prompted = threading.Event()
+
+                    reader = threading.Thread(
+                        target=read_stderr_until, args=(process, "Press Enter", output, prompted), daemon=True,
+                    )
+                    reader.start()
+                    try:
+                        self.assertTrue(prompted.wait(15), "".join(output))
+                        self.assertFalse((root / "app-host.txt").exists())
+                        self.assertIn(str(root.resolve() / "inputs"), "".join(output))
+                        self.assertIn(str(root.resolve() / "outputs"), "".join(output))
+                        self.assertEqual(opened_folders.read_text().splitlines()[-1], str(root.resolve() / "inputs"))
+                        reader.join(timeout=2)
+                        process.communicate(input="\n", timeout=15)
+                        self.assertEqual(process.returncode, 0)
+                    finally:
+                        if process.poll() is None:
+                            process.send_signal(signal.CTRL_BREAK_EVENT)
+                            process.communicate(timeout=20)
+                        reader.join(timeout=2)
+
+            # Even an interactive console must bypass the prompt for JSON.
+            result = run_launcher(launcher, environment, arguments=("--json",))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Press Enter", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
+    def test_windows_launcher_keeps_interactive_errors_visible_after_cleanup(self):
+        for status in (1, 2):
+            with self.subTest(status=status), launcher_fixture(
+                prepare_windows_launcher, self.compiled_fixture,
+            ) as (root, launcher, environment, events):
+                environment["UMA_BCT_FAKE_APP_EXIT"] = str(status)
+                source = launcher.read_text(encoding="utf-8")
+                start = source.index("    $Interactive = -not $JsonOutput")
+                end = source.index("\n\n", start)
+                launcher.write_text(
+                    source[:start] + "    $Interactive = -not $JsonOutput" + source[end:], encoding="utf-8",
+                )
+                process = start_launcher(
+                    launcher, environment, stdin=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+                output = []
+                prompted = threading.Event()
+                reader = threading.Thread(
+                    target=read_stderr_until,
+                    args=(process, "Press Enter to close", output, prompted), daemon=True,
+                )
+                reader.start()
+                try:
+                    # Answer the photo prompt, then leave the error visible.
+                    process.stdin.write("\n")
+                    process.stdin.flush()
+                    self.assertTrue(prompted.wait(20), "".join(output))
+                    self.assertIsNone(process.poll())
+                    for line in events.read_text(encoding="utf-8").splitlines():
+                        with self.assertRaises(OSError):
+                            os.kill(int(line.split()[-1]), 0)
+                    with (root / ".uma-bct-launcher.lock").open("rb"):
+                        pass  # The exclusive reservation was released before waiting.
+                    reader.join(timeout=2)
+                    process.communicate(input="\n", timeout=10)
+                    self.assertEqual(process.returncode, status)
+                finally:
+                    if process.poll() is None:
+                        process.send_signal(signal.CTRL_BREAK_EVENT)
+                        process.communicate(timeout=20)
+                    reader.join(timeout=2)
+
+                result = run_launcher(launcher, environment, arguments=("--json",))
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertNotIn("Press Enter", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
+    def test_windows_launcher_accepts_numeric_values_from_a_powershell_call(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
+            root, launcher, environment, _events = fixture
+            script = "& '" + str(launcher).replace("'", "''") + "' --request-timeout 75 -c 50 --json"
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], env=environment,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
+                ["--request-timeout", "75", "-c", "50", "--json"],
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
+    def test_windows_launcher_keeps_arguments_from_a_calling_powershell_script(self):
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
+            root, launcher, environment, _events = fixture
+            caller = root / "caller" / launcher.name
+            caller.parent.mkdir()
+            environment["UMA_BCT_TEST_LAUNCHER"] = str(launcher)
+            cases = (
+                (caller, root, "$PSScriptRoot"),
+                (caller.relative_to(root), root, "$PSScriptRoot"),
+                (Path(caller.name), caller.parent, "(Split-Path -Parent $env:UMA_BCT_TEST_LAUNCHER)"),
+            )
+            # The process's -File arguments belong to this different script,
+            # even if cd makes its relative filename point at the callee.
+            for caller_path, working_directory, destination in cases:
+                with self.subTest(caller=caller_path):
+                    caller.write_text(
+                        f"Set-Location -LiteralPath {destination}\n"
+                        "& $env:UMA_BCT_TEST_LAUNCHER --request-timeout 75 -c 50 --json\nexit $LASTEXITCODE\n",
+                        encoding="utf-8",
+                    )
+                    result = subprocess.run(
+                        [*launcher_command(caller_path), "--format", "csv"], env=environment, cwd=working_directory,
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
+                        ["--request-timeout", "75", "-c", "50", "--json"],
+                    )
+
+    @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
+    def test_windows_native_quoting_preserves_empty_values_quotes_and_backslashes(self):
+        source = (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8")
+        start = source.index("function Quote-NativeArgument")
+        function = source[start:source.index("\n}\n", start) + 3]
+        with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
+            root, _launcher, environment, _events = fixture
+            arguments = ["", "plain", "two words", 'embedded"quote', 'slash\\"quote', 'ends in \\\\']
+            quoted_arguments = ", ".join("'" + value.replace("'", "''") + "'" for value in arguments)
+            executable = str(root / ".uma-bct-runtime/app/Scripts/uma-bct.exe").replace("'", "''")
+            script = (
+                f"{function}\n$Values = @({quoted_arguments})\n"
+                "$StartInfo = [Diagnostics.ProcessStartInfo]::new()\n"
+                f"$StartInfo.FileName = '{executable}'\n"
+                "$StartInfo.UseShellExecute = $false\n"
+                "$StartInfo.Arguments = ($Values | ForEach-Object { Quote-NativeArgument $_ }) -join ' '\n"
+                "$Process = [Diagnostics.Process]::Start($StartInfo)\n$Process.WaitForExit()\nexit $Process.ExitCode"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], env=environment,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "app-arguments.txt").read_text(encoding="utf-8").splitlines(), arguments)
+
+    @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_launcher_uses_dynamic_ports_retries_and_cleans_up(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         owns_listener = False
@@ -1041,7 +1565,7 @@ class ClientDeliveryTest(unittest.TestCase):
             shutil.copy2(ROOT / "Run UMA BCT.cmd", command)
 
             result = subprocess.run(
-                ["cmd.exe", "/d", "/c", str(command)],
+                ["cmd.exe", "/d", "/c", str(command), "--format", "Excel", "--reprocess", "-mcustom:8b", "--json"],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -1050,6 +1574,11 @@ class ClientDeliveryTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(events.is_file())
+            self.assertEqual(
+                (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
+                ["--format", "Excel", "--reprocess", "-mcustom:8b", "--json"],
+            )
+            self.assertNotIn("Press Enter", result.stdout + result.stderr)
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher fixture")
     def test_windows_cmd_entrypoint_propagates_ctrl_break_as_130(self):

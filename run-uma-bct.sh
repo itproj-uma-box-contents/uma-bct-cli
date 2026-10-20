@@ -37,6 +37,135 @@ fail() {
     exit 2
 }
 
+show_help() {
+    cat <<'HELP'
+UMA BCT ZIP launcher
+Usage: sh run-uma-bct.sh [processing options]
+
+Photos: Add Photos Here   Results: Results
+Existing inputs/outputs folders are kept when they already contain data.
+
+  --format, --file-type csv|excel   Save CSV or Excel .xlsx; default CSV
+  --reprocess                     New batch; keep saved results
+  --verification never|always|ask
+      Blind second reading (default: never); ask needs a terminal
+  --hosted                        Use UMA_BCT_API_MODEL / UMA_BCT_API_KEY
+  -d, --detector qwen|opencv
+      Find boxes (default: qwen); OpenCV is experimental
+  -t, --transcriber qwen          Use the selected local or hosted model
+  -m, --model MODEL               Local model (default: pinned Qwen3-VL)
+      Hosted model: UMA_BCT_API_MODEL
+  --ai-dates
+      Extract dates from transcribed handwriting with the selected model
+      Adds text requests; omit for built-in date matching
+  -c, --min-transcription-confidence PERCENT
+      Flag scores below PERCENT; keep rows (0-100; default 50)
+  --min-confidence, --min-detector-confidence SCORE
+      Filter OpenCV detections, including fallback (0-1; default 0.60)
+  --request-timeout SECONDS
+      Positive timeout per processing request; retries can add time
+      Default: UMA_BCT_OLLAMA_TIMEOUT_SECONDS or 600 seconds
+  --no-missing-box, --no-missing-box-detection
+      Omit suggested rows for gaps in unit numbers
+  --json                          JSON run summary; use --format for CSV/Excel
+      Progress goes to stderr; never prompt
+  --human                         Readable run summary (default)
+      Cannot combine with --json
+  -h, --help                      Show help without setting up the runtime
+  --version                       Show the bundled application version
+
+Interactive launches open the photo folder and wait for Enter every time.
+Saved batches keep their original results and settings.
+Use --reprocess to apply changes in a new batch.
+An unfinished batch resumes first and needs its original options.
+Use direct uma-bct for custom paths, --force, or setup. See README.md for details.
+
+Examples:
+  sh run-uma-bct.sh --format excel
+  sh run-uma-bct.sh --ai-dates
+  sh run-uma-bct.sh --format excel --reprocess
+HELP
+}
+
+find_bundled_wheel() {
+    wheel=""
+    wheel_count=0
+    for candidate in "$ROOT"/uma_bct_cli-*.whl; do
+        [ -f "$candidate" ] || continue
+        [ ! -L "$candidate" ] || fail "The supplied wheel must not be a symbolic link."
+        wheel=$candidate
+        wheel_count=$((wheel_count + 1))
+    done
+    [ "$wheel_count" -eq 1 ] || fail "The supplied folder must contain exactly one UMA BCT wheel."
+}
+
+# Inspect only launcher boundaries; Python still validates option values.
+# Skip real values so a model named 'setup' is not mistaken for a command.
+JSON_OUTPUT=0
+HOSTED_REQUESTED=0
+metadata_option=""
+expects_value=0
+value_option=""
+setup_model=""
+setup_model_selected=0
+for argument do
+    if [ "$expects_value" -eq 1 ]; then
+        expects_value=0
+        case "$argument" in
+            -*) ;;
+            *)
+                if [ "$value_option" = "--model" ] || [ "$value_option" = "-m" ]; then
+                    setup_model=$argument
+                    setup_model_selected=1
+                fi
+                continue
+                ;;
+        esac
+    fi
+    case "$argument" in
+        --path-to-inputs|--path-to-inputs=*|-i*|\
+        --path-to-outputs|--path-to-outputs=*|--path-to-output|--path-to-output=*|-o*|\
+        --path-to-box-images|--path-to-box-images=*|--work-dir|--work-dir=*|-b*|\
+        --results-directory|--results-directory=*|--force|--force=*|-f*|setup)
+            fail "This ZIP launcher uses its managed photo and results folders. Use direct uma-bct for '$argument'; see README.md."
+            ;;
+        # argparse also treats a short cluster beginning with -h as help.
+        -h*|--help) metadata_option=help ;;
+        --version) [ "$metadata_option" = "help" ] || metadata_option=version ;;
+        --json) JSON_OUTPUT=1 ;;
+        --hosted) HOSTED_REQUESTED=1 ;;
+        --model=*) setup_model=${argument#--model=}; setup_model_selected=1 ;;
+        -m=*) setup_model=${argument#-m=}; setup_model_selected=1 ;;
+        -m?*) setup_model=${argument#-m}; setup_model_selected=1 ;;
+        --format|--file-type|--verification|-d|--detector|-t|--transcriber|-m|--model|\
+        -c|--min-transcription-confidence|--min-confidence|--min-detector-confidence|--request-timeout)
+            expects_value=1
+            value_option=$argument
+            ;;
+    esac
+done
+
+# Metadata must work on a freshly extracted ZIP without any downloads,
+# folder creation, reservation, model startup, or interactive prompts.
+case "$metadata_option" in
+    help) show_help; exit 0 ;;
+    version)
+        find_bundled_wheel
+        wheel_name=${wheel##*/}
+        bundled_version=${wheel_name#uma_bct_cli-}
+        printf '%s\n' "${bundled_version%%-*}"
+        exit 0
+        ;;
+esac
+if [ "$HOSTED_REQUESTED" -eq 1 ] && \
+    [ -z "$(printf '%s' "${UMA_BCT_API_KEY:-}" | tr -d '[:space:]')" ]; then
+    fail "UMA_BCT_API_KEY is required when --hosted is selected."
+fi
+INTERACTIVE=0
+if [ "$JSON_OUTPUT" -eq 0 ] && [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+    INTERACTIVE=1
+fi
+
 directory_has_data() {
     directory=$1
     [ ! -L "$directory" ] || fail "$directory must not be a symbolic link."
@@ -394,6 +523,10 @@ start_owned_ollama() {
     # healthy twice before sending any private image through its API.
     [ ! -L "$OLLAMA_LOG" ] || fail "The Ollama runtime log must not be a symbolic link: $OLLAMA_LOG"
     [ ! -e "$OLLAMA_LOG" ] || [ -f "$OLLAMA_LOG" ] || fail "The Ollama runtime log must be a regular file."
+    if [ -e "$OLLAMA_LOG" ]; then
+        log_links=$({ stat -c '%h' "$OLLAMA_LOG" 2>/dev/null || stat -f '%l' "$OLLAMA_LOG" 2>/dev/null || true; })
+        [ "$log_links" = "1" ] || fail "The Ollama runtime log must be one unlinked regular file: $OLLAMA_LOG"
+    fi
     if ! : >"$OLLAMA_LOG"; then
         fail "The Ollama runtime log could not be prepared: $OLLAMA_LOG"
     fi
@@ -405,7 +538,7 @@ start_owned_ollama() {
         [ "$ollama_port" -gt 0 ] && [ "$ollama_port" -le 65535 ] || continue
         OLLAMA_HOST="http://127.0.0.1:$ollama_port"
         export OLLAMA_HOST
-        printf 'Starting the isolated Ollama service (attempt %s of 3)...\n' "$attempt"
+        printf 'Starting the isolated Ollama service (attempt %s of 3)...\n' "$attempt" >&2
         "$OLLAMA" serve >>"$OLLAMA_LOG" 2>&1 &
         OLLAMA_PID=$!
 
@@ -425,6 +558,18 @@ start_owned_ollama() {
         stop_owned_ollama
     done
     fail "Ollama did not start after three attempts. Review the runtime log at $OLLAMA_LOG"
+}
+
+prepare_application() {
+    # Function-local arguments leave the processing command untouched. Match
+    # Python's last model selection before downloading any model on first use.
+    set -- setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION
+    if [ "$setup_model_selected" -eq 1 ]; then
+        set -- "$@" "--model=$setup_model"
+    fi
+    # Setup's progress and failures already appear on stderr. Its JSON is
+    # unused here and must not overwrite a linked runtime file.
+    exec "$APP_CLI" "$@" >/dev/null
 }
 
 ollama_version_is_supported() {
@@ -502,7 +647,7 @@ require_supported_glibc() {
 }
 
 install_ollama() {
-    printf 'Installing the verified local Ollama service...\n'
+    printf 'Installing the verified local Ollama service...\n' >&2
     case "$(uname -s)-$(uname -m)" in
         Darwin-*)
             ollama_archive_name="ollama-darwin.tgz"
@@ -534,10 +679,10 @@ install_ollama() {
     rm -rf "$ollama_staging"
     mkdir -m 700 "$ollama_staging"
     if [ "$ollama_archive_type" = "gzip" ]; then
-        tar -xzf "$ollama_archive" -C "$ollama_staging" &
+        tar -xzf "$ollama_archive" -C "$ollama_staging" >&2 &
     else
         "$APP_PYTHON" "$ROOT/extract_ollama_archive.py" \
-            "$ollama_archive" "$ollama_staging" &
+            "$ollama_archive" "$ollama_staging" >&2 &
     fi
     APP_PID=$!
     if ! wait "$APP_PID"; then
@@ -597,10 +742,10 @@ install_uv() {
             ;;
         *) fail "No verified uv download is available for this computer." ;;
     esac
-    printf 'Preparing the private local Python runtime...\n'
+    printf 'Preparing the private local Python runtime...\n' >&2
     uv_archive="$RUNTIME/$archive_name"
     download_script "$BUNDLED_UV_RELEASE_URL/$archive_name" "$uv_archive" "$archive_sha256"
-    tar -xzf "$uv_archive" --strip-components 1 -C "$RUNTIME/bin"
+    tar -xzf "$uv_archive" --strip-components 1 -C "$RUNTIME/bin" >&2
     rm -f "$uv_archive"
 }
 
@@ -637,15 +782,7 @@ chmod 700 "$RUNTIME" "$RUNTIME/bin"
 private_data_present=0
 has_private_data && private_data_present=1
 
-wheel=""
-wheel_count=0
-for candidate in "$ROOT"/uma_bct_cli-*.whl; do
-    [ -f "$candidate" ] || continue
-    [ ! -L "$candidate" ] || fail "The supplied wheel must not be a symbolic link."
-    wheel=$candidate
-    wheel_count=$((wheel_count + 1))
-done
-[ "$wheel_count" -eq 1 ] || fail "The supplied folder must contain exactly one UMA BCT wheel."
+find_bundled_wheel
 [ -f "$CONSTRAINTS" ] && [ ! -L "$CONSTRAINTS" ] || fail "The supplied dependency lock is missing or redirected."
 
 # Ignore inherited installer settings and endpoint overrides. The bundle
@@ -688,17 +825,17 @@ fi
 if [ "$private_data_present" -eq 0 ]; then
     # Finish all online dependencies before inviting the client to add photos.
     has_private_data && fail "Private files appeared before online preparation finished."
-    printf 'Installing the verified application dependencies...\n'
-    "$UV" venv --no-config --clear --managed-python --python 3.12 "$APP_ENV"
-    "$UV" pip sync --no-config --require-hashes --python "$APP_PYTHON" "$CONSTRAINTS"
-    "$UV" pip install --no-config --offline --no-deps --python "$APP_PYTHON" "$wheel"
+    printf 'Installing the verified application dependencies...\n' >&2
+    "$UV" venv --no-config --clear --managed-python --python 3.12 "$APP_ENV" >&2
+    "$UV" pip sync --no-config --require-hashes --python "$APP_PYTHON" "$CONSTRAINTS" >&2
+    "$UV" pip install --no-config --offline --no-deps --python "$APP_PYTHON" "$wheel" >&2
 else
     [ -x "$APP_PYTHON" ] || \
         fail "Move private files out of '$INPUTS' and '$OUTPUTS' before repairing the application environment."
     [ -f "$APP_CLI" ] && [ ! -L "$APP_CLI" ] || \
         fail "Move private files out of '$INPUTS' and '$OUTPUTS' before repairing the application environment."
     "$UV" pip install --no-config --offline --no-deps --reinstall \
-        --python "$APP_PYTHON" "$wheel"
+        --python "$APP_PYTHON" "$wheel" >&2
 fi
 [ -x "$APP_CLI" ] || fail "The application could not be installed."
 
@@ -726,11 +863,11 @@ cd "$ROOT"
 if [ "$private_data_present" -eq 0 ]; then
     has_private_data && fail "Private files appeared before online preparation finished."
     if [ "$HOSTED_MODE" -eq 1 ]; then
-        printf 'Checking the hosted client and private folders...\n'
+        printf 'Checking the hosted client and private folders...\n' >&2
     else
-        printf 'Checking the application and model. The first model download is large...\n'
+        printf 'Checking the application and model. The first model download is large...\n' >&2
     fi
-    "$APP_CLI" setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION >"$RUNTIME/setup.json" &
+    prepare_application &
     APP_PID=$!
     if ! wait "$APP_PID"; then
         APP_PID=""
@@ -739,13 +876,14 @@ if [ "$private_data_present" -eq 0 ]; then
     APP_PID=""
 fi
 
-if ! has_input_images; then
-    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to %s.\n' "$INPUTS"
+printf 'Photos folder: %s\nResults folder: %s\n' "$INPUTS" "$OUTPUTS" >&2
+if [ "$INTERACTIVE" -eq 1 ]; then
+    # Reopen the same private folder each time, including when resuming a
+    # finished batch, so the user can add or replace photos before continuing.
+    printf 'Add supported photo files (including JPG, PNG, HEIC, or DNG) to the photos folder.\n' >&2
     open_folder "$INPUTS"
-    if [ -t 0 ]; then
-        printf 'Press Enter after the photos have finished copying: '
-        read -r _answer
-    fi
+    printf 'Press Enter after the photos have finished copying: ' >&2
+    read -r _answer || fail "No input was received. Run this launcher again when you are ready."
 fi
 has_input_images || fail "No supported photos were found in $INPUTS"
 
@@ -754,7 +892,7 @@ set +e
 # final readable report appears here before the Results folder opens.
 # Save stdin before dash replaces a background child's fd 0 with /dev/null.
 exec 3<&0
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION <&3 3<&- &
+"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION "$@" <&3 3<&- &
 APP_PID=$!
 exec 3<&-
 wait "$APP_PID"
@@ -762,7 +900,7 @@ status=$?
 APP_PID=""
 set -e
 
-if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+if [ "$INTERACTIVE" -eq 1 ] && { [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; }; then
     open_folder "$OUTPUTS"
 fi
 exit "$status"

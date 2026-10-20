@@ -38,11 +38,26 @@ class TextTranscriber(Protocol):
 
 
 class DateDetector(Protocol):
-    """Read the text from one box."""
+    """Extract dates from transcribed text."""
 
     name: str
 
     def extract_dates(self, text: str) -> tuple[Date | DateRange, ...]: ...
+
+
+@dataclass(frozen=True)
+class DateExtraction:
+    """Keep usable dates and source ambiguity separate from request failures."""
+
+    dates: tuple[Date | DateRange, ...]
+    needs_review: bool = False
+
+
+def extract_dates_with_review(detector: DateDetector, text: str) -> DateExtraction:
+    """Accept richer local adapters while preserving existing tuple adapters."""
+
+    method = getattr(detector, "extract_dates_with_review", None)
+    return method(text) if method is not None else DateExtraction(detector.extract_dates(text))
 
 
 @runtime_checkable

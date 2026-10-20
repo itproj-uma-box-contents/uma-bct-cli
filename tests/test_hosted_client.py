@@ -93,6 +93,31 @@ class HostedVisionModelTest(unittest.TestCase):
                 self.assertIn("1950", content[0]["text"])
                 self.assertEqual(sdk.completion.call_args.kwargs["response_format"], {"type": "json_object"})
 
+    def test_duplicate_json_fields_are_rejected_without_private_response_text(self):
+        sdk = self.sdk(content='{"boxes":[{"typed":["private archive text"]}],"boxes":[]}')
+        client = HostedVisionModel(HostedModelConfig(model="openai/example", api_key="secret-test-key"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk), \
+                self.assertRaisesRegex(ValueError, "duplicate") as caught:
+            client.query(self.image_path, "Read boxes.", self.schema)
+        self.assertNotIn("private archive text", str(caught.exception))
+        self.assertNotIn("secret-test-key", str(caught.exception))
+
+    def test_ambiguous_century_is_review_data_without_a_retry(self):
+        text = "12 May 50; filed 1952"
+        response = {"dates": [
+            {"raw_text": "12 May 50", "starting_index": 0,
+             "start_date": {"day": 12, "month": 5, "year": 1950}, "end_date": {}},
+            {"raw_text": "1952", "starting_index": text.index("1952"),
+             "start_date": {"year": 1952}, "end_date": {}},
+        ]}
+        sdk = self.sdk(content=json.dumps(response))
+        client = HostedVisionModel(HostedModelConfig(model="openai/example", api_key="synthetic-key"))
+        with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+            outcome = QwenDateDetector(client).extract_dates_with_review(text)
+        sdk.completion.assert_called_once()
+        self.assertEqual(outcome.dates, (Date(year=1952),))
+        self.assertTrue(outcome.needs_review)
+
     def test_schema_capability_uses_portable_strict_structure(self):
         sdk = self.sdk()
         sdk.supports_response_schema.return_value = True
@@ -136,6 +161,20 @@ class HostedVisionModelTest(unittest.TestCase):
         self.assertEqual(metadata["backend"], "hosted")
         self.assertEqual(metadata["api_base"], PROVIDER_API_BASES["gemini"])
         sdk.completion.assert_not_called()
+
+    def test_malformed_probability_metadata_keeps_the_valid_reply(self):
+        content = '{"boxes":[]}'
+        malformed = (42, "invalid metadata", {"token": content},
+                     [{"token": content, "logprob": -(10 ** 400)}])
+        for provider in PROVIDER_API_BASES:
+            for logprobs in malformed:
+                with self.subTest(provider=provider, metadata=type(logprobs).__name__):
+                    sdk = self.sdk(content=content, logprobs=logprobs, params=("logprobs",))
+                    client = HostedVisionModel(HostedModelConfig(model=f"{provider}/example", api_key="synthetic-key"))
+                    with patch("uma_bct.adapters.hosted_client._load_litellm", return_value=sdk):
+                        result = client.query(self.image_path, "Synthetic check.", self.schema, logprobs=True)
+                    self.assertEqual(result.value, {"boxes": []})
+                    self.assertEqual(result.token_logprobs, ())
 
     def test_client_load_suppresses_sdk_stdout_feedback(self):
         sdk = self.sdk()

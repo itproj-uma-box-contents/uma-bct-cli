@@ -104,6 +104,9 @@ def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose:
 
 
 def restore_backup_no_clobber(backup: Path, destination: Path, purpose: str) -> None:
+    # Validate before creating a temporary file, not just before publication.
+    # Recovery must never follow a replacement output-parent link.
+    check_path(destination, purpose)
     temporary_path: Path | None = None
     try:
         with open_stable_file(backup, f"Backed-up {purpose}") as (source, _metadata):
@@ -129,6 +132,10 @@ def rollback_owned_file(destination: Path, expected_digest: str, backup: Path | 
     """Atomically displace and verify an owned publication before rollback."""
 
     quarantine: Path | None = destination.with_name(f".uma-bct-rollback-{uuid.uuid4().hex}.tmp")
+    # No rollback mutation is safe until both paths and their parents are
+    # known to remain inside the selected output layout.
+    check_path(destination, purpose)
+    check_path(quarantine, f"Rollback {purpose}")
     try:
         os.replace(destination, quarantine)
         # Roll back only bytes this run published. If someone edited the file

@@ -57,6 +57,9 @@ WORKING_DIRECTORY_NAME = ".working"
 PENDING_CATALOGUE_NAME = ".uma-bct-catalogue-pending.csv"
 PENDING_CATALOGUE_NAMES = frozenset({PENDING_CATALOGUE_NAME, ".uma-bct-catalogue-pending.xlsx"})
 MANAGED_SCHEMA_VERSION = 1
+# Version 1 predates compound-unit checks; version 2 predates the Description
+# evidence fix. Older staged files must still reproduce their original bytes.
+CATALOGUE_MAPPING_VERSION = 3
 TERMINAL_IMAGE_STATES = frozenset({"complete", "partial", "failed"})
 ACTIVE_WINDOWS_GUARDS: set[str] = set()
 DESKTOP_METADATA = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
@@ -834,6 +837,7 @@ def dispose_or_restore_quarantine(
 ) -> None:
     """Remove only recorded bytes, restoring a file changed during cleanup."""
 
+    check_path(target, f"{purpose} restoration target")
     fingerprint_file(quarantine, purpose)
     descriptor: int | None = None
     try:
@@ -875,6 +879,8 @@ def dispose_or_restore_quarantine(
 
 
 def restore_unlinked_crop_content(quarantine: Path, target: Path, content: bytes, purpose: str) -> None:
+    check_path(quarantine, f"{purpose} recovery file")
+    check_path(target, f"{purpose} restoration target")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(quarantine, flags, 0o600)
     try:
@@ -901,6 +907,10 @@ def quarantine_active_file(
     allowed: tuple[dict[str, Any], ...],
     purpose: str,
 ) -> None:
+    # Validate every destination before moving or disposing of evidence.
+    # An existing quarantine can take the restoration branch immediately.
+    for candidate in (path, quarantine, target):
+        check_path(candidate, purpose)
     if path_entry_exists(quarantine):
         dispose_or_restore_quarantine(quarantine, target, allowed, purpose)
     if not path_entry_exists(path):
@@ -956,6 +966,9 @@ def remove_working_directory(batch_directory: Path, relative_value: str | None) 
     relative = PurePosixPath(relative_value)
     if len(relative.parts) != 2 or relative.parts[0] != WORKING_DIRECTORY_NAME:
         raise ManagedBatchError(f"Working directory is outside the managed work root: {relative_value!r}")
+    # The leaf can be a real directory while .working or an ancestor redirects
+    # outside this batch. Recheck the whole path before recursive deletion.
+    check_path(working, "Managed working directory")
     try:
         metadata = working.lstat()
     except FileNotFoundError:
@@ -995,6 +1008,11 @@ def harmless_extra_file(path: Path, *, desktop_only: bool = False) -> bool:
 def prepare_resume(progress: dict[str, Any], batch_directory: Path) -> int:
     """Keep proven photo commits and reset only the photo active at interruption."""
 
+    # Active crop recovery runs before working-directory cleanup. Reject an
+    # already redirected layout before either path can mutate saved evidence.
+    for directory in (batch_directory, batch_directory / WORKING_DIRECTORY_NAME,
+                      batch_directory / BOX_IMAGES_DIRECTORY_NAME):
+        check_path(directory, "Managed recovery directory")
     effective_phase = (
         progress.get("interrupted_phase") if progress.get("phase") == "interrupted" else progress.get("phase")
     )
@@ -1556,27 +1574,53 @@ def stage_catalogue(
     stored_columns = publication.get("output_columns")
     if stored_columns is not None and stored_columns not in known_layouts:
         raise ManagedBatchError(f"Unsupported pending catalogue columns in {batch_directory}")
+    mapping_version = publication.get("mapping_version")
+    if "mapping_version" in publication and (
+        type(mapping_version) is not int or mapping_version not in {1, 2, CATALOGUE_MAPPING_VERSION}
+    ):
+        raise ManagedBatchError(f"Unsupported catalogue mapping version in {batch_directory}")
     columns = stored_columns or OUTPUT_COLUMNS
+    pending_exists = path_entry_exists(pending)
+    # Record current mapping before any new staged bytes can appear. An older
+    # unversioned file can still prove which mapping originally produced it.
+    if not pending_exists:
+        publication["mapping_version"] = CATALOGUE_MAPPING_VERSION
     publication.update(phase="staging", pending_catalogue=pending.name)
     progress["phase"] = "staging"
     write_progress(batch_directory, progress)
 
     # A restart may find a staged catalogue. Rebuild from committed records and
     # compare bytes rather than assuming the leftover file is trustworthy.
-    if path_entry_exists(pending):
+    if pending_exists:
         check_path(pending, "Pending catalogue")
         verification = batch_directory / f".uma-bct-catalogue-verify-{uuid.uuid4().hex}{pending.suffix}"
         try:
             pending_digest = file_digest(pending, "Pending catalogue")
-            for columns in ((stored_columns,) if stored_columns is not None else known_layouts):
+            layouts = (stored_columns,) if stored_columns is not None else known_layouts
+            formats = [(columns, False) for columns in layouts]
+            # Older CSV checkpoints contain formula links. Reproduce those bytes
+            # only to validate saved work; new CSV exports use readable paths.
+            if pending.suffix.casefold() == ".csv":
+                formats.extend((columns, True) for columns in layouts)
+            # Try the current mapping first for unversioned checkpoints. Once
+            # versioned, a staged file must match only its recorded mapping.
+            versions = (CATALOGUE_MAPPING_VERSION, 2, 1) if mapping_version is None else (mapping_version,)
+            candidates = []
+            for version in versions:
+                for columns, links in formats:
+                    candidates.append((columns, links, version))
+            for columns, legacy_formula_links, version in candidates:
                 records = export_catalogue(
                     results, verification, minimum_confidence=arguments.min_transcription_confidence,
                     replace_existing=False, detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
-                    trusted_crop_links=True, output_columns=columns,
+                    trusted_crop_links=legacy_formula_links, output_columns=columns,
+                    legacy_identity_mapping=version == 1,
+                    legacy_description_filter=version < 3,
                 )
                 matches = file_digest(verification, "Expected pending catalogue") == pending_digest
                 verification.unlink()
                 if matches:
+                    publication["mapping_version"] = version
                     break
             else:
                 raise ManagedBatchError(f"Pending catalogue does not match the committed results: {pending}")
@@ -1592,11 +1636,14 @@ def stage_catalogue(
             minimum_confidence=arguments.min_transcription_confidence,
             replace_existing=False,
             detect_missing_boxes=getattr(arguments, "detect_missing_boxes", True),
-            trusted_crop_links=True,
             output_columns=columns,
         )
     publication["output_columns"] = list(columns)
     digest = file_digest(pending, "Pending catalogue")
+    # A later read must not authorize new bytes after the original hash matched
+    # committed readings. Keep the changed file for review instead of publishing it.
+    if pending_exists and digest != pending_digest:
+        raise ManagedBatchError(f"Pending catalogue changed after validation: {pending}")
     publication.update(phase="publishing", sha256=digest, record_count=len(records))
     progress["phase"] = "publishing"
     write_progress(batch_directory, progress)
@@ -2059,11 +2106,23 @@ def _run_managed_batch(arguments: argparse.Namespace, images: list[Path], result
             print(
                 "This photo set has saved outcomes in:\n"
                 + "\n".join(summary["batch_directories"]) + "\n"
-                "Use --reprocess to create another batch.",
+                "Saved results keep their original processing settings. "
+                "Use --reprocess to apply new options in a separate batch.",
                 file=sys.stderr,
             )
             for catalogue in summary["catalogue_outputs"]:
                 print(f"Saved catalogue: {catalogue}", file=sys.stderr)
+            # Completed catalogues may contain reviewer edits. Explain why an
+            # explicit format request reuses them instead of silently converting.
+            requested_format = getattr(arguments, "file_type", None)
+            requested_suffix = ".xlsx" if requested_format == "excel" else ".csv"
+            if requested_format and any(Path(path).suffix.casefold() != requested_suffix
+                                        for path in summary["catalogue_outputs"]):
+                print(
+                    "Saved catalogues keep their original format. "
+                    f"To create a separate {requested_format} batch, use --format {requested_format} --reprocess.",
+                    file=sys.stderr,
+                )
             exit_code = 0 if summary["status"] == "complete" else 1
         else:
             assert batch_directory is not None and progress is not None

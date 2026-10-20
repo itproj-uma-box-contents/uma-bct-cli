@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from .domain import Box, BoxTranscription
-from .identity import CONTEXTUAL_UNIT, normalise_unit_claim
+from .identity import CONTEXTUAL_UNIT, has_compound_unit, normalise_unit_claim
 from .imaging import iou
 
 TYPED_SIMILARITY_THRESHOLD = 0.92
@@ -57,6 +57,11 @@ def unit_evidence(item: ObservedBox) -> set[str]:
 
 
 def unit_conflict(first: ObservedBox, second: ObservedBox) -> bool:
+    # A shared numeric prefix in "Unit 7/8" and "Unit 7" cannot establish that
+    # two detections show the same physical box. Keep those readings separate.
+    if any(has_compound_unit(line) for item in (first, second)
+           for line in (*item.transcription.typed_lines, *item.transcription.handwritten_lines)):
+        return True
     first_units = unit_evidence(first)
     second_units = unit_evidence(second)
     return bool(first_units and second_units and first_units.isdisjoint(second_units))
@@ -126,7 +131,6 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     representative = best_observation(group, lambda value: value.typed_lines)
     typed = representative.transcription.typed_lines
     handwritten_source = best_observation(group, lambda value: value.handwritten_lines)
-    dates_source = best_observation(group, lambda value: value.handwritten_lines)
     identifier_source = best_observation(group, lambda value: value.record_identifiers)
     auxiliary_source = best_observation(group, lambda value: value.auxiliary_annotations)
     unit_source = max(
@@ -141,7 +145,7 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
     position_source = max(
         group, key=lambda item: (bool(item.transcription.position.strip()), item.transcription.confidence, -item.crop_index)
     )
-    selected = (representative, handwritten_source, dates_source, identifier_source, auxiliary_source, unit_source, position_source)
+    selected = (representative, handwritten_source, identifier_source, auxiliary_source, unit_source, position_source)
     transcription = BoxTranscription(
         box_id=representative.box.box_id,
         position=position_source.transcription.position,
@@ -150,7 +154,11 @@ def merge_group(group: Sequence[ObservedBox]) -> ObservedBox:
         unit_number=unit_source.transcription.unit_number,
         typed_lines=typed,
         handwritten_lines=handwritten_source.transcription.handwritten_lines,
-        dates=dates_source.transcription.dates,
+        # Extracted dates and their outcome belong to the chosen handwriting.
+        # Preserve this evidence even when a group contains only one reading.
+        dates=handwritten_source.transcription.dates,
+        date_extraction_failed=handwritten_source.transcription.date_extraction_failed,
+        date_needs_review=handwritten_source.transcription.date_needs_review,
         auxiliary_annotations=auxiliary_source.transcription.auxiliary_annotations,
         needs_review=(
             any(item.transcription.needs_review for item in group)

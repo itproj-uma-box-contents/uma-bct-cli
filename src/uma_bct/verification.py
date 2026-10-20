@@ -21,7 +21,7 @@ from .constants import AMBIGUOUS_IDENTIFIER_FLAG, INVALID_UNIT_FLAG, TRANSCRIPTI
 from .domain import BoxTranscription
 from .identity import collect_unit_evidence, identifier_evidence_details, normalise_unit_claim
 from .pipeline import ImageResult, warning_text
-from .ports import DateDetector
+from .ports import DateDetector, extract_dates_with_review
 from .util.date_util import deserialize_dates
 
 MODES = ("ask", "always", "never")
@@ -41,7 +41,9 @@ def choose_verification(arguments: argparse.Namespace, mode: str, *, has_records
         return False
     if mode == "always":
         return True
-    if getattr(arguments, "json", False) or not sys.stdin.isatty() or not sys.stderr.isatty():
+    # Keep the launcher and verification prompt rules consistent when any
+    # stream is redirected for automation or captured reports.
+    if getattr(arguments, "json", False) or not all(stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr)):
         return False
     print("\nFirst pass finished. Check each crop again? This adds model processing time.", file=sys.stderr)
     choices = "[y] once, [N] finish"
@@ -145,7 +147,18 @@ def reconcile(first: BoxTranscription, second: BoxTranscription,
                 if key not in unresolved:
                     unresolved.append(key)
     if "handwritten_lines" in selected:
+        # Dates and their failure flag describe the selected handwriting.
+        # Never carry an earlier extraction failure onto a corroborated correction.
         selected["dates"] = second.dates
+        selected["date_extraction_failed"] = second.date_extraction_failed
+        selected["date_needs_review"] = second.date_needs_review
+    else:
+        # New agreement may flag old saved dates without rewriting their values.
+        same_handwriting = signature(first, ("handwritten_lines",))
+        selected["date_needs_review"] = first.date_needs_review or any(
+            value.date_needs_review and signature(value, ("handwritten_lines",)) == same_handwriting
+            for value in (second, third) if value is not None
+        )
     return replace(first, **selected, confidence=min(item.confidence for item in contributors),
                    needs_review=bool(disputed) or any(item.needs_review for item in contributors)), disputed, unresolved
 
@@ -195,7 +208,11 @@ def verify_image(result: ImageResult, transcriber: Any, *, on_stage: Callable[[s
             raise VerificationSetupError(str(error)) from error
         if detector is None:
             return values
-        return [replace(value, dates=detector.extract_dates(value.get_handwritten_text())) for value in values]
+        extracted = []
+        for value in values:
+            outcome = extract_dates_with_review(detector, value.get_date_text())
+            extracted.append(replace(value, dates=outcome.dates, date_needs_review=outcome.needs_review))
+        return extracted
 
     failed = False
     for number, indices in enumerate(groups.values(), 1):

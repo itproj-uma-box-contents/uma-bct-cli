@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .identity import date_extraction_text
 from .util.date_util import Date, DateRange
 
 
@@ -103,6 +104,10 @@ class BoxTranscription:
     typed_lines: tuple[str, ...] = ()
     handwritten_lines: tuple[str, ...] = ()
     dates: tuple[Date | DateRange, ...] = field(default=(), kw_only=True)
+    # Separate failed requests from ambiguous source dates. Ambiguity needs
+    # human review without making otherwise successful processing partial.
+    date_extraction_failed: bool = field(default=False, kw_only=True)
+    date_needs_review: bool = field(default=False, kw_only=True)
     auxiliary_annotations: tuple[str, ...] = ()
     needs_review: bool = False
 
@@ -120,17 +125,27 @@ class BoxTranscription:
             "unit": self.unit_number,
             "typed": list(self.typed_lines),
             "handwritten": list(self.handwritten_lines),
-            "dates": list([date.to_string() for date in self.dates]),
+            "dates": [date.to_string() for date in self.dates],
             "auxiliary_annotations": list(self.auxiliary_annotations),
             "transcription_confidence": self.confidence,
         }
         if self.needs_review:
             value["needs_review"] = True
+        # Older saved readings omit this field; keep successful output small
+        # while distinguishing extraction failures from genuinely undated text.
+        if self.date_extraction_failed:
+            value["date_extraction_failed"] = True
+        if self.date_needs_review:
+            value["date_needs_review"] = True
         return value
 
     def get_handwritten_text(self) -> str:
-            """Gets the handwritten text as a single string."""
-            return "\n".join(self.handwritten_lines)
+        """Return handwriting in its original reading order."""
+        return "\n".join(self.handwritten_lines)
+
+    def get_date_text(self) -> str:
+        """Return date-request text without explicit corroborated identity."""
+        return date_extraction_text(self.typed_lines, self.handwritten_lines, self.record_identifiers)
 
 
 @dataclass(frozen=True)

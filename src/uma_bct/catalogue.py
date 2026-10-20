@@ -12,7 +12,9 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 from .constants import (
+    AMBIGUOUS_DATE_FLAG,
     AMBIGUOUS_IDENTIFIER_FLAG,
+    DATE_EXTRACTION_FAILED_FLAG,
     INVALID_UNIT_FLAG,
     MISSING_IDENTIFIER_FLAG,
     MISSING_UNIT_FLAG,
@@ -125,14 +127,16 @@ def record_identifiers(transcription: BoxTranscription) -> tuple[tuple[str, ...]
     return identifiers, False, False
 
 
-def normalise_unit(transcription: BoxTranscription) -> tuple[str, str | None, bool]:
+def normalise_unit(transcription: BoxTranscription, *, legacy_identity_mapping: bool = False) -> tuple[str, str | None, bool]:
     raw_unit = transcription.unit_number.strip()
     if not raw_unit:
         return "", MISSING_UNIT_FLAG, False
     normalized = normalise_unit_claim(raw_unit)
     if normalized is None:
         return "", INVALID_UNIT_FLAG, False
-    evidence = collect_unit_evidence(transcription.typed_lines, transcription.handwritten_lines)
+    evidence = collect_unit_evidence(
+        transcription.typed_lines, transcription.handwritten_lines, reject_compound_units=not legacy_identity_mapping,
+    )
     if evidence.ambiguous or evidence.candidates != {normalized}:
         return "", INVALID_UNIT_FLAG, True
     return normalized, None, False
@@ -158,7 +162,7 @@ def image_reference(image_file_path: str | Path, catalogue_path: str | Path | No
 
 
 def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Path) -> str:
-    """Build a formula only for a validated, managed ``Box Images`` path."""
+    """Rebuild legacy CSV formulas only for validated managed ``Box Images`` paths."""
 
     reference = image_reference(image_file_path, catalogue_path)
     relative = PurePosixPath(reference)
@@ -171,10 +175,12 @@ def trusted_crop_hyperlink(image_file_path: str | Path, catalogue_path: str | Pa
     return f'=HYPERLINK("{target}","{label}")'
 
 
-def description(transcription: BoxTranscription) -> str:
+def description(transcription: BoxTranscription, *, legacy_filter: bool = False) -> str:
     values = (*non_empty_lines(transcription.handwritten_lines), *non_empty_lines(transcription.auxiliary_annotations))
     visible = (
-        line for line in values if not identity_only_line(line, transcription.record_identifiers, transcription.unit_number)
+        line for line in values if not identity_only_line(
+            line, transcription.record_identifiers, transcription.unit_number, legacy_filter=legacy_filter,
+        )
     )
     return escape_spreadsheet_formula("; ".join(visible))
 
@@ -193,12 +199,16 @@ def verification_flags(audit: dict[str, object] | None) -> tuple[str, ...]:
 
 def map_catalogue_record(transcription: BoxTranscription, image_file_path: str | Path, *,
                          catalogue_path: str | Path | None = None, additional_flags: Iterable[str] = (),
-                         trusted_crop_link: bool = False, spreadsheet_safe: bool = True) -> dict[str, str | int]:
+                         trusted_crop_link: bool = False, spreadsheet_safe: bool = True,
+                         legacy_identity_mapping: bool = False,
+                         legacy_description_filter: bool = False) -> dict[str, str | int]:
     """Keep printed text visible and flag identity claims that need review."""
 
     identifiers, ambiguous_identifier, identifier_mismatch = record_identifiers(transcription)
-    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription)
-    unit_type = unit_type_text(transcription.typed_lines)
+    # Only historical staged-file checks replay the former compound-unit rules.
+    # Ordinary exports keep ambiguous numbers blank and retain their visible text.
+    unit_number, unit_flag, unit_mismatch = normalise_unit(transcription, legacy_identity_mapping=legacy_identity_mapping)
+    unit_type = unit_type_text(transcription.typed_lines, preserve_compound_units=not legacy_identity_mapping)
     flags: list[str] = []
     if not unit_type:
         flags.append(AMBIGUOUS_IDENTIFIER_FLAG if ambiguous_identifier else MISSING_IDENTIFIER_FLAG)
@@ -210,10 +220,14 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         flags.append(unit_flag)
     if transcription.needs_review or identifier_mismatch or unit_mismatch:
         flags.append(TRANSCRIPTION_MISMATCH_FLAG)
+    if transcription.date_extraction_failed:
+        flags.append(DATE_EXTRACTION_FAILED_FLAG)
+    if transcription.date_needs_review:
+        flags.append(AMBIGUOUS_DATE_FLAG)
     flags.extend(flag for flag in additional_flags if flag not in flags)
 
-    # Formula links are reserved for validated managed crops. Other paths are
-    # exported as escaped text because filenames may be untrusted input.
+    # Legacy checkpoint checks may need their original formula links. New CSV
+    # exports use escaped path text because filenames may be untrusted input.
     if trusted_crop_link:
         if catalogue_path is None:
             raise ValueError("A catalogue path is required for a trusted crop link.")
@@ -224,7 +238,7 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
     record: dict[str, str | int] = {
         "Unit Type": escape_spreadsheet_formula(unit_type),
         "Unit Number": unit_number,
-        "Description": description(transcription),
+        "Description": description(transcription, legacy_filter=legacy_description_filter),
         "Transcription Confidence (%)": transcription.confidence,
         "Review Flags": "; ".join(flags),
         "Cropped Box Image Link": image,
@@ -233,12 +247,14 @@ def map_catalogue_record(transcription: BoxTranscription, image_file_path: str |
         "Latest Date": get_latest_date(transcription.dates).to_string(),
     }
     if not spreadsheet_safe:
-        # HTML escapes at its own boundary; do not display CSV's protective apostrophe.
+        # Raw comparisons need the visible text, without CSV's protective apostrophe.
         record["Unit Type"] = unit_type
         record["Description"] = "; ".join(
             line for line in (*non_empty_lines(transcription.handwritten_lines),
                               *non_empty_lines(transcription.auxiliary_annotations))
-            if not identity_only_line(line, transcription.record_identifiers, transcription.unit_number)
+            if not identity_only_line(
+                line, transcription.record_identifiers, transcription.unit_number, legacy_filter=legacy_description_filter,
+            )
         )
         record["Cropped Box Image Link"] = image_reference(image_file_path, catalogue_path)
     return CatalogueRow({column: record[column] for column in OUTPUT_COLUMNS})

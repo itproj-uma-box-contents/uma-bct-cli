@@ -7,6 +7,28 @@ from collections.abc import Sequence
 from typing import Any
 
 
+def valid_logprob(value: Any) -> bool:
+    """Treat malformed probability metadata as unavailable, never as certainty."""
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value > 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def check_unicode(value: str, *, box_number: int, field: str) -> None:
+    """Reject lone JSON surrogate escapes before UTF-8 files are published."""
+
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Name the field, not its private contents. The caller retains any
+        # other successfully transcribed boxes through normal crop recovery.
+        raise ValueError(f"box {box_number}.{field} contains invalid Unicode") from None
+
+
 def wrap_boxes(value: Any) -> dict[str, Any]:
     """Normalize canonical, bare-array, and single-record replies without merging records."""
 
@@ -41,6 +63,7 @@ def check_text(item: dict[str, Any], *, box_number: int, field: str, maximum_cha
         raise TypeError(f"box {box_number}.{field} must be a string")
     if len(value) > maximum_characters:
         raise ValueError(f"box {box_number}.{field} must contain at most {maximum_characters} characters")
+    check_unicode(value, box_number=box_number, field=field)
     return value
 
 
@@ -56,6 +79,8 @@ def check_text_lines(
         raise ValueError(f"box {box_number}.{field} must contain at most {maximum_items} lines")
     if any(len(line) > maximum_characters for line in value):
         raise ValueError(f"box {box_number}.{field} lines must contain at most {maximum_characters} characters")
+    for line in value:
+        check_unicode(line, box_number=box_number, field=field)
     return list(value)
 
 
@@ -117,6 +142,8 @@ def box_token_confidences(token_logprobs: Sequence[tuple[str, float]], box_count
     """
 
     if not token_logprobs or box_count <= 0:
+        return [None] * box_count
+    if any(not isinstance(token, str) or not valid_logprob(probability) for token, probability in token_logprobs):
         return [None] * box_count
 
     raw_text = "".join(token for token, _logprob in token_logprobs)

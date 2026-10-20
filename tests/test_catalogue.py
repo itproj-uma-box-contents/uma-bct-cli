@@ -212,6 +212,20 @@ class CatalogueRulesTest(unittest.TestCase):
         record = map_catalogue_record(transcription, box.image_file_path)
         self.assertEqual(record["Description"], "'=SUM(A1:A2); Fragile")
 
+    def test_description_keeps_condition_annotations_and_conflicting_numeric_evidence(self):
+        box = make_box()
+        for handwritten, auxiliary, expected in (
+            ((), ("Fragile Box 4",), "Fragile Box 4"),
+            (("Mould on Box 4",), (), "Mould on Box 4"),
+            (("7",), (), "7"),
+            (("1950",), (), "1950"),
+        ):
+            with self.subTest(handwritten=handwritten, auxiliary=auxiliary):
+                transcription = make_transcription(box, handwritten=handwritten, auxiliary=auxiliary)
+                for spreadsheet_safe in (False, True):
+                    record = map_catalogue_record(transcription, box.image_file_path, spreadsheet_safe=spreadsheet_safe)
+                    self.assertEqual(record["Description"], expected)
+
     def test_untrusted_crop_text_is_escaped_and_only_managed_paths_become_formulas(self):
         box = make_box(crop_path=Path("=OPEN-UNTRUSTED.png"))
         transcription = make_transcription(box)
@@ -447,6 +461,24 @@ class CsvExportTest(unittest.TestCase):
                 export_catalogue([result], output, replace_existing=False)
 
             self.assertEqual(output.read_text(encoding="utf-8"), "late output\n")
+
+    def test_csv_crop_paths_are_readable_and_portable_with_special_characters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            output = root / "batch/Catalogue.csv"
+            crop = output.parent / "Box Images/é # 20% box.png"
+            crop.parent.mkdir(parents=True)
+            crop.write_bytes(b"synthetic crop")
+            box = make_box(crop_path=crop)
+            export_catalogue([make_result(BoxResult(box, make_transcription(box)))], output)
+
+            # CSV stores the readable path literally, without a formula or URL escaping.
+            with output.open(newline="", encoding="utf-8") as source:
+                reference = next(csv.DictReader(source))["Cropped Box Image Link"]
+            self.assertEqual(reference, "Box Images/é # 20% box.png")
+            moved = root / "Moved Batch"
+            output.parent.rename(moved)
+            self.assertTrue((moved / reference).is_file())
 
     def test_rejects_unsupported_output_formats(self):
         with self.assertRaisesRegex(ValueError, "must end in .xlsx or .csv"):
