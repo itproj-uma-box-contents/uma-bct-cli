@@ -23,7 +23,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -42,12 +41,13 @@ from .constants import (
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .model_config import selected_model_metadata, selected_model_name
-from .path_safety import check_path, redirected_path_kind
+from .path_safety import check_path, path_entry_exists, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
 from .util.date_util import deserialize_dates
 from .verification import choose_verification, configured_mode, verify_image
+from .version import package_version as application_version
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
@@ -128,13 +128,6 @@ def unlock_descriptor(descriptor: int) -> None:
         import fcntl
 
         fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
-def application_version() -> str:
-    try:
-        return version("uma-bct-cli")
-    except PackageNotFoundError:
-        return "0.1.0"
 
 
 def canonical_lock_name(path: Path) -> str:
@@ -1351,16 +1344,6 @@ def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) 
 
 def write_progress(batch_directory: Path, progress: dict[str, Any]) -> None:
     write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress)
-
-
-def path_entry_exists(path: Path) -> bool:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return True
 
 
 def can_write_progress(batch_directory: Path) -> bool:

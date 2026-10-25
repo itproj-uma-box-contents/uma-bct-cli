@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .atomic import open_stable_file, rename_new_file
-from .path_safety import check_path
+from .path_safety import check_path, path_entry_exists
 
 LOCK_FILE_NAME = ".uma-bct.lock"
 
@@ -38,18 +38,6 @@ def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
         return regular_file_sha256(first, purpose) == regular_file_sha256(second, purpose)
     except (OSError, ValueError):
         return False
-
-
-def path_entry_exists(path: Path) -> bool:
-    """Treat an inspection error as occupied so a writer fails closed."""
-
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return True
 
 
 def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose: str) -> None:

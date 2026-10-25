@@ -13,7 +13,6 @@ import ntpath
 import os
 import stat
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
@@ -28,18 +27,12 @@ from .pipeline import warning_text
 from .run_artifacts import manifest_path
 from .setup_command import run_setup
 from .verification import MODES, configured_mode
+from .version import package_version
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         super().error(warning_text(message))
-
-
-def package_version() -> str:
-    try:
-        return version("uma-bct-cli")
-    except PackageNotFoundError:
-        return "0.1.0"
 
 
 def bounded_float(value: str) -> float:
