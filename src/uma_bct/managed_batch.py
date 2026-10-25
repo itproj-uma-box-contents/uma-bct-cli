@@ -635,12 +635,6 @@ def completed_batch_order_key(item: tuple[Path, dict[str, Any]]) -> tuple[str, s
     return str(item[1].get("created_at", "")), base, collision
 
 
-def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
-    """Keep the existing helper available to callers inspecting batch history."""
-
-    return max(completed, key=completed_batch_order_key, default=None)
-
-
 def input_identity(item: dict[str, Any]) -> tuple[str, int, str]:
     return item["relative_name"], item["size"], item["sha256"]
 
