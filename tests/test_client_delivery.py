@@ -344,6 +344,28 @@ class ClientDeliveryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "verify"):
                 verify_client_bundle(dist, source_root=root)
 
+    def test_bundle_keeps_wheel_beside_launchers_when_built_under_docs(self):
+        for output_name in ("docs", "docs/release"):
+            with self.subTest(output_directory=output_name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                _dist, wheel = self.prepare_bundle_sources(root)
+                output = root / output_name
+                output.mkdir(parents=True, exist_ok=True)
+                wheel = wheel.replace(output / wheel.name)
+
+                bundle = build_client_bundle(output, source_root=root)
+
+                with zipfile.ZipFile(bundle) as archive:
+                    self.assertEqual(archive.read(f"{BUNDLE_ROOT}/{wheel.name}"), b"wheel")
+                    self.assertEqual(archive.read(f"{BUNDLE_ROOT}/docs/usage.md"), b"docs/usage.md")
+                    self.assertIn(f"{BUNDLE_ROOT}/run-uma-bct.sh", archive.namelist())
+                    self.assertIn(f"{BUNDLE_ROOT}/Run UMA BCT.cmd", archive.namelist())
+                    self.assertEqual(
+                        [name for name in archive.namelist() if name.endswith(".whl")],
+                        [f"{BUNDLE_ROOT}/{wheel.name}"],
+                    )
+                verify_client_bundle(output, source_root=root)
+
     def test_bundle_rejects_a_linked_source_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

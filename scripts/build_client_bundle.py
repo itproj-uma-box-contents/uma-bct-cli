@@ -86,9 +86,11 @@ def source_boundary(source: Path, directory: Path, root: Path) -> Path:
 
 
 def bundle_member_name(source: Path, root: Path) -> str:
-    """Keep guide links portable while retaining the existing launcher layout."""
+    """Preserve Markdown guide paths; keep the wheel beside the launchers."""
 
-    name = source.relative_to(root).as_posix() if source.is_relative_to(root / "docs") else source.name
+    name = source.name
+    if source.suffix == ".md" and source.is_relative_to(root / "docs"):
+        name = source.relative_to(root).as_posix()
     return f"{BUNDLE_ROOT}/{name}"
 
 
