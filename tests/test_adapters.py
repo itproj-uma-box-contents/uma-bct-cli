@@ -271,7 +271,7 @@ class QwenAdapterTest(unittest.TestCase):
         client = FakeVision(response, token_logprobs=confident_token_logprobs(response, low_confidence_characters="4"))
         results = QwenTextTranscriber(client).transcribe(box)
         self.assertEqual(results[0].confidence, round(100 * math.exp(-6.0)))
-        # A low score is caught later by the --min-transcription-confidence
+        # A low score is caught later by the --confidence-threshold
         # export threshold, not needs_review, which stays reserved for
         # hedged/empty text and a totally unavailable score.
         self.assertFalse(results[0].needs_review)

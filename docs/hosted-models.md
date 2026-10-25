@@ -52,7 +52,7 @@ For a source checkout:
 
 ```sh
 uv sync --locked --dev --extra hosted --python 3.12
-uv run uma-bct --hosted --results-directory Results
+uv run uma-bct --hosted --batch-outputs Results
 ```
 
 Set the same environment variables first and put test images in `inputs/`.

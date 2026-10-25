@@ -45,32 +45,27 @@ Usage: sh run-uma-bct.sh [processing options]
 Photos: Add Photos Here   Results: Results
 Existing inputs/outputs folders are kept when they already contain data.
 
-  --format, --file-type csv|excel   Save CSV or Excel .xlsx; default CSV
-  --reprocess                     New batch; keep saved results
+  --format csv|excel               Save CSV or Excel .xlsx; default CSV
+  -r, --reprocess                  Process these photos again in a new batch
   --verification never|always|ask
       Blind second reading (default: never); ask needs a terminal
   --hosted                        Use UMA_BCT_API_MODEL / UMA_BCT_API_KEY
-  -d, --detector qwen|opencv
-      Find boxes (default: qwen); OpenCV is experimental
-  -t, --transcriber qwen          Use the selected local or hosted model
   -m, --model MODEL               Local model (default: pinned Qwen3-VL)
       Hosted model: UMA_BCT_API_MODEL
   --ai-dates
       Extract dates from transcribed handwriting with the selected model
       Adds text requests; omit for built-in date matching
-  -c, --min-transcription-confidence PERCENT
+  -c, --confidence-threshold PERCENT
       Flag scores below PERCENT; keep rows (0-100; default 50)
-  --min-confidence, --min-detector-confidence SCORE
-      Filter OpenCV detections, including fallback (0-1; default 0.60)
-  --request-timeout SECONDS
+  --min-detector-confidence SCORE
+      Advanced: filter OpenCV fallback proposals (0-1; default 0.60)
+  -t, --timeout SECONDS
       Positive timeout per processing request; retries can add time
       Default: UMA_BCT_OLLAMA_TIMEOUT_SECONDS or 600 seconds
-  --no-missing-box, --no-missing-box-detection
+  -mb, --disable-missing-box-rows
       Omit suggested rows for gaps in unit numbers
   --json                          JSON run summary; use --format for CSV/Excel
       Progress goes to stderr; never prompt
-  --human                         Readable run summary (default)
-      Cannot combine with --json
   -h, --help                      Show help without setting up the runtime
   --version                       Show the bundled application version
 
@@ -123,22 +118,26 @@ for argument do
         esac
     fi
     case "$argument" in
-        --path-to-inputs|--path-to-inputs=*|-i*|\
-        --path-to-outputs|--path-to-outputs=*|--path-to-output|--path-to-output=*|-o*|\
-        --path-to-box-images|--path-to-box-images=*|--work-dir|--work-dir=*|-b*|\
-        --results-directory|--results-directory=*|--force|--force=*|-f*|setup)
+        --inputs|--inputs=*|-i*|\
+        --outputs|--outputs=*|-o*|\
+        --crop-outputs|--crop-outputs=*|-co*|\
+        --batch-outputs|--batch-outputs=*|--force|--force=*|-f*|setup)
             fail "This ZIP launcher uses its managed photo and results folders. Use direct uma-bct for '$argument'; see README.md."
+            ;;
+        --detector|--detector=*|-d*|--transcriber|--transcriber=*|--human)
+            fail "'$argument' is no longer supported. Detection and transcription use the selected model automatically; readable output is the default."
             ;;
         # argparse also treats a short cluster beginning with -h as help.
         -h*|--help) metadata_option=help ;;
         --version) [ "$metadata_option" = "help" ] || metadata_option=version ;;
         --json) JSON_OUTPUT=1 ;;
         --hosted) HOSTED_REQUESTED=1 ;;
+        -mb) ;; # Missing-box switch, not an attached local model name.
         --model=*) setup_model=${argument#--model=}; setup_model_selected=1 ;;
         -m=*) setup_model=${argument#-m=}; setup_model_selected=1 ;;
         -m?*) setup_model=${argument#-m}; setup_model_selected=1 ;;
-        --format|--file-type|--verification|-d|--detector|-t|--transcriber|-m|--model|\
-        -c|--min-transcription-confidence|--min-confidence|--min-detector-confidence|--request-timeout)
+        --format|--file-type|--verification|-m|--model|\
+        -c|--confidence-threshold|--min-confidence|--min-detector-confidence|-t|--timeout|--request-timeout)
             expects_value=1
             value_option=$argument
             ;;
@@ -563,7 +562,7 @@ start_owned_ollama() {
 prepare_application() {
     # Function-local arguments leave the processing command untouched. Match
     # Python's last model selection before downloading any model on first use.
-    set -- setup --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION
+    set -- setup --inputs "$INPUTS" --batch-outputs "$OUTPUTS" $HOSTED_OPTION
     if [ "$setup_model_selected" -eq 1 ]; then
         set -- "$@" "--model=$setup_model"
     fi
@@ -892,7 +891,7 @@ set +e
 # final readable report appears here before the Results folder opens.
 # Save stdin before dash replaces a background child's fd 0 with /dev/null.
 exec 3<&0
-"$APP_CLI" --path-to-inputs "$INPUTS" --results-directory "$OUTPUTS" $HOSTED_OPTION "$@" <&3 3<&- &
+"$APP_CLI" --inputs "$INPUTS" --batch-outputs "$OUTPUTS" $HOSTED_OPTION "$@" <&3 3<&- &
 APP_PID=$!
 exec 3<&-
 wait "$APP_PID"

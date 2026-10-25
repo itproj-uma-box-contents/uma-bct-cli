@@ -57,11 +57,11 @@ services:
     init: true
     command:
       - --json
-      - --path-to-inputs
+      - --inputs
       - /data/inputs
-      - --path-to-outputs
+      - --outputs
       - /data/outputs/catalogue.csv
-      - --path-to-box-images
+      - --crop-outputs
       - /data/outputs/crops
       - --model
       - ${UMA_BCT_MODEL:-qwen3-vl:8b-instruct-q4_K_M}
@@ -89,11 +89,11 @@ services:
     command:
       - --hosted
       - --json
-      - --path-to-inputs
+      - --inputs
       - /data/inputs
-      - --path-to-outputs
+      - --outputs
       - /data/outputs/catalogue.csv
-      - --path-to-box-images
+      - --crop-outputs
       - /data/outputs/crops
 
 volumes:

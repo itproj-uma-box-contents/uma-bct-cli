@@ -470,7 +470,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertIn("client-constraints.txt", launcher)
             self.assertIn("Add Photos Here", launcher)
             self.assertIn("Results", launcher)
-            self.assertIn("--results-directory", launcher)
+            self.assertIn("--batch-outputs", launcher)
             self.assertIn(".uma-bct-launcher.lock", launcher)
         for extension in ("avif", "bmp", "dng", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"):
             self.assertIn(f'".{extension}"', windows.casefold())
@@ -480,8 +480,8 @@ class ClientDeliveryTest(unittest.TestCase):
             ".[Pp][Nn][Gg]", ".[Tt][Ii][Ff]", ".[Tt][Ii][Ff][Ff]", ".[Ww][Ee][Bb][Pp]",
         ):
             self.assertIn(pattern, posix)
-        self.assertLess(posix.index("setup --path-to-inputs"), posix.index("Press Enter after"))
-        self.assertLess(windows.index('"setup --path-to-inputs "'), windows.index("[Console]::ReadLine()"))
+        self.assertLess(posix.index("setup --inputs"), posix.index("Press Enter after"))
+        self.assertLess(windows.index('"setup --inputs "'), windows.index("[Console]::ReadLine()"))
         self.assertIn("Get-AuthenticodeSignature", windows)
         self.assertIn("ollama-windows-amd64.zip", windows)
         self.assertNotIn("OllamaSetup.exe", windows)
@@ -535,9 +535,9 @@ class ClientDeliveryTest(unittest.TestCase):
         arguments = (
             "--format", "Excel", "--reprocess", "--verification", "never", "--json",
             "--model", 'a model with "quotes" and a trailing\\',
-            "--ai-dates", "--detector", "opencv", "--transcriber", "qwen",
-            "--min-transcription-confidence", "80", "--min-detector-confidence", "0.7",
-            "--request-timeout", "75", "--no-missing-box-detection",
+            "--ai-dates",
+            "--confidence-threshold", "80", "--min-detector-confidence", "0.7",
+            "-t", "75", "-mb",
         )
         prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
         fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
@@ -548,8 +548,8 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), {"status": "complete"})
             self.assertEqual(
                 (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines(),
-                ["--path-to-inputs", str(root.resolve() / "inputs"),
-                 "--results-directory", str(root.resolve() / "outputs"), *arguments],
+                ["--inputs", str(root.resolve() / "inputs"),
+                 "--batch-outputs", str(root.resolve() / "outputs"), *arguments],
             )
             self.assertNotIn("Press Enter", result.stderr)
             self.assertIn("synthetic installer output", result.stderr)
@@ -559,7 +559,7 @@ class ClientDeliveryTest(unittest.TestCase):
         prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
         fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
         with launcher_fixture(prepare, *fixture_args) as (root, launcher, environment, _events):
-            arguments = ("--file-type=excel", "--model", "setup", "--request-timeout", "invalid")
+            arguments = ("--file-type=excel", "--model", "setup", "--timeout", "invalid")
             result = run_launcher(launcher, environment, arguments=arguments)
             self.assertEqual(result.returncode, 0, result.stderr)
             forwarded = (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()
@@ -598,10 +598,12 @@ class ClientDeliveryTest(unittest.TestCase):
         prepare = prepare_windows_launcher if os.name == "nt" else prepare_posix_launcher
         fixture_args = (self.compiled_fixture,) if os.name == "nt" else ()
         cases = (
+            (("-mb",), None),
             (("--model", "custom:8b"), "custom:8b"),
             (("--model=custom:8b",), "custom:8b"),
             (("-mcustom:8b",), "custom:8b"),
             (("-m", "custom:8b"), "custom:8b"),
+            (("-mcustom:8b", "-mb"), "custom:8b"),
             (("--model", "first:8b", "--model=second:8b", "-mthird:8b", "-m=last:8b"), "last:8b"),
         )
         for arguments, model in cases:
@@ -613,8 +615,26 @@ class ClientDeliveryTest(unittest.TestCase):
                 self.assertIn("No supported photos", result.stderr)
                 setup_arguments = (root / "setup-arguments.txt").read_text(encoding="utf-8").splitlines()
                 self.assertEqual(setup_arguments[0], "setup")
-                self.assertIn("--model=" + model, setup_arguments)
+                if model is None:
+                    self.assertFalse(any(value.startswith("--model") for value in setup_arguments))
+                else:
+                    self.assertIn("--model=" + model, setup_arguments)
                 self.assertFalse((root / ".uma-bct-runtime/setup.json").exists())
+
+    def test_launchers_reject_removed_selectors_before_bootstrap(self):
+        suffix = ".ps1" if os.name == "nt" else ".sh"
+        for arguments in (("--detector", "opencv"), ("--detector=qwen",), ("-dqwen",),
+                          ("--transcriber", "qwen"), ("--transcriber=qwen",), ("--human",)):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launcher = root / ("run-uma-bct" + suffix)
+                shutil.copy2(ROOT / launcher.name, launcher)
+
+                result = run_launcher(launcher, os.environ.copy(), arguments=arguments)
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("no longer supported", result.stderr)
+                self.assertEqual(list(root.iterdir()), [launcher])
 
     def test_explicit_hosted_mode_requires_a_key_before_any_bootstrap(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"
@@ -737,12 +757,12 @@ class ClientDeliveryTest(unittest.TestCase):
     def test_launchers_reject_folder_overrides_and_direct_commands_before_bootstrap(self):
         suffix = ".ps1" if os.name == "nt" else ".sh"
         cases = (
-            ("--path-to-inputs=elsewhere",), ("-ielsewhere",),
-            ("--path-to-output=elsewhere.csv",), ("-oelsewhere.xlsx",),
-            ("--path-to-box-images=elsewhere",), ("-belsewhere",),
-            ("--results-directory", "elsewhere"), ("--work-dir=elsewhere",),
+            ("--inputs=elsewhere",), ("-ielsewhere",),
+            ("--outputs=elsewhere.csv",), ("-oelsewhere.xlsx",),
+            ("--crop-outputs=elsewhere",), ("-co=elsewhere",),
+            ("--batch-outputs", "elsewhere"), ("-co", "elsewhere"),
             ("--force",), ("-f",), ("setup",),
-            ("--model", "--results-directory=elsewhere"),
+            ("--model", "--batch-outputs=elsewhere"),
         )
         for arguments in cases:
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
@@ -855,8 +875,8 @@ class ClientDeliveryTest(unittest.TestCase):
 
     def test_posix_launcher_has_valid_shell_syntax(self):
         subprocess.run(["sh", "-n", str(ROOT / "run-uma-bct.sh")], check=True, capture_output=True, text=True)
-        self.assertIn('"$APP_CLI" --path-to-inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
-        self.assertIn('"--path-to-inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
+        self.assertIn('"$APP_CLI" --inputs', (ROOT / "run-uma-bct.sh").read_text(encoding="utf-8"))
+        self.assertIn('"--inputs "', (ROOT / "run-uma-bct.ps1").read_text(encoding="utf-8"))
 
     @unittest.skipIf(os.name == "nt", "POSIX shell fixture")
     def test_posix_folder_open_reports_a_finder_failure(self):
@@ -1482,7 +1502,7 @@ class ClientDeliveryTest(unittest.TestCase):
     def test_windows_launcher_accepts_numeric_values_from_a_powershell_call(self):
         with launcher_fixture(prepare_windows_launcher, self.compiled_fixture) as fixture:
             root, launcher, environment, _events = fixture
-            script = "& '" + str(launcher).replace("'", "''") + "' --request-timeout 75 -c 50 --json"
+            script = "& '" + str(launcher).replace("'", "''") + "' --timeout 75 -c 50 --json"
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], env=environment,
                 capture_output=True, text=True, timeout=15,
@@ -1490,7 +1510,7 @@ class ClientDeliveryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
-                ["--request-timeout", "75", "-c", "50", "--json"],
+                ["--timeout", "75", "-c", "50", "--json"],
             )
 
     @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")
@@ -1511,7 +1531,7 @@ class ClientDeliveryTest(unittest.TestCase):
                 with self.subTest(caller=caller_path):
                     caller.write_text(
                         f"Set-Location -LiteralPath {destination}\n"
-                        "& $env:UMA_BCT_TEST_LAUNCHER --request-timeout 75 -c 50 --json\nexit $LASTEXITCODE\n",
+                        "& $env:UMA_BCT_TEST_LAUNCHER --timeout 75 -c 50 --json\nexit $LASTEXITCODE\n",
                         encoding="utf-8",
                     )
                     result = subprocess.run(
@@ -1521,7 +1541,7 @@ class ClientDeliveryTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(
                         (root / "app-arguments.txt").read_text(encoding="utf-8").splitlines()[4:],
-                        ["--request-timeout", "75", "-c", "50", "--json"],
+                        ["--timeout", "75", "-c", "50", "--json"],
                     )
 
     @unittest.skipUnless(os.name == "nt", "Windows native argument fixture")

@@ -24,9 +24,9 @@ uv run uma-bct --help
 `OLLAMA_NO_CLOUD=1` set in its environment, then run:
 
 ```sh
-uv run uma-bct setup
+uv run uma-bct setup --batch-outputs Results
 # Add photos directly to inputs/ before processing.
-uv run uma-bct --results-directory Results
+uv run uma-bct --batch-outputs Results
 ```
 
 Tests need neither Ollama nor model weights. Optional hosted development uses

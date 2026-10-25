@@ -118,7 +118,7 @@ class CliIntegrationTest(unittest.TestCase):
     def command(self, root, *, optional_features=True):
         options = ["--format", "Excel", "--verification", "always"] if optional_features else []
         return [sys.executable, "-m", "uma_bct", "-i", str(root / "inputs"),
-                "--results-directory", str(root / "results"), *options, "--json"]
+                "--batch-outputs", str(root / "results"), *options, "--json"]
 
     def environment(self, endpoint):
         return dict(os.environ, OLLAMA_HOST=endpoint, OLLAMA_NO_CLOUD="1", PYTHONPATH=str(ROOT / "src"))

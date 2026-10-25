@@ -38,8 +38,8 @@ class HostedModelConfigTest(unittest.TestCase):
             image = root / "shelf.jpg"
             image.write_bytes(b"unused test image")
             with patch.dict("os.environ", environment), patch("uma_bct.cli.run_batch", return_value=0) as run_batch:
-                self.assertEqual(main(["--model", "local-qwen", "--json", "--path-to-inputs", str(image),
-                                       "--path-to-outputs", str(root / "out.csv")]), 0)
+                self.assertEqual(main(["--model", "local-qwen", "--json", "--inputs", str(image),
+                                       "--outputs", str(root / "out.csv")]), 0)
             selected = run_batch.call_args.args[0]
             self.assertIsNone(selected.hosted_model)
             self.assertEqual(selected.model, "local-qwen")
@@ -54,8 +54,8 @@ class HostedModelConfigTest(unittest.TestCase):
             image = root / "shelf.jpg"
             image.write_bytes(b"unused test image")
             with patch.dict("os.environ", environment), patch("uma_bct.cli.run_batch", return_value=0) as run_batch:
-                self.assertEqual(main(["--hosted", "--json", "--path-to-inputs", str(image),
-                                       "--path-to-outputs", str(root / "out.csv")]), 0)
+                self.assertEqual(main(["--hosted", "--json", "--inputs", str(image),
+                                       "--outputs", str(root / "out.csv")]), 0)
             selected = run_batch.call_args.args[0].hosted_model
             self.assertEqual(selected.model, "gemini/vision-test")
             self.assertEqual(selected.api_key, "secret-test-key")

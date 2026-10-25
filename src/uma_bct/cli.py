@@ -17,7 +17,6 @@ from pathlib import Path
 
 from .adapters.ollama_client import DEFAULT_MODEL, DEFAULT_REQUEST_TIMEOUT_SECONDS, TIMEOUT_ENVIRONMENT_VARIABLE
 from .batch_runner import run_batch
-from .bootstrap import DETECTORS, TRANSCRIBERS
 from .constants import DEFAULT_MIN_DETECTOR_CONFIDENCE, DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE, IMAGE_EXTENSIONS
 from .keep_awake import keep_awake
 from .managed_batch import run_managed_batch
@@ -68,7 +67,8 @@ def positive_float(value: str) -> float:
 def add_path_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-i",
-        "--path-to-inputs",
+        "--inputs",
+        dest="path_to_inputs",
         type=Path,
         default=Path("inputs"),
         metavar="PATH",
@@ -76,34 +76,35 @@ def add_path_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-o",
-        "--path-to-outputs",
-        "--path-to-output",
+        "--outputs",
         dest="path_to_outputs",
         type=Path,
         default=None,
-        metavar="PATH",
+        metavar="FILE",
         help="direct catalogue .csv or .xlsx filename (default: outputs/catalogue.csv, or outputs/catalogue.xlsx for Excel)",
     )
     parser.add_argument(
-        "--format", "--file-type", dest="file_type", type=str.casefold, choices=("excel", "csv"), default=None,
+        "--format", dest="file_type", type=str.casefold, choices=("excel", "csv"), default=None,
         help="save CSV or Excel .xlsx; names ignore case (default: CSV, or the output filename's extension)",
     )
+    parser.add_argument("--file-type", dest="file_type", type=str.casefold, choices=("excel", "csv"),
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
-        "-b",
-        "--path-to-box-images",
-        "--work-dir",
+        "-co",
+        "--crop-outputs",
         dest="path_to_box_images",
         type=Path,
         default=None,
-        metavar="PATH",
+        metavar="FOLDER",
         help="direct output folder for cropped box images (default: crops beside the catalogue)",
     )
     parser.add_argument(
-        "--results-directory",
+        "--batch-outputs",
+        dest="results_directory",
         type=Path,
         default=None,
-        metavar="PATH",
-        help="save resumable Batch folders here; cannot be combined with -o, -b, or --force",
+        metavar="FOLDER",
+        help="save each resumable batch in its own folder here; cannot combine with -o, -co, or --force",
     )
 
 
@@ -113,14 +114,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--hosted", action="store_true", help="use a hosted model configured by UMA_BCT_API_KEY and UMA_BCT_API_MODEL"
     )
-    parser.add_argument(
-        "-d", "--detector", choices=tuple(DETECTORS), default="qwen",
-        help="find boxes with the selected model (qwen) or experimental OpenCV (default: %(default)s)",
-    )
-    parser.add_argument(
-        "-t", "--transcriber", choices=tuple(TRANSCRIBERS), default="qwen",
-        help="read text with the selected local or hosted model; qwen is the only supported mode",
-    )
+    parser.set_defaults(detector="qwen", transcriber="qwen")
     parser.add_argument(
         "--ai-dates", action="store_true",
         help="ask the selected model for dates in transcribed handwriting; adds requests (default: local text rules)",
@@ -129,7 +123,7 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
                         help="local Ollama model (default: %(default)s); hosted runs use UMA_BCT_API_MODEL")
     parser.add_argument(
         "-c",
-        "--min-transcription-confidence",
+        "--confidence-threshold",
         dest="min_transcription_confidence",
         type=bounded_percentage,
         default=DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
@@ -137,7 +131,6 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         help="flag scores below this value; keep all rows (0-100; default: %(default)s)",
     )
     parser.add_argument(
-        "--min-confidence",
         "--min-detector-confidence",
         dest="min_detector_confidence",
         type=bounded_float,
@@ -145,19 +138,23 @@ def add_processing_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="SCORE",
         help="minimum OpenCV detection score, including fallback detection (0-1; default: %(default).2f)",
     )
+    parser.add_argument("--min-confidence", dest="min_detector_confidence", type=bounded_float,
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--request-timeout",
+        "-t", "--timeout",
+        dest="request_timeout",
         type=positive_float,
         default=None,
         metavar="SECONDS",
         help=(f"positive timeout per model request, not the whole run; retries can add time "
               f"(default: {TIMEOUT_ENVIRONMENT_VARIABLE} or {DEFAULT_REQUEST_TIMEOUT_SECONDS:g}s)"),
     )
+    parser.add_argument("--request-timeout", dest="request_timeout", type=positive_float,
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("-f", "--force", action="store_true",
                         help="replace direct output files after keeping backups; not for managed batches")
     parser.add_argument(
-        "--no-missing-box",
-        "--no-missing-box-detection",
+        "-mb", "--disable-missing-box-rows",
         dest="detect_missing_boxes",
         action="store_false",
         help="omit suggested rows for gaps in unit numbers; keep detected boxes",
@@ -172,11 +169,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
                      "Local Ollama is the default; --hosted opts into a hosted model."),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "The selected model finds boxes and reads their text automatically.\n\n"
             "Examples:\n"
             "  uma-bct setup\n"
             "  uma-bct --format excel\n"
-            "  uma-bct --results-directory Results --ai-dates\n"
-            "  uma-bct --results-directory Results --format excel --reprocess\n\n"
+            "  uma-bct --batch-outputs Results --ai-dates\n"
+            "  uma-bct --batch-outputs Results --format excel --reprocess\n\n"
             "Add photos to inputs/ before processing. Options apply to new work;\n"
             "completed batches keep their saved results unless you use --reprocess.\n"
             "An unfinished batch resumes first and needs its original options."
@@ -186,28 +184,26 @@ def build_argument_parser() -> argparse.ArgumentParser:
     add_path_arguments(parser)
     add_processing_arguments(parser)
     parser.add_argument(
-        "--reprocess",
+        "-r", "--reprocess",
         action="store_true",
-        help="create a separate batch for processed photos; requires --results-directory; unfinished batches resume first",
+        help="create a separate batch for processed photos; requires --batch-outputs; unfinished batches resume first",
     )
-    output_format = parser.add_mutually_exclusive_group()
-    output_format.add_argument(
+    parser.add_argument(
         "--json", action="store_true",
         help="write one run summary as JSON; progress goes to stderr; never prompt; use --format for the catalogue",
     )
-    output_format.add_argument("--human", action="store_true", help="show the readable run summary (default)")
     parser.add_argument("--version", action="version", version=package_version())
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
     setup = subcommands.add_parser(
         "setup", help="prepare folders and check or download the local model", allow_abbrev=False,
         description="Prepare folders and check or download the local model. Always returns a JSON summary.",
-        epilog="Put setup first: uma-bct setup --path-to-inputs Photos --results-directory Results",
+        epilog="Put setup first: uma-bct setup --inputs Photos --batch-outputs Results",
     )
     setup.add_argument("--hosted", action="store_true", help="check the configured hosted model instead of local Ollama")
     setup.add_argument("-m", "--model", default=DEFAULT_MODEL, help="local model to prepare (default: %(default)s)")
-    setup.add_argument("--path-to-inputs", type=Path, default=None, metavar="PATH",
+    setup.add_argument("-i", "--inputs", dest="path_to_inputs", type=Path, default=None, metavar="PATH",
                        help="photo folder to prepare (default: inputs/ in the current directory)")
-    setup.add_argument("--results-directory", type=Path, default=None, metavar="PATH",
+    setup.add_argument("--batch-outputs", dest="results_directory", type=Path, default=None, metavar="PATH",
                        help="managed results folder to prepare (default: outputs/ in the current directory)")
     return parser
 
@@ -229,7 +225,7 @@ def resolve_output_arguments(arguments: argparse.Namespace, parser: argparse.Arg
         if output_suffix not in {".csv", ".xlsx"}:
             parser.error("output path must end in .xlsx or .csv")
         if arguments.file_type is not None and output_suffix != suffix:
-            parser.error("--format/--file-type conflicts with the output filename's extension")
+            parser.error("--format conflicts with the output filename's extension")
 
 
 def path_metadata(path: Path, purpose: str) -> os.stat_result:
@@ -331,8 +327,11 @@ def option_was_supplied(arguments: list[str], names: tuple[str, ...]) -> bool:
     for argument in arguments:
         if argument in names:
             return True
+        # -mb is a complete switch, not an attached value for -m.
+        if argument == "-mb":
+            continue
         for name in names:
-            if name.startswith("--") and argument.startswith(f"{name}="):
+            if len(name) > 2 and argument.startswith(f"{name}="):
                 return True
             if len(name) == 2 and argument.startswith(name) and len(argument) > len(name):
                 return True
@@ -390,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
             return run_setup(**setup_arguments)
 
     if arguments.reprocess and arguments.results_directory is None:
-        parser.error("--reprocess requires --results-directory")
+        parser.error("--reprocess requires --batch-outputs")
     resolve_output_arguments(arguments, parser)
     try:
         configured_mode(arguments)
@@ -400,12 +399,12 @@ def main(argv: list[str] | None = None) -> int:
         # Managed batches own their catalogue and crop paths. Mixing direct
         # output flags with that layout would make resume ambiguous.
         conflicting = (
-            option_was_supplied(raw_arguments, ("-o", "--path-to-outputs", "--path-to-output"))
-            or option_was_supplied(raw_arguments, ("-b", "--path-to-box-images", "--work-dir"))
+            option_was_supplied(raw_arguments, ("-o", "--outputs"))
+            or option_was_supplied(raw_arguments, ("-co", "--crop-outputs"))
             or option_was_supplied(raw_arguments, ("-f", "--force"))
         )
         if conflicting:
-            parser.error("--results-directory cannot be combined with -o, -b, or --force")
+            parser.error("--batch-outputs cannot be combined with -o, -co, or --force")
         try:
             validate_output_target(arguments.results_directory, directory=True, purpose="Results directory")
             images = discover_images(arguments.path_to_inputs, check_readable=False)
@@ -455,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = error.code
     # Batch cleanup has already run. Do not imply that a new catalogue was
     # committed, or fabricate per-photo counts after an interrupted direct run.
-    message = "Run interrupted. Check stderr for recovery paths; use --results-directory for resumable batches."
+    message = "Run interrupted. Check stderr for recovery paths; use --batch-outputs for resumable batches."
     if arguments.json:
         print(json.dumps({"schema_version": 1, "status": "interrupted", "exit_code": exit_code,
                           "catalogue_output": None, "message": message}))

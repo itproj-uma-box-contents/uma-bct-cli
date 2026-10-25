@@ -156,7 +156,7 @@ def image_reference(image_file_path: str | Path, catalogue_path: str | Path | No
         # Windows cannot represent a relative path across drive letters.
         raise ValueError(
             "The catalogue and review-crop directory must be on the same drive "
-            "so cropped-image link values remain relative. Choose --path-to-box-images on "
+            "so cropped-image link values remain relative. Choose --crop-outputs on "
             "the catalogue drive."
         ) from None
 

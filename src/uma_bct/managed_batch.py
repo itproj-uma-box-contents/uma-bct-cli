@@ -665,6 +665,10 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         stored_configuration = progress.get("configuration")
         if isinstance(stored_configuration, dict):
+            # Detector selection is no longer a CLI option. Keep the original
+            # method when resuming an older OpenCV batch instead of stranding it.
+            if stored_configuration.get("detector") == "opencv":
+                arguments.detector = "opencv"
             legacy_date_configuration = "date_detector" not in stored_configuration
             # Older managed runs always generated missing-box suggestions.
             saved_detectors = {item["result"].get("date_detector", "none")

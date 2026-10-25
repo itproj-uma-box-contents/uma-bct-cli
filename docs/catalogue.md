@@ -66,7 +66,7 @@ number. Suggestions are not proof that physical boxes are missing.
 
 For example, `Example Collection 2008.0036 / 0001` and the same type with `0003`
 produce a `0002` row. It retains the type, has `Missing Box`, and leaves description,
-confidence, and crop link blank. Use `--no-missing-box-detection` to disable this.
+confidence, and crop link blank. Use `--disable-missing-box-rows` to disable this.
 
 ## Confidence, crops, and verification
 

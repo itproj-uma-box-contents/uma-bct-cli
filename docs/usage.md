@@ -49,7 +49,7 @@ catalogues are neither combined nor overwritten.
 Do not rename, remove, or edit source photos while a batch is unfinished. The CLI
 preserves progress and names the inputs to restore if they change. Resume also
 requires the original processing options, including `--ai-dates`. A batch started with
-the former 80% review threshold needs `--min-transcription-confidence 80`; the current
+the former 80% review threshold needs `--confidence-threshold 80`; the current
 default is 50%. Keep run details and crop files intact. You may edit a completed
 catalogue and save corrected copies or notes beside it; later launches preserve them
 and report a changed catalogue.
@@ -66,31 +66,32 @@ launcher stops and names both. It never merges, moves, or deletes them.
 
 Direct runs default to `inputs/`, `outputs/catalogue.csv`, and `outputs/crops/`. For
 Excel with verification: `uma-bct --format excel --verification always`. Direct
-interruption exits cleanly (130 for Ctrl+C); use `--results-directory` for resumable
+interruption exits cleanly (130 for Ctrl+C); use `--batch-outputs` for resumable
 work. Direct runs have the same final report as launcher runs.
 
 ## CLI arguments
 
 Add these options after `uma-bct`, `sh run-uma-bct.sh`, or the Windows launcher. For
 example, `sh run-uma-bct.sh --format excel` creates an Excel catalogue for a new
-batch. Format names ignore case: `--format Excel` works too.
+batch. Format names ignore case: `--format Excel` works too. In a source checkout,
+put `uv run` before `uma-bct` in these examples.
+
+Detection and transcription automatically use the selected local or hosted model.
+You do not need to choose a detector or transcriber. Readable terminal output is
+the default; add `--json` only when another program needs the run summary.
 
 | Option | What it does | Default / example |
 | --- | --- | --- |
-| `--format csv` / `--format excel` | Choose CSV or an Excel `.xlsx` workbook for a new batch. `--file-type` is the same option. | CSV; `--format excel` |
+| `--format csv` / `--format excel` | Choose a CSV file or an Excel `.xlsx` workbook for a new batch. | CSV; `--format excel` |
 | `--verification never\|always\|ask` | Skip the second reading, always compare a blind second reading, or ask after transcription. Substantive differences may need a third reading. | `never`; `ask` skips when JSON or a stream is redirected |
 | `--ai-dates` | Ask the selected local or hosted model for dates in transcribed handwriting; adds text requests. Pass `--ai-dates` without a value. | Built-in date matching; no extra date request |
-| `-c`, `--min-transcription-confidence PERCENT` | Flag scores below this percentage; keep all rows. Accepts 0–100. | `50`; `-c 80` |
-| `--min-detector-confidence SCORE` | Filter OpenCV box proposals, including fallback detection, on a 0–1 scale. `--min-confidence` is the older alias. | `0.60` |
-| `--no-missing-box-detection` | Disable suggested rows for internal unit-number gaps. `--no-missing-box` is an alias. | Suggestions enabled |
-| `-d`, `--detector qwen\|opencv` | Choose the primary detector; OpenCV is experimental. | `qwen` |
-| `-t`, `--transcriber qwen` | Select the shared vision transcriber, including when a hosted model is selected. | `qwen` is the only choice |
+| `-c`, `--confidence-threshold PERCENT` | Flag scores below this percentage; keep all rows. Accepts 0–100. | `50`; `-c 80` |
+| `-mb`, `--disable-missing-box-rows` | Leave out suggested rows for gaps in the box-number sequence. Photographed boxes are still detected and exported. | Suggestions enabled |
 | `-m`, `--model MODEL` | Select a local Ollama model. For hosted models, use `UMA_BCT_API_MODEL`. | Pinned `qwen3-vl:8b-instruct-q4_K_M` |
 | `--hosted` | Use the provider and key from `UMA_BCT_API_MODEL` and `UMA_BCT_API_KEY`. Direct CLI runs require this opt-in. | Local; ZIP launchers add it when a key is set |
-| `--request-timeout SECONDS` | Set a positive timeout per model request, not for the whole job. Retries can add time. | `UMA_BCT_OLLAMA_TIMEOUT_SECONDS`, otherwise `600` |
-| `--reprocess` | Create a separate managed batch for processed photos; preserve earlier results. An unfinished batch still resumes first with its original options. | Reuse saved work |
+| `-t`, `--timeout SECONDS` | Maximum wait for each processing request, in seconds. This is not a limit for the whole batch or first-run downloads. Retries can add time. | `UMA_BCT_OLLAMA_TIMEOUT_SECONDS`, otherwise `600` |
+| `-r`, `--reprocess` | Process the same photos again into a separate batch, keeping earlier results and edits. An unfinished batch still resumes first with its original options. | Reuse saved work |
 | `--json` | Write a JSON run summary to stdout; progress and warnings go to stderr. Use `--format` to choose the catalogue file type. Never prompt. | Readable report |
-| `--human` | Keep the readable report; accepted for older commands. Cannot be combined with `--json`. | Already the default |
 | `-h`, `--help` | Show help and exit. ZIP launchers do not download or start a runtime for this. | No processing |
 | `--version` | Show the version and exit without processing or ZIP runtime setup. | No processing |
 
@@ -100,19 +101,30 @@ paths, direct output options, and `setup`.
 
 | Direct CLI option | What it does | Default / example |
 | --- | --- | --- |
-| `-i`, `--path-to-inputs PATH` | Read one image or a flat directory of images. | `inputs/` |
-| `-o`, `--path-to-outputs PATH` | Set the CSV or Excel filename; `--path-to-output` is an alias. Its extension must agree with an explicit format option. | `outputs/catalogue.csv`; `-o catalogue.xlsx` selects Excel |
-| `-b`, `--path-to-box-images PATH` | Set the review-crop folder; `--work-dir` is an alias. | `crops/` beside the catalogue |
-| `--results-directory PATH` | Create or resume managed `Batch ...` folders. Cannot be combined with `-o`, `-b`, or `--force`. | Direct output without this option |
+| `-i`, `--inputs PATH` | Read one image or a flat directory of images. | `inputs/` |
+| `-o`, `--outputs FILE` | Save one catalogue to this filename, including `.csv` or `.xlsx`. This is a file, not a folder. Its extension must agree with an explicit `--format`. | `outputs/catalogue.csv`; `-o catalogue.xlsx` selects Excel |
+| `-co`, `--crop-outputs FOLDER` | Save the cropped box images used for review in this folder. | `crops/` beside the catalogue |
+| `--batch-outputs FOLDER` | Save each batch in its own subfolder here, with its catalogue, crops and progress for restarting. Cannot combine with `--outputs`, `--crop-outputs` or `--force`. | Direct output without this option |
 | `-f`, `--force` | Replace an existing direct catalogue while retaining timestamped prior files. | Refuse an existing output |
-| `setup` | Prepare folders and a local model. Accepts `--path-to-inputs`, `--results-directory`, `-m` / `--model MODEL`, and `--hosted` for a hosted dependency check instead. | `uma-bct setup`; pinned model by default; returns JSON |
+| `setup` | Prepare folders and a local model. Accepts `--inputs`, `--batch-outputs`, `-m` / `--model MODEL`, and `--hosted` for a hosted dependency check instead. | `uma-bct setup`; pinned model by default; returns JSON |
 
 There is no `--date-detector` option. For custom managed folders:
 
 ```bash
-uma-bct setup --path-to-inputs "/private/photos" --results-directory "/private/results"
-uma-bct --path-to-inputs "/private/photos" --results-directory "/private/results"
+uma-bct setup --inputs "/private/photos" --batch-outputs "/private/results"
+uma-bct --inputs "/private/photos" --batch-outputs "/private/results"
 ```
+
+Use `--batch-outputs` for long or repeatable jobs. For a single catalogue with a
+chosen filename and crop folder, use direct output instead:
+
+```bash
+uma-bct --inputs "Photos" --outputs "Review/catalogue.xlsx" --crop-outputs "Review/Crops"
+```
+
+Put quotes around paths containing spaces. The short forms `-co` and `-mb` are
+whole options: write `-co "Review/Crops"` and `-mb` separately, rather than joining
+them to another short option. `-t` now means timeout in seconds.
 
 ### Choosing processing options
 
@@ -127,8 +139,9 @@ silently switch back to built-in matching.
 `--verification always` separately compares a blind second transcription. It can be
 used with or without `--ai-dates`; verification readings may add date requests too.
 `-c 80` flags transcription scores below 80% and keeps the rows. By contrast,
-`--min-detector-confidence 0.7` filters OpenCV detections, including the fallback;
-it does not change the transcription review threshold.
+the advanced `--min-detector-confidence 0.7` filters proposals from the experimental
+OpenCV fallback on a 0–1 scale (default `0.60`). It does not change the transcription
+review threshold or filter accepted model detections. Most users can leave it alone.
 
 For a new ZIP batch on macOS/Linux:
 

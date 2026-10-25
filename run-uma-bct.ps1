@@ -62,32 +62,27 @@ Usage: & '.\Run UMA BCT.cmd' [processing options]
 Photos: Add Photos Here   Results: Results
 Existing inputs/outputs folders are kept when they already contain data.
 
-  --format, --file-type csv|excel   Save CSV or Excel .xlsx; default CSV
-  --reprocess                     New batch; keep saved results
+  --format csv|excel               Save CSV or Excel .xlsx; default CSV
+  -r, --reprocess                  Process these photos again in a new batch
   --verification never|always|ask
       Blind second reading (default: never); ask needs a terminal
   --hosted                        Use UMA_BCT_API_MODEL / UMA_BCT_API_KEY
-  -d, --detector qwen|opencv
-      Find boxes (default: qwen); OpenCV is experimental
-  -t, --transcriber qwen          Use the selected local or hosted model
   -m, --model MODEL               Local model (default: pinned Qwen3-VL)
       Hosted model: UMA_BCT_API_MODEL
   --ai-dates
       Extract dates from transcribed handwriting with the selected model
       Adds text requests; omit for built-in date matching
-  -c, --min-transcription-confidence PERCENT
+  -c, --confidence-threshold PERCENT
       Flag scores below PERCENT; keep rows (0-100; default 50)
-  --min-confidence, --min-detector-confidence SCORE
-      Filter OpenCV detections, including fallback (0-1; default 0.60)
-  --request-timeout SECONDS
+  --min-detector-confidence SCORE
+      Advanced: filter OpenCV fallback proposals (0-1; default 0.60)
+  -t, --timeout SECONDS
       Positive timeout per processing request; retries can add time
       Default: UMA_BCT_OLLAMA_TIMEOUT_SECONDS or 600 seconds
-  --no-missing-box, --no-missing-box-detection
+  -mb, --disable-missing-box-rows
       Omit suggested rows for gaps in unit numbers
   --json                          JSON run summary; use --format for CSV/Excel
       Progress goes to stderr; never prompt
-  --human                         Readable run summary (default)
-      Cannot combine with --json
   -h, --help                      Show help without setting up the runtime
   --version                       Show the bundled application version
 
@@ -643,9 +638,8 @@ try {
     $ValueOption = ""
     $SetupModel = $null
     $ValueOptions = @(
-        "--format", "--file-type", "--verification", "-d", "--detector",
-        "-t", "--transcriber", "-m", "--model", "-c", "--min-transcription-confidence",
-        "--min-confidence", "--min-detector-confidence", "--request-timeout"
+        "--format", "--file-type", "--verification", "-m", "--model", "-c", "--confidence-threshold",
+        "--min-confidence", "--min-detector-confidence", "-t", "--timeout", "--request-timeout"
     )
     foreach ($Argument in $CliArguments) {
         if ($ExpectsValue) {
@@ -657,9 +651,12 @@ try {
                 continue
             }
         }
-        if ($Argument -cmatch '^--(path-to-inputs|path-to-outputs?|path-to-box-images|work-dir|results-directory|force)(=|$)' -or
-            $Argument -cmatch '^-[iobf]' -or $Argument -ceq "setup") {
+        if ($Argument -cmatch '^--(inputs|outputs|crop-outputs|batch-outputs|force)(=|$)' -or
+            $Argument -cmatch '^-(i|o|co|f)' -or $Argument -ceq "setup") {
             throw "This ZIP launcher uses its managed photo and results folders. Use direct uma-bct for '$Argument'; see README.md."
+        }
+        if ($Argument -cmatch '^--(detector|transcriber|human)(=|$)' -or $Argument -cmatch '^-d') {
+            throw "'$Argument' is no longer supported. Detection and transcription use the selected model automatically; readable output is the default."
         }
         # Match argparse's short help clusters, such as -hh, before setup.
         if ($Argument -ceq "--help" -or $Argument.StartsWith("-h", [StringComparison]::Ordinal)) {
@@ -670,7 +667,9 @@ try {
         if ($Argument -ceq "--hosted") { $HostedRequested = $true }
         if ($Argument.StartsWith("--model=")) { $SetupModel = $Argument.Substring(8) }
         elseif ($Argument.StartsWith("-m=")) { $SetupModel = $Argument.Substring(3) }
-        elseif ($Argument.StartsWith("-m") -and $Argument.Length -gt 2) { $SetupModel = $Argument.Substring(2) }
+        elseif ($Argument -cne "-mb" -and $Argument.StartsWith("-m") -and $Argument.Length -gt 2) {
+            $SetupModel = $Argument.Substring(2)
+        }
         $ExpectsValue = $ValueOptions -ccontains $Argument
         $ValueOption = $Argument
     }
@@ -855,8 +854,8 @@ try {
             } else {
                 [Console]::Error.WriteLine("Checking the application and model. The first model download is large...")
             }
-            $SetupArguments = "setup --path-to-inputs " + (Quote-NativeArgument $Inputs) +
-                " --results-directory " + (Quote-NativeArgument $Outputs)
+            $SetupArguments = "setup --inputs " + (Quote-NativeArgument $Inputs) +
+                " --batch-outputs " + (Quote-NativeArgument $Outputs)
             if ($HostedMode) { $SetupArguments += " --hosted" }
             # Setup must prepare the same model that processing will use.
             if ($null -ne $SetupModel) {
@@ -886,8 +885,8 @@ try {
 
         # Keep the CLI's progress and final report in this terminal. The
         # launcher opens Results only after that foreground run returns.
-        $Arguments = "--path-to-inputs " + (Quote-NativeArgument $Inputs) +
-            " --results-directory " + (Quote-NativeArgument $Outputs)
+        $Arguments = "--inputs " + (Quote-NativeArgument $Inputs) +
+            " --batch-outputs " + (Quote-NativeArgument $Outputs)
         if ($HostedMode) { $Arguments += " --hosted" }
         foreach ($Argument in $CliArguments) {
             $Arguments += " " + (Quote-NativeArgument $Argument)

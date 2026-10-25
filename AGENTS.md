@@ -82,7 +82,7 @@ Input/output validation -> model preflight -> box detection
 - Keep catalogue flags consistent, including identity problems,
   transcription mismatches, fallbacks, duplicates, and verification outcomes.
 - `Low confidence` means strictly below 50% by default; exactly 50% is not low.
-  `--min-transcription-confidence` accepts 0–100 and flags rather than removes
+  `--confidence-threshold` accepts 0–100 and flags rather than removes
   rows. The separate OpenCV threshold defaults to 0.60 on a 0–1 scale.
   Unavailable token confidence exports as 0 and requires review; scores are not
   measured accuracy. Review flags alone do not imply partial processing.

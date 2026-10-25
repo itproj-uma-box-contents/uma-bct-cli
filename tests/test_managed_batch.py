@@ -127,6 +127,7 @@ class ManagedBatchTest(unittest.TestCase):
         min_transcription_confidence: int = DEFAULT_MIN_TRANSCRIPTION_CONFIDENCE,
         file_type: str | None = "csv",
         date_detector: str = "regex",
+        detector: str = "qwen",
     ):
         """Run the real checkpoint flow with a scripted local pipeline."""
 
@@ -134,6 +135,7 @@ class ManagedBatchTest(unittest.TestCase):
                                       file_type=file_type)
         arguments.verification = verification
         arguments.ai_dates = date_detector == "qwen"
+        arguments.detector = detector
         arguments.min_transcription_confidence = min_transcription_confidence
         images = sorted(arguments.path_to_inputs.glob("*.jpg"), key=lambda path: path.name)
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -546,6 +548,25 @@ class ManagedBatchTest(unittest.TestCase):
                 legacy = deserialize_result(saved, batch).records[0].transcription
                 self.assertFalse(legacy.date_needs_review)
                 self.assertEqual(legacy.dates, (Date(year=1950),))
+
+    def test_legacy_opencv_checkpoint_resumes_with_its_original_detector(self):
+        with self.prepared_root("01.jpg", "02.jpg") as root:
+            status, first, _ = self.run_managed_batch_and_capture_output(
+                root, ManagedPipeline(interrupt_name="02.jpg"), detector="opencv",
+            )
+            self.assertEqual(status, 130)
+            batch = Path(first["batch_directory"])
+            saved = read_json_file(batch / PROGRESS_FILE_NAME, "Run progress")
+            self.assertEqual(saved["configuration"]["detector"], "opencv")
+
+            pipeline = ManagedPipeline()
+            status, summary, stderr = self.run_managed_batch_and_capture_output(root, pipeline)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(summary["batch_directory"], str(batch))
+            self.assertEqual(pipeline.calls, ["02.jpg"])
+            details = read_json_file(batch / DETAILS_FILE_NAME, "Run details")
+            self.assertEqual(details["configuration"]["detector"], "opencv")
 
     def test_changed_date_detector_cannot_mix_an_unfinished_batch(self):
         with self.prepared_root("01.jpg", "02.jpg") as root:
