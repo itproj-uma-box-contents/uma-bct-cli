@@ -320,6 +320,8 @@ class ClientDeliveryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dist, wheel = self.prepare_bundle_sources(root)
+            unlisted = root / "docs/private-review-notes.md"
+            unlisted.write_text("synthetic private notes", encoding="utf-8")
 
             bundle = build_client_bundle(dist, source_root=root)
             self.assertEqual(bundle.name, "archive-box-transcription.zip")
@@ -328,12 +330,16 @@ class ClientDeliveryTest(unittest.TestCase):
                 self.assertEqual(
                     set(archive.namelist()),
                     {
-                        *(f"{BUNDLE_ROOT}/{Path(name).name}" for name in CLIENT_FILES),
+                        *(
+                            f"{BUNDLE_ROOT}/{name if name.startswith('docs/') else Path(name).name}"
+                            for name in CLIENT_FILES
+                        ),
                         f"{BUNDLE_ROOT}/{wheel.name}",
                         f"{BUNDLE_ROOT}/{FRIENDLY_INPUT_DIRECTORY}/",
                         f"{BUNDLE_ROOT}/{FRIENDLY_RESULTS_DIRECTORY}/",
                     },
                 )
+                self.assertEqual(archive.read(f"{BUNDLE_ROOT}/docs/usage.md"), (root / "docs/usage.md").read_bytes())
             bundle.write_bytes(b"not a zip")
             with self.assertRaisesRegex(ValueError, "verify"):
                 verify_client_bundle(dist, source_root=root)

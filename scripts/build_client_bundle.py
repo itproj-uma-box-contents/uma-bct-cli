@@ -19,6 +19,12 @@ FRIENDLY_INPUT_DIRECTORY = "Add Photos Here"
 FRIENDLY_RESULTS_DIRECTORY = "Results"
 CLIENT_FILES = (
     "README.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "docs/usage.md",
+    "docs/catalogue.md",
+    "docs/hosted-models.md",
+    "docs/architecture.md",
     "Run UMA BCT.cmd",
     "client-constraints.txt",
     "run-uma-bct.ps1",
@@ -79,6 +85,13 @@ def source_boundary(source: Path, directory: Path, root: Path) -> Path:
     return directory if source.parent == directory else root
 
 
+def bundle_member_name(source: Path, root: Path) -> str:
+    """Keep guide links portable while retaining the existing launcher layout."""
+
+    name = source.relative_to(root).as_posix() if source.is_relative_to(root / "docs") else source.name
+    return f"{BUNDLE_ROOT}/{name}"
+
+
 def source_entry(name: str, metadata: os.stat_result) -> zipfile.ZipInfo:
     information = zipfile.ZipInfo(name)
     information.create_system = 3
@@ -125,7 +138,7 @@ def build_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) ->
                     archive.writestr(directory_entry, b"")
                 for source in bundle_sources(directory, source_root):
                     content, metadata = read_source(source, source_boundary(source, directory, source_root))
-                    name = f"{BUNDLE_ROOT}/{source.name}"
+                    name = bundle_member_name(source, source_root)
                     archive.writestr(source_entry(name, metadata), content)
             temporary.flush()
             os.fsync(temporary.fileno())
@@ -144,7 +157,7 @@ def verify_client_bundle(directory: Path, *, source_root: Path = PROJECT_ROOT) -
     validate_bundle_path(directory / BUNDLE_NAME, directory, must_exist=True)
     sources = bundle_sources(directory, source_root)
     expected = {
-        f"{BUNDLE_ROOT}/{source.name}": read_source(
+        bundle_member_name(source, source_root): read_source(
             source, source_boundary(source, directory, source_root)
         )[0]
         for source in sources
