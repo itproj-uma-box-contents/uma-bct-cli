@@ -351,32 +351,6 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(backups)
 
 
-def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> None:
-    """Restore the old catalogue atomically, or remove a newly published catalogue."""
-
-    check_path(destination, "Catalogue rollback")
-    if previous_catalogue is None:
-        destination.unlink(missing_ok=True)
-        return
-
-    check_path(previous_catalogue, "Previous catalogue")
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent, prefix=".uma-bct-rollback-", suffix=destination.suffix, delete=False
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-        shutil.copy2(previous_catalogue, temporary_path)
-        with temporary_path.open("r+b") as restored:
-            os.fsync(restored.fileno())
-        check_path(destination, "Catalogue rollback")
-        temporary_path.replace(destination)
-    except BaseException:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
-
-
 def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_existing: bool = True) -> None:
     check_path(destination, "Run manifest")
     if destination.exists() and not replace_existing:
