@@ -183,12 +183,6 @@ def prepare_pipeline(arguments: argparse.Namespace, failures: list[dict[str, str
         return None, None, request_timeout, metadata
 
 
-def export_results(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
-                   manifest_path: Path, failures: list[dict[str, str]]) -> ExportState:
-    return export_results_into(
-        arguments, results, output_path, manifest_path, failures, ExportState())
-
-
 def export_results_into(arguments: argparse.Namespace, results: list[ImageResult], output_path: Path,
     manifest_path: Path, failures: list[dict[str, str]], state: ExportState) -> ExportState:
     """Publish a staged catalogue while retaining enough evidence to undo this run."""
