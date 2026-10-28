@@ -80,9 +80,9 @@ def arguments(root: Path, *, force=False, file_type="csv"):
 
 
 class CliTest(unittest.TestCase):
-    def test_parser_keeps_defaults_and_existing_aliases(self):
+    def test_parser_keeps_defaults_with_simplified_paths(self):
         defaults = parse_args([])
-        aliases = parse_args(["--path-to-output", "other.csv", "--work-dir", "review"])
+        aliases = parse_args(["--outputs", "other.csv", "--crop-outputs", "review"])
         self.assertEqual(defaults.path_to_inputs, Path("inputs"))
         self.assertEqual(defaults.path_to_outputs, Path("outputs/catalogue.csv"))
         self.assertFalse(hasattr(defaults, "html_review"))
@@ -93,10 +93,11 @@ class CliTest(unittest.TestCase):
         self.assertEqual(aliases.path_to_box_images, Path("review"))
         self.assertFalse(defaults.json)
         self.assertTrue(parse_args(["--json"]).json)
-        self.assertTrue(parse_args(["--human"]).human)
+        self.assertEqual(defaults.detector, "qwen")
+        self.assertEqual(defaults.transcriber, "qwen")
 
     def test_can_disable_missing_box_detection(self):
-        self.assertFalse(parse_args(["--no-missing-box-detection"]).detect_missing_boxes)
+        self.assertFalse(parse_args(["--disable-missing-box-rows"]).detect_missing_boxes)
 
     def test_ai_dates_is_a_model_selection_independent_switch(self):
         self.assertFalse(parse_args([]).ai_dates)
@@ -116,7 +117,7 @@ class CliTest(unittest.TestCase):
         legacy_detector = parse_args(["--min-confidence", "0.7"])
         explicit_detector = parse_args(["--min-detector-confidence", "0.8"])
         short_transcription = parse_args(["-c", "70"])
-        explicit_transcription = parse_args(["--min-transcription-confidence", "75"])
+        explicit_transcription = parse_args(["--confidence-threshold", "75"])
 
         self.assertEqual(legacy_detector.min_detector_confidence, 0.7)
         self.assertEqual(explicit_detector.min_detector_confidence, 0.8)
@@ -205,7 +206,7 @@ class CliTest(unittest.TestCase):
                         str(inputs),
                         "-o",
                         str(redirected / "nested/catalogue.csv"),
-                        "--work-dir",
+                        "--crop-outputs",
                         str(root / "review-crops"),
                     ]
                 )
@@ -241,7 +242,7 @@ class CliTest(unittest.TestCase):
                         str(inputs),
                         "-o",
                         str(root / "outputs/catalogue.csv"),
-                        "--work-dir",
+                        "--crop-outputs",
                         str(redirected / "nested/crops"),
                     ]
                 )
@@ -327,16 +328,16 @@ class CliTest(unittest.TestCase):
 
     def test_routes_custom_managed_setup_paths(self):
         with patch("uma_bct.cli.run_setup", return_value=0) as setup:
-            self.assertEqual(main(["setup", "--path-to-inputs", "Photos", "--results-directory", "Results"]), 0)
+            self.assertEqual(main(["setup", "--inputs", "Photos", "--batch-outputs", "Results"]), 0)
         setup.assert_called_once_with(input_directory=Path("Photos"), results_directory=Path("Results"))
 
     def test_managed_options_conflict_with_direct_outputs_and_force(self):
         for extra in (
-            ("-o", "out.csv"), ("-oout.csv",), ("--path-to-outputs=out.csv",),
-            ("--work-dir", "crops"), ("-bcrops",), ("--work-dir=crops",), ("--force",),
+            ("-o", "out.csv"), ("-oout.csv",), ("--outputs=out.csv",),
+            ("--crop-outputs", "crops"), ("-co=crops",), ("--crop-outputs=crops",), ("--force",),
         ):
             with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                main(["--results-directory", "Results", *extra])
+                main(["--batch-outputs", "Results", *extra])
 
     def test_reprocess_requires_a_results_directory(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -349,7 +350,7 @@ class CliTest(unittest.TestCase):
             (inputs / "shelf.jpg").write_bytes(b"x")
             results = root / "results"
             with patch("uma_bct.cli.run_managed_batch", return_value=0) as batch:
-                status = main(["-i", str(inputs), "--results-directory", str(results)])
+                status = main(["-i", str(inputs), "--batch-outputs", str(results)])
             self.assertEqual(status, 0)
             batch.assert_called_once_with(batch.call_args.args[0], [inputs / "shelf.jpg"], results)
 
@@ -444,7 +445,7 @@ class CliTest(unittest.TestCase):
             (inputs / "shelf.jpg").write_bytes(b"x")
             output = root / "outputs/catalogue.csv"
             with patch("uma_bct.cli.run_batch", return_value=0) as batch:
-                status = main(["-i", str(inputs), "-o", str(output), "--work-dir", str(root / "outputs/crops")])
+                status = main(["-i", str(inputs), "-o", str(output), "--crop-outputs", str(root / "outputs/crops")])
             self.assertEqual(status, 0)
             self.assertEqual(batch.call_args.args[1], [inputs / "shelf.jpg"])
 
@@ -460,7 +461,7 @@ class CliTest(unittest.TestCase):
                 patch("uma_bct.cli.run_batch") as batch,
                 self.assertRaises(SystemExit) as raised,
             ):
-                main(["-i", str(inputs), "-o", str(crops / "catalogue.csv"), "--work-dir", str(crops)])
+                main(["-i", str(inputs), "-o", str(crops / "catalogue.csv"), "--crop-outputs", str(crops)])
             self.assertEqual(raised.exception.code, 2)
             self.assertIn("catalogue output must not be inside the review-crop directory", stderr.getvalue())
             batch.assert_not_called()
@@ -485,7 +486,7 @@ class CliTest(unittest.TestCase):
                     patch("uma_bct.cli.run_batch") as batch,
                     self.assertRaises(SystemExit) as raised,
                 ):
-                    main(["-i", str(inputs), "-o", str(output), "--work-dir", str(crops)])
+                    main(["-i", str(inputs), "-o", str(output), "--crop-outputs", str(crops)])
                 self.assertEqual(raised.exception.code, 2)
                 self.assertIn("review-crop", stderr.getvalue())
                 batch.assert_not_called()

@@ -23,7 +23,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -42,12 +41,13 @@ from .constants import (
 from .domain import BoundingBox, Box, BoxResult, BoxTranscription, InputImage
 from .export import export_catalogue
 from .model_config import selected_model_metadata, selected_model_name
-from .path_safety import check_path, redirected_path_kind
+from .path_safety import check_path, path_entry_exists, redirected_path_kind
 from .pipeline import BoxTranscriptionPipeline, ImageResult, warning_text
 from .run_artifacts import LOCK_FILE_NAME, write_json_atomic
 from .terminal import TerminalProgress, print_run_summary
 from .util.date_util import deserialize_dates
 from .verification import choose_verification, configured_mode, verify_image
+from .version import package_version as application_version
 
 PROGRESS_FILE_NAME = "Run Progress.json"
 DETAILS_FILE_NAME = "Run Details.json"
@@ -128,13 +128,6 @@ def unlock_descriptor(descriptor: int) -> None:
         import fcntl
 
         fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
-def application_version() -> str:
-    try:
-        return version("uma-bct-cli")
-    except PackageNotFoundError:
-        return "0.1.0"
 
 
 def canonical_lock_name(path: Path) -> str:
@@ -635,12 +628,6 @@ def completed_batch_order_key(item: tuple[Path, dict[str, Any]]) -> tuple[str, s
     return str(item[1].get("created_at", "")), base, collision
 
 
-def latest_completed(completed: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any]] | None:
-    """Keep the existing helper available to callers inspecting batch history."""
-
-    return max(completed, key=completed_batch_order_key, default=None)
-
-
 def input_identity(item: dict[str, Any]) -> tuple[str, int, str]:
     return item["relative_name"], item["size"], item["sha256"]
 
@@ -678,6 +665,10 @@ def select_batch(arguments: argparse.Namespace, results_root: Path,
             raise ManagedBatchSelectionError(batch_directory, "Cannot change verification mode in an unfinished batch.")
         stored_configuration = progress.get("configuration")
         if isinstance(stored_configuration, dict):
+            # Detector selection is no longer a CLI option. Keep the original
+            # method when resuming an older OpenCV batch instead of stranding it.
+            if stored_configuration.get("detector") == "opencv":
+                arguments.detector = "opencv"
             legacy_date_configuration = "date_detector" not in stored_configuration
             # Older managed runs always generated missing-box suggestions.
             saved_detectors = {item["result"].get("date_detector", "none")
@@ -1357,16 +1348,6 @@ def publish_reserved_crop(source: Path, target: Path, evidence: dict[str, Any]) 
 
 def write_progress(batch_directory: Path, progress: dict[str, Any]) -> None:
     write_json_atomic(batch_directory / PROGRESS_FILE_NAME, progress)
-
-
-def path_entry_exists(path: Path) -> bool:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return True
 
 
 def can_write_progress(batch_directory: Path) -> bool:

@@ -15,6 +15,22 @@ from pathlib import Path
 MACOS_ROOT_ALIASES = frozenset({Path("/etc"), Path("/tmp"), Path("/var")})
 
 
+def path_entry_exists(path: Path) -> bool:
+    """Treat a path as occupied unless its entry is definitely missing.
+
+    Use lstat so dangling links count as occupied. Other inspection errors
+    also count as occupied to avoid overwriting an entry we cannot inspect.
+    """
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def redirected_path_kind(path: Path, metadata: os.stat_result | None = None) -> str | None:
     metadata = metadata or path.lstat()
     if stat.S_ISLNK(metadata.st_mode):

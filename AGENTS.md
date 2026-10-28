@@ -7,8 +7,8 @@ paths, credentials, and machine settings out. Change only the requested scope.
 
 The University of Melbourne Archives Box Contents Transcription CLI turns shelf
 photos into a catalogue for human review. Local Qwen3-VL through Ollama is the
-default. See [README.md](README.md) for user behaviour, development, delivery,
-and benchmarks.
+default. See [README.md](README.md) for the quick start and reference guides, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for development, delivery, and benchmarks.
 
 For product requirements, follow this order:
 
@@ -82,7 +82,7 @@ Input/output validation -> model preflight -> box detection
 - Keep catalogue flags consistent, including identity problems,
   transcription mismatches, fallbacks, duplicates, and verification outcomes.
 - `Low confidence` means strictly below 50% by default; exactly 50% is not low.
-  `--min-transcription-confidence` accepts 0–100 and flags rather than removes
+  `--confidence-threshold` accepts 0–100 and flags rather than removes
   rows. The separate OpenCV threshold defaults to 0.60 on a 0–1 scale.
   Unavailable token confidence exports as 0 and requires review; scores are not
   measured accuracy. Review flags alone do not imply partial processing.
@@ -139,7 +139,7 @@ edits, check content, links, and the diff. Behaviour changes need regression tes
   and input-format compatibility; fake provider clients for hosted tests.
 
 Before delivery, run the full suite and the
-[build/privacy checks](README.md#build-the-client-deliverables), including
+[build/privacy checks](CONTRIBUTING.md#build-the-client-deliverables), including
 `uv build --no-build-isolation`. Install wheel and sdist outside the checkout;
 smoke-test `uma-bct --help`, `uma-bct --version`, and `python -m uma_bct --help`.
 Validate the CI platform matrix and synthetic spreadsheet crop links,
@@ -154,7 +154,7 @@ The local real-model release gate covers all 21 images in
 suffixes of `PXL_*.jpg` filenames). These directories are optional for contributors;
 report the gate as not run if the photos/model are unavailable.
 
-Follow [the benchmark guide](README.md#verification-and-local-accuracy-references)
+Follow [the benchmark guide](CONTRIBUTING.md#verification-and-local-accuracy-references)
 with `scripts/verification_benchmark.py`. Check every source photo, correct fields
 and box counts, and set `review_status` to `reviewed` before scoring. Confirm box
 IDs still identify the same physical boxes. Record missing/unexpected boxes,

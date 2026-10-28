@@ -44,7 +44,11 @@ build-backend = "hatchling.build"
 packages = ["src/uma_bct"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/uma_bct", "/pyproject.toml", "/README.md"]
+include = [
+    "/src/uma_bct", "/pyproject.toml", "/README.md", "/CONTRIBUTING.md", "/AGENTS.md",
+    "/docs/usage.md", "/docs/catalogue.md", "/docs/hosted-models.md",
+    "/docs/architecture.md",
+]
 
 [tool.ruff]
 target-version = "py312"

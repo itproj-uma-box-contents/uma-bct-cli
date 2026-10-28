@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .atomic import open_stable_file, rename_new_file
-from .path_safety import check_path
+from .path_safety import check_path, path_entry_exists
 
 LOCK_FILE_NAME = ".uma-bct.lock"
 
@@ -38,18 +38,6 @@ def same_regular_file_content(first: Path, second: Path, purpose: str) -> bool:
         return regular_file_sha256(first, purpose) == regular_file_sha256(second, purpose)
     except (OSError, ValueError):
         return False
-
-
-def path_entry_exists(path: Path) -> bool:
-    """Treat an inspection error as occupied so a writer fails closed."""
-
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return True
 
 
 def replace_backed_file(staging: Path, destination: Path, backup: Path, purpose: str) -> None:
@@ -349,32 +337,6 @@ def backup_existing_results(paths: tuple[Path, ...]) -> tuple[Path, ...]:
                 temporary_path.unlink(missing_ok=True)
             raise
     return tuple(backups)
-
-
-def rollback_catalogue(destination: Path, previous_catalogue: Path | None) -> None:
-    """Restore the old catalogue atomically, or remove a newly published catalogue."""
-
-    check_path(destination, "Catalogue rollback")
-    if previous_catalogue is None:
-        destination.unlink(missing_ok=True)
-        return
-
-    check_path(previous_catalogue, "Previous catalogue")
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent, prefix=".uma-bct-rollback-", suffix=destination.suffix, delete=False
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-        shutil.copy2(previous_catalogue, temporary_path)
-        with temporary_path.open("r+b") as restored:
-            os.fsync(restored.fileno())
-        check_path(destination, "Catalogue rollback")
-        temporary_path.replace(destination)
-    except BaseException:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
 
 
 def write_json_atomic(destination: Path, value: dict[str, Any], *, replace_existing: bool = True) -> None:
