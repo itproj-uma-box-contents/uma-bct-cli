@@ -73,4 +73,4 @@ human review, including unflagged rows and readings where models agree.
 Public release has been approved by the University of Melbourne and
 University of Melbourne Archives (UMA).
 The open-source licence is still being agreed; a `LICENSE` file has not yet been
-added. Select and add the approved licence before making the repository public.
+added.
