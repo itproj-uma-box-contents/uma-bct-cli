@@ -2,7 +2,7 @@
 
 Built by Dimitrios Petrakis, Morayya, Zane, William Zhang and Finley Owen with
 University of Melbourne Archives (UMA). Thank you to our client, Senior Archivist
-[Lachlan Glanville](mailto:lachlan.glanville@unimelb.edu.au), for guiding the project.
+Lachlan Glanville, for guiding the project.
 
 A CLI that detects archive boxes in shelf photos, transcribes their labels and
 handwriting, and exports a CSV or Excel catalogue for human review. Local Qwen3-VL
@@ -68,7 +68,7 @@ of Git, Docker contexts and hosted CI. Hosted inference sends image pixels to a
 provider and requires written client approval for private material. All output needs
 human review, including unflagged rows and readings where models agree.
 
-## License
+## Publication approval
 
-Open-source release is pending approval from the University of Melbourne and
+Public release has been approved by the University of Melbourne and
 University of Melbourne Archives (UMA).
