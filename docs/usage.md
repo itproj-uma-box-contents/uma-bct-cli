@@ -6,8 +6,9 @@ See the [README quick start](../README.md#run-the-tool) for the client ZIP or
 [source setup](../CONTRIBUTING.md#set-up-a-source-checkout) for development.
 This guide describes the current CLI. The Confluence
 [user manual](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/1016046)
-and [CLI design](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/7077934)
-contain earlier options and HTML-review instructions.
+covers the CLI and separate review GUI. The
+[CLI manual](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/7077934)
+also documents the launcher workflow and direct CLI options.
 
 ## Running a batch
 

@@ -5,8 +5,8 @@
 This guide describes current output. Confluence holds the
 [catalogue design](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/7209023)
 and [requirements](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/2424836)
-(access may be required); the exported catalogue design predates Excel support and
-the current date options.
+(access may be required). CSV and Excel use the same catalogue rules; all generated
+output remains a draft for human review.
 
 Both CSV and Excel keep this column order:
 

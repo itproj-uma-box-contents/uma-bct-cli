@@ -60,8 +60,8 @@ local accuracy checks. Report bugs or propose improvements through repository is
 
 Project background, team roles, requirements and sprint records remain in
 [Confluence](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/1015827)
-(access may be required). The guides above describe the current CLI; the exported
-Confluence manuals include earlier behaviour.
+(access may be required). The guides above and the Confluence CLI manual describe
+the current CLI. The Confluence user manual also covers the separate review GUI.
 
 Keep private photos, crops, catalogues, model weights and credentials local and out
 of Git, Docker contexts and hosted CI. Hosted inference sends image pixels to a
@@ -72,3 +72,5 @@ human review, including unflagged rows and readings where models agree.
 
 Public release has been approved by the University of Melbourne and
 University of Melbourne Archives (UMA).
+The open-source licence is still being agreed; a `LICENSE` file has not yet been
+added. Select and add the approved licence before making the repository public.

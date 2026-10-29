@@ -48,8 +48,8 @@ Team governance stays in Confluence:
 [PR rules](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/15368543) and
 [test plan](https://uma-box-contents.atlassian.net/wiki/spaces/UBC/pages/688527)
 (access may be required). PR rules include two team approvals before merging.
-The commands below apply to the current checkout; the exported test plan includes
-older HTML-review and CLI behaviour.
+The commands below apply to the current checkout. Confluence validation results
+apply to their recorded commits; record new checks against the code being delivered.
 
 ## Run checks
 
@@ -87,8 +87,8 @@ uv run python scripts/check_release_artifacts.py dist
 
 The privacy check must pass. Hand over `dist/archive-box-transcription.zip` through
 approved private sharing. `build/` and `dist/` are generated/ignored; private photos
-and outputs must never enter artifacts. Public release and container-image
-publishing remain deferred.
+and outputs must never enter artifacts. Public release awaits selection and addition
+of the approved open-source licence; container-image publishing remains deferred.
 
 The ZIP includes the linked Markdown guides with their directory layout intact.
 Keep the explicit file allowlists in `scripts/build_client_bundle.py` and
